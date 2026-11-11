@@ -55,7 +55,7 @@
 
 ## Philosophy
 
-Routing is what Xray does best. Its rules can send each connection exactly where it should go: this app through the proxy, that site direct, ads nowhere, one service through the one server that works for it. Most Xray clients barely expose any of that. They start Xray system-wide, push all traffic through the tunnel, and hide routing behind a screen that's hard to find and harder to configure. Doing anything beyond the defaults means hand-editing JSON, and switching servers often restarts the core and drops every connection.
+V2Ray/Xray routing is a powerful feature that can send each connection exactly where it should go: this app through the proxy, that site direct, ads nowhere, one service through the one server that works for it. Most Xray clients barely expose any of that. They start Xray system-wide, push all traffic through the tunnel, and hide routing behind a screen that's hard to find and harder to configure. Doing anything beyond the defaults means hand-editing JSON, and switching servers often restarts the core and drops every connection.
 
 Masir started from the opposite end. Routing comes first: rules are easy to write and easy to read, and nothing about them is watered down, so anything Xray can match, Masir can route. The core stays up while you change things, because Xray's own API can apply changes live. Servers from several subscriptions sit side by side, and any rule can point at any of them. And the tool should feel good to use every day: fast to pick a server, clear about what's running, quiet when everything works.
 
@@ -67,16 +67,8 @@ It's the client I wanted for myself, for living with Xray configs and moving bet
 
 The easiest way to use Masir is the desktop app. It lives in your menu bar / system tray, sets up the environment automatically, and installs the `masir` CLI tool into your `PATH` on first launch (`~/.local/bin/masir` on macOS/Linux, or user `PATH` on Windows).
 
-Download the installer for your system from the **[latest release](https://github.com/Gozargah/Masir/releases/latest)**:
+Download the desktop installer for your system from the **[latest release](https://github.com/Gozargah/Masir/releases/latest)**:
 
-| System | Package / Installer |
-|---|---|
-| macOS (Apple Silicon) | `masir-desktop-darwin-<version>-arm64.dmg` |
-| macOS (Intel) | `masir-desktop-darwin-<version>-amd64.dmg` |
-| Windows (x86-64 / ARM64) | `masir-desktop-setup-windows-<version>-<arch>.exe`, or portable `.zip` |
-| Linux (x86-64 / ARM64) | `.deb`, `.rpm`, or portable `.tar.gz` |
-
-> Arch Linux users can build with [`packaging/PKGBUILD`](packaging/PKGBUILD) via `makepkg -si`.
 
 ---
 
@@ -117,24 +109,22 @@ Enable command-line auto-completion for your shell:
 
 ```sh
 # zsh
-masir completion zsh > "${fpath[1]}/_masir"
-exec zsh
+echo 'source <(masir completion zsh)' >> ~/.zshrc
+source ~/.zshrc
 
-# bash (user-local; directory depends on your distro)
-mkdir -p ~/.local/share/bash-completion/completions
-masir completion bash > ~/.local/share/bash-completion/completions/masir
+# bash
+echo 'source <(masir completion bash)' >> ~/.bashrc
+source ~/.bashrc
 
 # fish
+mkdir -p ~/.config/fish/completions
 masir completion fish > ~/.config/fish/completions/masir.fish
 ```
 
 PowerShell:
 
 ```powershell
-# current session
-masir completion powershell | Out-String | Invoke-Expression
-
-# permanent
+if (!(Test-Path -Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force }
 Add-Content $PROFILE 'masir completion powershell | Out-String | Invoke-Expression'
 ```
 
