@@ -31,7 +31,7 @@ func (a *app) serverPicker(c *ui.Context, p palette) {
 	}
 	if len(servers) == 0 {
 		ui.Column(c.Key("server-empty")).Height(height).AlignItems(ui.Center).Justify(ui.Center).Gap(tw(1)).Children(func() {
-			label(c, "No matching outbounds", sizeSubhead, 18, 500, p.muted)
+			label(c, "No matching servers", sizeSubhead, 18, 500, p.muted)
 			label(c, "Try a different search term", sizeMicro, 14, 400, p.tertiary)
 		})
 		return
@@ -250,8 +250,7 @@ func (a *app) serverItem(c *ui.Context, p palette, s server) {
 	}
 }
 
-// serverRow is the server of the main page: the one in use, or the two ends apart when
-// there is none.
+// serverRow shows the selected server, or guidance when none is selected.
 func (a *app) serverRow(c *ui.Context, p palette) {
 	s, ok := a.active()
 	row := ui.ButtonBase(c.Key("server-row")).Padding(tw(2.5), tw(3)).Gap(tw(2)).Cursor(ui.CursorPointer).
@@ -264,24 +263,32 @@ func (a *app) serverRow(c *ui.Context, p palette) {
 	row.Children(func() {
 		flag, title, detail := serverTitle(s.cfg.GetName())
 		if !ok {
-			flag, title, detail = "🌐", "Select Outbound", ""
+			flag, title, detail = "🌐", "Select a server", ""
 		}
 		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(tw(1)).Children(func() {
 				flagElementSize(c, flag, 13*4.0/3, 13)
 				ltrLabel(c, title, sizeTitle, 17, 600, p.text)
 			})
+			subtitle := "Choose a server to connect"
+			if !ok && len(a.subscriptions.servers) == 0 {
+				subtitle = "Add a subscription to get started"
+				if !a.reachable {
+					subtitle = "Waiting for available servers"
+				}
+			}
 			if ok {
 				sub := s.subName
 				extra := detail
 				if extra == "" {
-					extra = "Default Outbound"
+					extra = "Default server"
 					if a.fallback() == pb.Fallback_FALLBACK_DIRECT {
-						extra = "Proxy Outbound"
+						extra = "Proxy server"
 					}
 				}
-				ltrLabel(c, sub+" • "+extra, sizeCaption, 14, 400, p.muted).MaxWidth(180)
+				subtitle = sub + " • " + extra
 			}
+			ltrLabel(c, subtitle, sizeCaption, 14, 400, p.muted).MaxWidth(180)
 		})
 		ui.Row(c).Gap(tw(1)).AlignItems(ui.Center).Shrink(0).Children(func() {
 			if ok {

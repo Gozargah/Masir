@@ -262,6 +262,9 @@ func TestHeightSettlesWhenDataArrivesAtRest(t *testing.T) {
 	tt.Frame()
 	asked = nil
 
+	// Both the placeholder and selected server have two lines. Include an
+	// incoming warning so this status actually changes the content height.
+	f.status.LastError = "Could not connect to the server"
 	a.applyStatus(f.status) // the first status: banner, server, update control
 	tt.Frame()
 	if len(asked) == 0 {

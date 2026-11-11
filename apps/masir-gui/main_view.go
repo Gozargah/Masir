@@ -176,11 +176,10 @@ func (a *app) banner(c *ui.Context, p palette) {
 func (a *app) emptyState(c *ui.Context, p palette) {
 	ui.Column(c).AlignItems(ui.Center).Gap(tw(3.5)).Padding(tw(6)).Radius(cardRadius).Background(p.card).Border(1, p.borderDefault).Children(func() {
 		ui.Box(c).Size(tw(12), tw(12)).Radius(tw(4)).Background(p.accentSurface).Center().Children(func() {
-			ui.Icon(c, iconRadio).FontSize(24).TextColor(p.accent)
+			ui.Icon(c, iconLayers).FontSize(24).TextColor(p.accent)
 		})
 		label(c, "No Subscriptions Added", sizeTitle, 17, 600, p.text)
-		a.subscriptionsButton(c, p)
-		label(c, "Add a subscription URL to import proxy outbounds and configure routing rules.", sizeCaption, 15, 400, p.muted).TextAlign(ui.Center)
+		label(c, "Add a subscription URL to import servers and configure routing rules.", sizeCaption, 15, 400, p.muted).TextAlign(ui.Center)
 		btn := ui.ButtonBase(c.Key("empty-add")).Height(36).Padding(0, tw(3.5)).Radius(tw(2)).Background(p.accent).Gap(tw(1.5)).Center().Cursor(ui.CursorPointer).Margin(tw(1), 0, 0)
 		btn.Children(func() {
 			ui.Icon(c, iconPlus).FontSize(15).TextColor(ui.Hex("#ffffff"))
