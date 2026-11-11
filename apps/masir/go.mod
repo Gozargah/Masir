@@ -3,10 +3,11 @@ module github.com/Gozargah/Masir/apps/masir
 go 1.27.3
 
 require (
-	github.com/charmbracelet/fang v1.0.0
+	aead.dev/minisign v0.3.0
 	github.com/Gozargah/Masir/libs/masir-core v0.0.0
 	github.com/Gozargah/Masir/libs/masir-daemon v0.0.0-00010101000000-000000000000
 	github.com/Gozargah/Masir/libs/masir-proto v0.0.0
+	github.com/charmbracelet/fang v1.0.0
 	github.com/orochaa/go-clack v0.1.21
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
@@ -18,7 +19,6 @@ require (
 )
 
 require (
-	aead.dev/minisign v0.3.0 // indirect
 	charm.land/lipgloss/v2 v2.0.0-beta.3.0.20251106193318-19329a3e8410 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/andybalholm/brotli v1.2.7 // indirect
@@ -44,7 +44,7 @@ require (
 	github.com/jackpal/go-nat-pmp v1.1.0 // indirect
 	github.com/juju/ratelimit v1.0.2 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
-	github.com/klauspost/cpuid/v2 v2.4.1 // indirect
+	github.com/klauspost/cpuid/v2 v2.4.2 // indirect
 	github.com/koron/go-ssdp v0.9.1 // indirect
 	github.com/libp2p/go-nat v1.0.1-0.20250821073202-01afc089f138 // indirect
 	github.com/libp2p/go-netroute v0.4.0 // indirect
@@ -55,6 +55,7 @@ require (
 	github.com/metacubex/hpke v0.1.0 // indirect
 	github.com/metacubex/mlkem v0.1.0 // indirect
 	github.com/miekg/dns v1.1.73 // indirect
+	github.com/molecule-man/go-brrr v1.2.0 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/mango v0.1.0 // indirect
 	github.com/muesli/mango-cobra v1.2.0 // indirect
@@ -69,7 +70,7 @@ require (
 	github.com/pires/go-proxyproto v0.16.0 // indirect
 	github.com/posthog/posthog-go v1.37.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af // indirect
+	github.com/refraction-networking/utls v1.8.3-0.20261108164504-a13c59ffe98b // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/vishvananda/netlink v1.3.1 // indirect
@@ -77,8 +78,8 @@ require (
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/xtls/libxray v1.261029.0 // indirect
-	github.com/xtls/reality v0.0.0-20261014101318-83f621788ca8 // indirect
-	github.com/xtls/xray-core v1.260327.1-0.20261029083850-0afec66085a8 // indirect
+	github.com/xtls/reality v0.0.0-20261108101329-4bb46b2afd8b // indirect
+	github.com/xtls/xray-core v1.260327.1-0.20261109052709-676eaf66f8f0 // indirect
 	github.com/yuin/gopher-lua v1.1.2 // indirect
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb // indirect
 	golang.org/x/crypto v0.58.0 // indirect

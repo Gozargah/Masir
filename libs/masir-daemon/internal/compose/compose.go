@@ -158,21 +158,33 @@ func Build(in Input) (Output, error) {
 		if len(tunDNS) == 0 {
 			tunDNS = st.Settings.DNSServers
 		}
+		gateways := []string{st.Settings.TunGateway}
+		if st.Settings.TunGateway != "" {
+			// Provide an IPv6 ULA gateway prefix to match the ::/0 routing in
+			// autoSystemRoutingTable and ensure IPv6 traffic has a valid interface address.
+			gateways = append(gateways, "fd00::1/64")
+		}
 		settings := obj{
 			"autoOutboundsInterface": "auto",
 			"autoSystemRoutingTable": []string{"0.0.0.0/0", "::/0"},
 			"dns":                    tunDNS,
-			"gateway":                []string{st.Settings.TunGateway},
+			"gateway":                gateways,
 			"mtu":                    1500,
 		}
 		if in.TunName != "" {
 			settings["name"] = in.TunName
 		}
-		// Windows also sends lookups to the other adapters' DNS servers, bypassing the
-		// TUN; Xray's filter keeps port 53 inside it, where it's resolved through Xray.
-		// The tun DNS servers above lie within autoSystemRoutingTable, as it requires.
-		if goos == "windows" {
-			settings["autoSystemWfpBlockLeak"] = []string{"dns"}
+		switch goos {
+		case "windows":
+			// Windows also sends lookups to the other adapters' DNS servers, bypassing the
+			// TUN; Xray's filter keeps port 53 inside it, where it's resolved through Xray.
+			// "misconfigtun" blocks traffic for unrouted or misconfigured IP versions.
+			settings["autoSystemWfpBlockLeak"] = []string{"dns", "misconfigtun"}
+			settings["desc"] = "Masir"
+		case "linux", "freebsd":
+			// Points systemd-resolved (via resolvectl) or resolvconf to the TUN gateway,
+			// preventing system DNS queries from leaking outside the TUN interface.
+			settings["autoSystemDnsToGateway"] = true
 		}
 		inbounds = append(inbounds, obj{"tag": TunInboundTag, "protocol": "tun", "settings": settings, "sniffing": sniffing(true)})
 	}
@@ -204,7 +216,7 @@ func Build(in Input) (Output, error) {
 	rules := []any{
 		obj{"ruleTag": "masir-anti-loop", "process": []string{"self/", "xray/"}, "outboundTag": "direct"},
 		obj{"ruleTag": "masir-dns-bootstrap", "inboundTag": []string{"dns-bootstrap"}, "outboundTag": "direct"},
-		obj{"ruleTag": "masir-dns-hijack", "port": 53, "network": "udp", "outboundTag": "dns-out"},
+		obj{"ruleTag": "masir-dns-hijack", "port": 53, "network": "tcp,udp", "outboundTag": "dns-out"},
 		upstream,
 	}
 	userIPRules := false
