@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -45,12 +46,38 @@ func terminalDoesBidi() bool {
 		strings.Contains(os.Getenv("TERM"), "mlterm")
 }
 
+var (
+	visualMu    sync.RWMutex
+	visualCache = make(map[string]string, 256)
+)
+
 // Visual puts right-to-left text (a Persian config name, say) in display order for
 // terminals that don't do bidi. Apply it exactly once, to text from outside masir:
 // subscription and config names, rule names, error messages. go-clack's options and
 // the picker's items apply it themselves. Color codes are skipped, since reordering
 // would scatter their characters.
 func Visual(s string) string {
+	if s == "" {
+		return ""
+	}
+	visualMu.RLock()
+	if v, ok := visualCache[s]; ok {
+		visualMu.RUnlock()
+		return v
+	}
+	visualMu.RUnlock()
+
+	v := computeVisual(s)
+
+	visualMu.Lock()
+	if len(visualCache) < 2048 {
+		visualCache[s] = v
+	}
+	visualMu.Unlock()
+	return v
+}
+
+func computeVisual(s string) string {
 	if strings.Contains(s, "\n") { // each line is its own paragraph
 		lines := strings.Split(s, "\n")
 		for i, l := range lines {
@@ -135,19 +162,23 @@ func Pad(s string, w int) string {
 	return s
 }
 
+// TermSize returns the output terminal's width and height, or (80, 24) when unreadable.
+func TermSize() (int, int) {
+	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 && h > 0 {
+		return w, h
+	}
+	return 80, 24
+}
+
 // TermWidth is the output terminal's width, 80 when it can't be read.
 func TermWidth() int {
-	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
-		return w
-	}
-	return 80
+	w, _ := TermSize()
+	return w
 }
 
 func termHeight() int {
-	if _, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil && h > 0 {
-		return h
-	}
-	return 24
+	_, h := TermSize()
+	return h
 }
 
 func skipEscape(s string, i int) int {

@@ -148,6 +148,7 @@ func pickNode(all []subNodes, msg, activeKey string) (string, error) {
 	}
 
 	pr.picker = ui.NewPicker(ui.PickParams{
+		Context:   ctx,
 		Message:   msg,
 		Groups:    groups,
 		Initial:   []string{activeKey},

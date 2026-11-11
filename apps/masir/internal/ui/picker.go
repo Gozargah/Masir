@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"slices"
@@ -43,6 +44,7 @@ type PickGroup struct {
 }
 
 type PickParams struct {
+	Context  context.Context
 	Message  string
 	Groups   []PickGroup
 	Initial  []string // preselected (multi), or where the cursor starts (single)
@@ -88,10 +90,13 @@ type Picker struct {
 	dirty   bool
 
 	lastVisible string
+
+	cachedRows []row
+	rowsDirty  bool
 }
 
 func NewPicker(p PickParams) *Picker {
-	pk := &Picker{p: p, selected: map[string]bool{}, suffix: map[string]string{}, pending: map[string]bool{}}
+	pk := &Picker{p: p, selected: map[string]bool{}, suffix: map[string]string{}, pending: map[string]bool{}, rowsDirty: true}
 	if p.Multi {
 		listed := map[string]bool{}
 		for _, g := range p.Groups {
@@ -190,6 +195,7 @@ func (pk *Picker) loadMore() {
 			pk.more.err = err.Error()
 		}
 		pk.dirty = true
+		pk.rowsDirty = true
 		pk.mu.Unlock()
 	}()
 }
@@ -257,6 +263,25 @@ func (pk *Picker) moreRows(q []string, listed map[string]bool) []row {
 }
 
 func (pk *Picker) rows() []row {
+	pk.mu.Lock()
+	if !pk.rowsDirty && pk.cachedRows != nil {
+		r := pk.cachedRows
+		pk.mu.Unlock()
+		return r
+	}
+	pk.mu.Unlock()
+
+	rows := pk.buildRows()
+
+	pk.mu.Lock()
+	pk.cachedRows = rows
+	pk.rowsDirty = false
+	pk.mu.Unlock()
+
+	return rows
+}
+
+func (pk *Picker) buildRows() []row {
 	q := words(string(pk.filter))
 	match := func(it PickItem) bool { return len(q) == 0 || matchWords(q, it) }
 	listed := map[string]bool{}
@@ -335,6 +360,10 @@ func (pk *Picker) Run() ([]string, error) {
 	buf := make([]byte, 256)
 	tick := time.Now()
 	for {
+		if pk.p.Context != nil && pk.p.Context.Err() != nil {
+			pk.render(true, "")
+			return nil, pk.p.Context.Err()
+		}
 		if readable(fd, 80*time.Millisecond) {
 			n, err := os.Stdin.Read(buf)
 			if err != nil {
@@ -478,9 +507,9 @@ func (pk *Picker) handle(k key) (done bool, vals []string, err error) {
 	case "down":
 		pk.cursor = pk.firstSelectable(rows, pk.cursor+1, 1)
 	case "pgup":
-		pk.cursor = pk.firstSelectable(rows, max(pk.cursor-pk.window(), 0), 1)
+		pk.cursor = pk.firstSelectable(rows, max(pk.cursor-pk.window(termHeight()), 0), 1)
 	case "pgdn":
-		pk.cursor = pk.firstSelectable(rows, min(pk.cursor+pk.window(), len(rows)-1), -1)
+		pk.cursor = pk.firstSelectable(rows, min(pk.cursor+pk.window(termHeight()), len(rows)-1), -1)
 	case "home":
 		pk.cursor = pk.firstSelectable(rows, 0, 1)
 	case "end":
@@ -570,6 +599,9 @@ func (pk *Picker) setFilter(f []rune) {
 		pk.loadMore()
 	}
 	pk.offset = 0
+	pk.mu.Lock()
+	pk.rowsDirty = true
+	pk.mu.Unlock()
 	pk.cursor = pk.firstSelectable(pk.rows(), 0, 1)
 }
 
@@ -585,6 +617,9 @@ func (pk *Picker) toggle(v string) {
 	// deselectable) once the search is cleared.
 	if it, ok := pk.moreItem(v); ok && !pk.listed(v) {
 		pk.custom = append(pk.custom, it)
+		pk.mu.Lock()
+		pk.rowsDirty = true
+		pk.mu.Unlock()
 	}
 }
 
@@ -622,6 +657,9 @@ func (pk *Picker) addCustom(v string) {
 	}
 	if !slices.ContainsFunc(pk.custom, func(it PickItem) bool { return it.Value == v }) {
 		pk.custom = append(pk.custom, PickItem{Value: v, Label: v})
+		pk.mu.Lock()
+		pk.rowsDirty = true
+		pk.mu.Unlock()
 	}
 	if !pk.selected[v] {
 		pk.toggle(v)
@@ -660,8 +698,8 @@ func (pk *Picker) jumpGroup(rows []row, dir int) int {
 	return pk.firstSelectable(rows, i+1, 1)
 }
 
-func (pk *Picker) window() int {
-	return min(max(termHeight()-7, 5), 20)
+func (pk *Picker) window(height int) int {
+	return min(max(height-7, 5), 20)
 }
 
 func (pk *Picker) labelFor(v string) string {
@@ -703,7 +741,7 @@ var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"
 // render redraws the picker in place. final collapses it to clack's answered form:
 // summary set on submit, empty on cancel.
 func (pk *Picker) render(final bool, summary string) {
-	width := TermWidth()
+	width, height := TermSize()
 	var lines []string
 	add := func(s string) { lines = append(lines, Truncate(s, width-1)) }
 
@@ -738,7 +776,7 @@ func (pk *Picker) render(final bool, summary string) {
 		add(bar + Dim("filter: ") + Visual(string(pk.filter)) + "▏ " + Dim(fmt.Sprintf("%d match%s", matches, plural(matches, "es"))))
 	}
 
-	win := pk.window()
+	win := pk.window(height)
 	if pk.cursor < pk.offset {
 		pk.offset = pk.cursor
 	}
