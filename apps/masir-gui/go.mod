@@ -3,9 +3,9 @@ module github.com/Gozargah/Masir/apps/masir-gui
 go 1.27.3
 
 require (
-	github.com/egoist/mygo v0.7.4
 	github.com/Gozargah/Masir/libs/masir-core v0.0.0
 	github.com/Gozargah/Masir/libs/masir-proto v0.0.0
+	github.com/egoist/mygo v0.8.3
 	golang.org/x/mod v0.42.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.43.0

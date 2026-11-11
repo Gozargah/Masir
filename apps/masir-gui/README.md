@@ -61,6 +61,8 @@ publish a `masir-desktop-<from>-to-<version>-<os>-<arch>.delta` from the previou
 which is what an update downloads when it applies; a delta that doesn't apply falls back to
 the whole archive.
 
+The GUI uses MyGo 0.8.3.
+
 The build applies the patches in `patches/` to MyGo for its duration.
 `mygo-router-page-transition.patch` lets the panel place its own page transition;
 `mygo-darwin-popover-resize.patch` keeps the macOS window height in sync with it. The
