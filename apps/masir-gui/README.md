@@ -68,7 +68,11 @@ The build applies the patches in `patches/` to MyGo for its duration.
 `mygo-darwin-popover-resize.patch` keeps the macOS window height in sync with it. The
 macOS popover animated a content size change on AppKit's own schedule, so the panel's
 height ran ahead of the lists it holds; the patch turns that animation off so the shell can
-follow the springs every frame, as the other platforms do. The Windows resize fixes, which
+follow the springs every frame, as the other platforms do. MyGo 0.8.3 also defers a resize
+redraw after a transaction-presented frame, which makes continuously resized popovers
+alternate between stretched and correctly sized content. The patch lets a popover draw
+its new size once the previous run-loop pass has committed, while retaining the
+same-pass drawable guard and ordinary-window behavior. The Windows resize fixes, which
 kept a stale frame from stretching into a new window size, are in MyGo 0.7.3 and need no
 patch. The patched copy is made in `.mygo-patched` and removed, and `go.mod`/`go.sum` are
 put back, after the build. `make gui-dev` uses the same patches and `mygo_patched` build

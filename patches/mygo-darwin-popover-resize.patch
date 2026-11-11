@@ -13,3 +13,75 @@
  	if _, r, _ := w.popoverAnchor(); w.flyout.Tray == nil {
  		msgSetRect(w.popover, sel("setPositioningRect:"), r)
  	}
+--- a/internal/darwin/surface.go
++++ b/internal/darwin/surface.go
+@@ -517,6 +517,18 @@
+ 	armPass()
+ 	s.lastFrame = time.Now()
+ 	s.deferred = s.send(platform.SurfaceEvent{Kind: platform.SurfaceFrame, Paced: paced}) && paced
++}
++
++// deferDisplay keeps AppKit from drawing a frame before the last transaction
++// has committed. Called by updateLayer, before sending a SurfaceFrame.
++func (s *surface) deferDisplay(liveResize, transaction bool) bool {
++	if liveResize || s.w.popover != 0 && s.framePass != caPass {
++		// Popovers resize continuously with the app's springs. After the old
++		// pass committed, draw at the new size before AppKit commits this one;
++		// deferring every resize alternates stretched and correctly sized frames.
++		return false
++	}
++	return s.resized && transaction || !s.resized && s.framePass == caPass
+ }
+ 
+ // presentsWithTransaction reports whether the GPU renderer's CAMetalLayer
+@@ -1198,7 +1210,7 @@
+ 			// live resize, as zooming animates it, displays the view for
+ 			// each of its sizes within one pass of the run loop,
+ 			// committing each: those frames draw at once too.
+-			if send(self, "inLiveResize") == 0 && (s.resized && s.presentsWithTransaction() || !s.resized && s.framePass == caPass) {
++			if s.deferDisplay(send(self, "inLiveResize") != 0, s.presentsWithTransaction()) {
+ 				s.lastFrame = time.Now()
+ 				s.RequestFrame()
+ 				return
+--- a/internal/darwin/surface_frame_test.go
++++ b/internal/darwin/surface_frame_test.go
+@@ -115,3 +115,39 @@
+ 		t.Fatalf("a closed window drew %d frames (soon %v)", len(h.paced)-4, s.soon)
+ 	}
+ }
++
++// A spring-sized popover changes size after each drawn frame. Once the previous
++// pass committed, the resize must draw with the window, rather than stretching
++// the last frame until another display tick. Ordinary windows keep #1044's guard.
++func TestPopoverResizeDrawsAfterCommittedFrame(t *testing.T) {
++	oldPass := caPass
++	caPass = 42
++	defer func() { caPass = oldPass }()
++	for _, tc := range []struct {
++		name                                                      string
++		popover, resized, transaction, samePass, live, deferFrame bool
++	}{
++		{"popover-next-pass", true, true, true, false, false, false},
++		{"popover-same-pass", true, true, true, true, false, true},
++		{"popover-direct-present", true, true, false, true, false, false},
++		{"popover-duplicate-display", true, false, false, true, false, true},
++		{"popover-new-frame", true, false, false, false, false, false},
++		{"window-resize-after-transaction", false, true, true, false, false, true},
++		{"window-same-pass", false, true, true, true, false, true},
++		{"live-resize", true, true, true, true, true, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			w := &window{}
++			if tc.popover {
++				w.popover = 1
++			}
++			s := &surface{w: w, resized: tc.resized, framePass: 41}
++			if tc.samePass {
++				s.framePass = caPass
++			}
++			if got := s.deferDisplay(tc.live, tc.transaction); got != tc.deferFrame {
++				t.Fatalf("defer resize = %v, want %v", got, tc.deferFrame)
++			}
++		})
++	}
++}
