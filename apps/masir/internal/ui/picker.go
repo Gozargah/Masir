@@ -866,17 +866,27 @@ func (pk *Picker) help(rows []row) string {
 
 func (pk *Picker) draw(lines []string, final bool) {
 	var b strings.Builder
+	b.WriteString("\x1b[?2026h")
 	if pk.lines > 0 {
 		b.WriteString("\r")
 		if pk.lines > 1 {
 			fmt.Fprintf(&b, "\x1b[%dA", pk.lines-1)
 		}
+	}
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteString("\r\n")
+		}
+		b.WriteString(line)
+		b.WriteString("\x1b[K")
+	}
+	if pk.lines > len(lines) {
 		b.WriteString("\x1b[J")
 	}
-	b.WriteString(strings.Join(lines, "\r\n"))
 	if final {
 		b.WriteString("\r\n")
 	}
+	b.WriteString("\x1b[?2026l")
 	os.Stdout.WriteString(b.String())
 	pk.lines = len(lines)
 }
