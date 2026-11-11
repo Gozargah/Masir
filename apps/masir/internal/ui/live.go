@@ -106,15 +106,26 @@ func (l *Live) rows() [][2]string {
 // draw expects l.mu held.
 func (l *Live) draw() {
 	var b strings.Builder
+	b.WriteString("\x1b[?2026h")
 	if l.lines > 0 {
 		b.WriteString("\r")
 		if l.lines > 1 {
 			fmt.Fprintf(&b, "\x1b[%dA", l.lines-1)
 		}
-		b.WriteString("\x1b[J")
 	}
 	tree := Tree(l.rows())
-	b.WriteString(tree)
+	lines := strings.Split(tree, "\n")
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteString("\r\n")
+		}
+		b.WriteString(line)
+		b.WriteString("\x1b[K")
+	}
+	if l.lines > len(lines) {
+		b.WriteString("\x1b[J")
+	}
+	b.WriteString("\x1b[?2026l")
 	os.Stdout.WriteString(b.String())
-	l.lines = strings.Count(tree, "\n") + 1
+	l.lines = len(lines)
 }
