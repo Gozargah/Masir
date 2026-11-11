@@ -16,7 +16,7 @@
 <p><strong>The Xray client that routes the way you think.</strong></p>
 
 <p>
-  A native desktop app and CLI with the full power of Xray routing.<br>
+  A native desktop app and CLI for managing Xray connections and routing.<br>
   Route by app or site. Switch servers and change rules without restarting the core.
 </p>
 
