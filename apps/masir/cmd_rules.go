@@ -229,6 +229,7 @@ func pickMatcher(key string, current []string) ([]string, error) {
 		return pickApps(current)
 	case "domain":
 		return ui.NewPicker(ui.PickParams{
+			Context: appCtx,
 			Message: "Which websites?", Multi: true, Required: true, Initial: current,
 			AddCustom: true, Validate: validateDomain,
 			Groups: []ui.PickGroup{geoGroup("By country", siteCountries), geoGroup("Sites & services", siteServices)},
@@ -236,6 +237,7 @@ func pickMatcher(key string, current []string) ([]string, error) {
 		}).Run()
 	case "ip":
 		return ui.NewPicker(ui.PickParams{
+			Context: appCtx,
 			Message: "Which IP addresses?", Multi: true, Required: true, Initial: current,
 			AddCustom: true, Validate: validateIP,
 			Groups: []ui.PickGroup{geoGroup("By country", ipCountries), geoGroup("Other", ipOther)},
@@ -271,6 +273,7 @@ func pickMatcher(key string, current []string) ([]string, error) {
 
 func pickApps(current []string) ([]string, error) {
 	return ui.NewPicker(ui.PickParams{
+		Context: appCtx,
 		Message: "Pick an app", Multi: true, Required: true, Initial: current,
 		AddCustom: true, Validate: func(v string) error {
 			if strings.TrimSpace(v) == "" {
