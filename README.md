@@ -13,7 +13,7 @@
   <a href="#platform-support"><img src="https://img.shields.io/badge/macOS_%C2%B7_Linux_%C2%B7_Windows-30363d?style=flat" alt="macOS, Linux and Windows"></a>
 </p>
 
-<p><strong>The Xray client that routes the way you think.</strong></p>
+<p><strong>The Xray client that routes the way you want.</strong></p>
 
 <p>
   A native desktop app and CLI for managing Xray connections and routing.<br>
