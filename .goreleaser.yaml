@@ -1,0 +1,116 @@
+# Builds masir (a single executable: the CLI and, as `masir daemon run`, the daemon)
+# for each OS and architecture and publishes it, bundled with geo data, as a GitHub
+# release. The updater picks archives by these names (see libs/masir-daemon/internal/update).
+version: 2
+project_name: masir
+dist: build/release
+
+before:
+  hooks:
+    - sh scripts/fetch-geo.sh
+    - go run ./libs/masir-core/cmd/record-geo build/geo
+
+builds:
+  - id: masir
+    dir: apps/masir
+    binary: masir
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux, windows] # Windows builds embed the Wintun driver TUN needs
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+      # index returns "" when the variable is absent, so CI snapshots build with
+      # analytics disabled instead of failing the template.
+      - -X github.com/Gozargah/Masir/libs/masir-daemon/internal/analytics.apiKey={{ index .Env "MASIR_POSTHOG_KEY" }}
+      - -X github.com/Gozargah/Masir/libs/masir-daemon/internal/analytics.host={{ index .Env "MASIR_POSTHOG_HOST" }}
+      # The minisign public key(s) `masir update` checks releases against; empty in CI
+      # snapshots, which then don't check. The release workflow requires it.
+      - -X github.com/Gozargah/Masir/libs/masir-daemon/internal/update.publicKeys={{ index .Env "MASIR_UPDATE_PUBKEY" }}
+
+archives:
+  - id: masir
+    ids: [masir]
+    # Every download is named <app>-<role>-<os>-<version>-<arch>; the updater asks for
+    # exactly these names (see ArchiveName and UpdateArchiveName in
+    # libs/masir-daemon/internal/update). This one holds masir and the geo data, so a
+    # tarball is a whole install.
+    name_template: "masir-cli-{{ .Os }}-{{ .Version }}-{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - src: build/geo/*.dat
+        strip_parent: true
+      - src: build/geo/installed-geo.json
+        strip_parent: true
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^Merge ", "^chore"]
+
+release:
+  # Published only once every system's app is uploaded (the `publish` job in the release
+  # workflow), so a release never appears with half its downloads missing.
+  draft: true
+  github:
+    owner: Gozargah
+    name: Masir
+  # The first thing on the release page: which file to download, per system, with the
+  # updater's own files folded away at the end. The names here are the assets the build
+  # uploads (see scripts/build-gui.sh and .github/workflows/release.yml); the publish job
+  # checks every link below before the release leaves draft, so a name that drifts from
+  # what was uploaded cannot reach the page.
+  header: |
+    ## Download Masir GUI
+
+    Desktop updates reuse the app's verified payload to update the background service,
+    avoiding a separate CLI archive download once the daemon supports it. Deltas remain
+    available to reduce bandwidth. Older daemons use the existing two-part transition.
+
+    Most people want the **installer** for their system. Both columns are the same app;
+    the **portable** one runs from a folder without installing.
+
+    | | Installer | Portable |
+    |---|---|---|
+    | **macOS** | [Apple Silicon](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-darwin-{{ .Version }}-arm64.dmg) · [Intel](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-darwin-{{ .Version }}-amd64.dmg) | [Apple Silicon](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-portable-darwin-{{ .Version }}-arm64.tar.gz) · [Intel](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-portable-darwin-{{ .Version }}-amd64.tar.gz) |
+    | **Windows** | [x64](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-setup-windows-{{ .Version }}-amd64.exe) · [ARM64](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-setup-windows-{{ .Version }}-arm64.exe) | [x64](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-portable-windows-{{ .Version }}-amd64.zip) · [ARM64](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-portable-windows-{{ .Version }}-arm64.zip) |
+    | **Linux** | [x64](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-linux-{{ .Version }}-amd64.deb) · [ARM64](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-linux-{{ .Version }}-arm64.deb) · [x64 RPM](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-linux-{{ .Version }}-amd64.rpm) · [ARM64 RPM](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-linux-{{ .Version }}-arm64.rpm) · [Arch PKGBUILD](https://github.com/Gozargah/Masir/blob/{{ .Tag }}/packaging/PKGBUILD) | [x64](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-portable-linux-{{ .Version }}-amd64.tar.gz) · [ARM64](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-desktop-portable-linux-{{ .Version }}-arm64.tar.gz) |
+
+    ## Masir CLI
+
+    CLI updates now install the executable and bundled geo files together from the same
+    signed archive used for offline installation. Separate CLI update archives are no
+    longer published. Clients with the previous thin/full updater fall back to the full archive automatically;
+    their first update installs the executable only, and subsequent updates also install
+    geo data. Bundled geo data replaces the installed pair after checking your enabled
+    rules; use `masir update geo` for the latest independently published data.
+
+    One executable: the CLI, and `masir daemon run` is the daemon. Unpack it and put
+    `masir` on your PATH; the app does this for you when you install it.
+
+    | | Download |
+    |---|---|
+    | **macOS** | [Apple Silicon](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-cli-darwin-{{ .Version }}-arm64.tar.gz) · [Intel](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-cli-darwin-{{ .Version }}-amd64.tar.gz) |
+    | **Windows** | [x64](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-cli-windows-{{ .Version }}-amd64.zip) · [ARM64](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-cli-windows-{{ .Version }}-arm64.zip) |
+    | **Linux** | [x64](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-cli-linux-{{ .Version }}-amd64.tar.gz) · [ARM64](https://github.com/Gozargah/Masir/releases/download/{{ .Tag }}/masir-cli-linux-{{ .Version }}-arm64.tar.gz) |
+
+    <details><summary>What are the other files?</summary>
+
+    - `masir-desktop-<old>-to-<new>-…delta` — the change from the previous release; the
+      app uses it when it applies, and the whole archive otherwise.
+    - `update-<os>-<arch>.json` — the signed update manifest the app reads.
+    - `masir-desktop-update-windows-…tar.gz` — the Windows archive the updater reads.
+    - `checksums.txt`, `checksums-desktop.txt` and their `.minisig` — verify a download;
+      [docs/updates.md](https://github.com/Gozargah/Masir/blob/master/docs/updates.md)
+      has the commands and the whole update flow.
+
+    </details>

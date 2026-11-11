@@ -1,0 +1,83 @@
+--- a/cmd/mygo/bundle.go
++++ b/cmd/mygo/bundle.go
+@@ -385,6 +385,10 @@
+ // macOS: elsewhere only the executable's ad-hoc signature from the Go linker
+ // remains.
+ func codesign(c *Config, path, identity string, production bool) error {
++	return codesignPrepared(c, path, identity, production, nil)
++}
++
++func codesignPrepared(c *Config, path, identity string, production bool, prepare func() error) error {
+ 	if c.MacOS.ProvisioningProfile != "" && identity == "-" {
+ 		if production {
+ 			return errProfileAdHoc
+@@ -399,6 +403,11 @@
+ 	}
+ 	if err := signNestedCode(c, path, identity, production); err != nil {
+ 		return err
++	}
++	if prepare != nil {
++		if err := prepare(); err != nil {
++			return err
++		}
+ 	}
+ 	entitlements := ""
+ 	if c.MacOS.Entitlements != "" {
+--- a/cmd/mygo/build.go
++++ b/cmd/mygo/build.go
+@@ -4,6 +4,7 @@
+ 	"context"
+ 	"fmt"
+ 	"os"
++	"os/exec"
+ 	"path/filepath"
+ 	"runtime"
+ 	"slices"
+@@ -299,7 +300,7 @@
+ 		if runtime.GOOS == "darwin" {
+ 			t = con.start("Signing " + filepath.Base(app))
+ 		}
+-		if err := t.end(codesign(c, app, opts.sign, true), "Signed "+filepath.Base(app)); err != nil {
++		if err := t.end(codesignPrepared(c, app, opts.sign, true, func() error { return prepareResources(c, filepath.Join(app, "Contents", "Resources"), goos, goarch) }), "Signed "+filepath.Base(app)); err != nil {
+ 			return nil, err
+ 		}
+ 		artifacts = append(artifacts, app)
+@@ -330,6 +331,9 @@
+ 				return nil, err
+ 			}
+ 		}
++		if err := prepareResources(c, stage, goos, goarch); err != nil {
++			return nil, err
++		}
+ 		artifacts = append(artifacts, exe)
+ 	default:
+ 		exe := filepath.Join(stage, c.slug())
+@@ -341,6 +345,9 @@
+ 			return nil, err
+ 		}
+ 		if err := copyResources(res, stage); err != nil {
++			return nil, err
++		}
++		if err := prepareResources(c, stage, goos, goarch); err != nil {
+ 			return nil, err
+ 		}
+ 		artifacts = append(append(artifacts, exe), files...)
+@@ -651,3 +658,18 @@
+ 	}
+ 	return b.String()
+ }
++
++// prepareResources runs a build-time finalizer after nested executable signing and
++// before bundle sealing, packages and updater archives. The executable comes from
++// the trusted build environment, never an update feed.
++func prepareResources(c *Config, dir, goos, goarch string) error {
++	tool := os.Getenv("MYGO_PREPARE_RESOURCES")
++	if tool == "" {
++		return nil
++	}
++	cmd := exec.Command(tool, dir, c.Version, goos, goarch)
++	if out, err := cmd.CombinedOutput(); err != nil {
++		return fmt.Errorf("prepare resources: %v: %s", err, out)
++	}
++	return nil
++}

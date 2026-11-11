@@ -1,0 +1,121 @@
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"math"
+	"runtime"
+
+	"github.com/egoist/mygo"
+
+	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
+)
+
+// updateTray shows the state in the menu bar: the logo is green while masir is on.
+func (a *app) updateTray(t *mygo.Tray) {
+	if t == nil {
+		return
+	}
+	on := a.connected()
+	if on != a.trayOn {
+		a.trayOn = on
+		if icon, err := trayIcon(on); err == nil {
+			// Off: black, which the menu bar tints. On: green, which it must leave as it is.
+			_ = t.SetIcon(icon, runtime.GOOS == "darwin" && !on)
+		}
+	}
+	t.SetToolTip(a.tooltip())
+}
+
+func (a *app) tooltip() string {
+	mode := "Tunnel"
+	if a.fallback() == pb.Fallback_FALLBACK_DIRECT {
+		mode = "Direct"
+	}
+	if a.connected() {
+		s := fmt.Sprintf("Masir: Connected · %s", mode)
+		if srv, ok := a.active(); ok {
+			_, name, _ := serverTitle(srv.cfg.GetName())
+			s += " (" + name + ")"
+		}
+		return s
+	}
+	return "Masir: Disconnected · " + mode
+}
+
+// trayGreen is the logo while masir is on, the same green as the status dot.
+var trayGreen = color.NRGBA{R: 0, G: 214, B: 136, A: 255}
+
+// trayBlue is the logo while masir is off outside the macOS menu bar: the accent color,
+// which shows on the light and the dark taskbars alike.
+var trayBlue = color.NRGBA{R: 10, G: 132, B: 255, A: 255}
+
+// trayIcon draws the Masir logo: 45° angled parallel lines with rounded caps.
+// Off: black on transparent for macOS to tint, and accent blue on other systems.
+// On: green, matching the status dot.
+func trayIcon(on bool) ([]byte, error) {
+	const size, ss = 32, 4 // pixels, and samples per pixel side
+	// Logo geometry from redesign: 3 parallel lines angled at 45° with rounded caps.
+	// Matches app icon alignment:
+	// - Left line: bottom cap aligns with center line bottom along perpendicular baseline.
+	// - Center line: full diagonal.
+	// - Right line: top cap aligns with center line top along perpendicular baseline.
+	const halfW = 5.4 / 2
+
+	lines := [3][2][2]float64{
+		{{4.33, 17.41}, {12.13, 9.62}},  // Left line: bottom-aligned with center
+		{{9.46, 22.54}, {22.54, 9.46}},   // Center line
+		{{19.87, 22.38}, {27.67, 14.59}}, // Right line: top-aligned with center
+	}
+
+	distToLines := func(x, y float64) float64 {
+		best := math.MaxFloat64
+		for _, l := range lines {
+			x1, y1 := l[0][0], l[0][1]
+			x2, y2 := l[1][0], l[1][1]
+			dx, dy := x2 - x1, y2 - y1
+			l2 := dx*dx + dy*dy
+			t := math.Max(0, math.Min(1, ((x-x1)*dx+(y-y1)*dy)/l2))
+			d := math.Hypot(x-(x1+t*dx), y-(y1+t*dy))
+			if d < best {
+				best = d
+			}
+		}
+		return best
+	}
+
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	for py := 0; py < size; py++ {
+		for px := 0; px < size; px++ {
+			hits := 0
+			for sy := 0; sy < ss; sy++ {
+				for sx := 0; sx < ss; sx++ {
+					x := float64(px) + (float64(sx)+0.5)/ss
+					y := float64(py) + (float64(sy)+0.5)/ss
+					if distToLines(x, y) <= halfW {
+						hits++
+					}
+				}
+			}
+			if hits > 0 {
+				ink := color.NRGBA{A: 255}
+				switch {
+				case on:
+					ink = trayGreen
+				case runtime.GOOS != "darwin":
+					ink = trayBlue
+				}
+				ink.A = uint8(255 * hits / (ss * ss))
+				img.SetNRGBA(px, py, ink)
+			}
+		}
+	}
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
