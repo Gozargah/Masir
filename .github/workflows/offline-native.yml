@@ -1,0 +1,70 @@
+name: Offline native service tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/offline-native.yml'
+      - 'apps/masir/offline_native*test.go'
+      - 'apps/masir/desktop_import*.go'
+      - 'libs/masir-daemon/desktop.go'
+      - 'libs/masir-daemon/internal/server/desktop*.go'
+      - 'libs/masir-daemon/internal/server/rootcontrol*.go'
+      - 'libs/masir-daemon/internal/update/*.go'
+      - 'libs/masir-core/service/*.go'
+      - 'apps/masir/service_darwin.go'
+      - 'libs/masir-core/fileops/*.go'
+      - 'libs/masir-core/geopack/*.go'
+      - 'libs/masir-core/updatebundle/*.go'
+      - 'apps/masir/daemon.go'
+
+permissions:
+  contents: read
+
+jobs:
+  native-service:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache-dependency-path: '**/go.sum'
+      - name: Reproduce a Homebrew-owned legacy parent on the disposable macOS runner
+        if: runner.os == 'macOS'
+        run: |
+          sudo mkdir -p /usr/local/lib
+          sudo chown "$(id -u):$(id -g)" /usr/local/lib
+          sudo chmod 0755 /usr/local/lib
+      - name: Test Windows protected installation and hostile legacy resources
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cd libs/masir-core
+          go test -count=1 -run '^TestRename(WaitsForWindowsSharingRelease|KeepsPermanentWindowsErrors|TimesOutWithoutChangingLockedBytes)$' -v ./fileops
+          go test -count=1 -run '^TestFreshWindowsInstallExcludesTheLimitedToken$' -v ./geopack
+          cd ../masir-daemon
+          go test -count=1 -run '^TestWindows(LegacySnapshotRejectsUntrustedExecutable|OfflineSnapshotRejectsLinks|PinnedDirectoryAllowsVerifiedFileReplacement)$' -v ./internal/server
+      - name: Test macOS definition rewriting and untrusted legacy snapshots
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cd libs/masir-core
+          go test -count=1 -run '^TestLegacyDefinitionMovesOnlyExecutable$' -v ./service
+          cd ../masir-daemon
+          go test -count=1 -run '^TestLegacyDarwin' -v ./internal/server
+      - name: Test only native service lifecycle and previously uncovered failure paths
+        shell: bash
+        env:
+          MASIR_OFFLINE_NATIVE: '1'
+          MASIR_ANALYTICS: 'off'
+          GH_TOKEN: ${{ github.token }}
+          MASIR_FIXTURE_PUBKEY: ${{ vars.MASIR_UPDATE_PUBKEY }}
+        run: |
+          cd apps/masir
+          go test -count=1 -timeout=12m -run '^TestOfflineNativeServiceLifecycle$' -v .

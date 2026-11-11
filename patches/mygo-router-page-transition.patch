@@ -1,0 +1,32 @@
+--- a/ui/router.go
++++ b/ui/router.go
+@@ -67,6 +67,16 @@
+ 	// easing out over 250 ms as they slide, 150 ms as they fade.
+ 	Transition Transition
+ 	Animation  *Animation
++
++	// PageTransition, if set, places the two pages of a change in place of
++	// the default transition: it is called with the page coming in and the
++	// one going out, how far the change has come from 0 to 1, and its
++	// direction, 1 going deeper, -1 back up and 0 across. The pages are in
++	// the router's box, which clips them; the one going out takes neither
++	// the pointer nor the keyboard, and the router drops it when the change
++	// ends. TransitionNone still shows pages at once, and a desktop asking
++	// for less motion fades them, whatever it does.
++	PageTransition func(in, out Element, progress float32, dir int)
+ 
+ 	entries []*routeEntry
+ 	at      int
+@@ -546,6 +556,12 @@
+ 		switch {
+ 		case v.leaving == nil:
+ 			page = r.page(c, parent, cur, fn, false)
++		case r.PageTransition != nil && !c.rt.preferences().ReduceMotion:
++			// The app places the two pages itself.
++			box.Clip()
++			out := r.page(c, parent, v.leaving, fn, true)
++			page = r.page(c, parent, cur, fn, false)
++			r.PageTransition(wrapElement(page), wrapElement(out), progress, v.dir)
+ 		case v.dir == 0:
+ 			// Across, the page fades in in place of the other, which goes
+ 			// at once: the two would blur into each other.

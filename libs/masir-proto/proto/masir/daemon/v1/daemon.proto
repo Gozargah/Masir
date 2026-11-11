@@ -1,0 +1,654 @@
+syntax = "proto3";
+
+package masir.daemon.v1;
+
+service DaemonService {
+  rpc GetXrayVersion(GetXrayVersionRequest) returns (GetXrayVersionResponse);
+  // The full Xray config as composed from the current state, for inspection.
+  rpc GetXrayConfig(GetXrayConfigRequest) returns (GetXrayConfigResponse);
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  // Sends the status now, then again whenever it changes.
+  rpc WatchStatus(WatchStatusRequest) returns (stream WatchStatusResponse);
+  // Tears down TUN and Xray and exits cleanly, so a service manager leaves it stopped.
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+  // Restart starts the masir binary on disk in place of this process, after an update
+  // installed one without restarting. The daemon re-execs itself.
+  rpc Restart(RestartRequest) returns (RestartResponse);
+  rpc StreamLogs(StreamLogsRequest) returns (stream StreamLogsResponse);
+  // Sends the current traffic speed every interval while Xray runs, until the client
+  // goes away. Nothing is sent while Xray is stopped.
+  rpc WatchTraffic(WatchTrafficRequest) returns (stream WatchTrafficResponse);
+  // GetOutboundTraffic reports cumulative traffic bytes per outbound and server since the daemon started,
+  // including across Xray restarts. Totals are retained only for this process lifetime.
+  rpc GetOutboundTraffic(GetOutboundTrafficRequest) returns (GetOutboundTrafficResponse);
+  // CaptureEvent records one anonymous client event for analytics. Events are dropped
+  // silently when analytics is off.
+  rpc CaptureEvent(CaptureEventRequest) returns (CaptureEventResponse);
+  // latency
+  rpc TestLatency(TestLatencyRequest) returns (TestLatencyResponse);
+  rpc CancelLatencyTest(CancelLatencyTestRequest) returns (CancelLatencyTestResponse);
+  // power, modes and settings
+  rpc GetSettings(GetSettingsRequest) returns (GetSettingsResponse);
+  rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse);
+  rpc SetPower(SetPowerRequest) returns (SetPowerResponse);
+  rpc SetFallback(SetFallbackRequest) returns (SetFallbackResponse);
+  rpc SetTunEnabled(SetTunEnabledRequest) returns (SetTunEnabledResponse);
+  // routing
+  rpc ListRoutingRules(ListRoutingRulesRequest) returns (ListRoutingRulesResponse);
+  rpc AddRouting(AddRoutingRequest) returns (AddRoutingResponse);
+  rpc RemoveRouting(RemoveRoutingRequest) returns (RemoveRoutingResponse);
+  rpc AlterRouting(AlterRoutingRequest) returns (AlterRoutingResponse);
+  rpc MoveRouting(MoveRoutingRequest) returns (MoveRoutingResponse);
+  rpc TestRouting(TestRoutingRequest) returns (TestRoutingResponse);
+  // CheckRules verifies every enabled rule against the installed geo data, the same
+  // check the daemon makes before it starts or restarts Xray. It changes nothing.
+  rpc CheckRules(CheckRulesRequest) returns (CheckRulesResponse);
+  // SetRuleEnabled turns a rule off, or back on once it can be built.
+  rpc SetRuleEnabled(SetRuleEnabledRequest) returns (SetRuleEnabledResponse);
+  // inbounds
+  rpc ListInbounds(ListInboundsRequest) returns (ListInboundsResponse);
+  rpc AddInbound(AddInboundRequest) returns (AddInboundResponse);
+  rpc RemoveInbound(RemoveInboundRequest) returns (RemoveInboundResponse);
+  rpc AlterInbound(AlterInboundRequest) returns (AlterInboundResponse);
+  // outbounds
+  rpc ListOutbounds(ListOutboundsRequest) returns (ListOutboundsResponse);
+  rpc AddOutbound(AddOutboundRequest) returns (AddOutboundResponse);
+  rpc RemoveOutbound(RemoveOutboundRequest) returns (RemoveOutboundResponse);
+  rpc AlterOutbound(AlterOutboundRequest) returns (AlterOutboundResponse);
+  // subscriptions
+  rpc ListSubscriptions(ListSubscriptionsRequest) returns (ListSubscriptionsResponse);
+  rpc GetSubscription(GetSubscriptionRequest) returns (GetSubscriptionResponse);
+  rpc AddSubscription(AddSubscriptionRequest) returns (AddSubscriptionResponse);
+  rpc AlterSubscription(AlterSubscriptionRequest) returns (AlterSubscriptionResponse);
+  rpc RemoveSubscription(RemoveSubscriptionRequest) returns (RemoveSubscriptionResponse);
+  rpc UpdateSubscription(UpdateSubscriptionRequest) returns (UpdateSubscriptionResponse);
+  rpc TestSubscriptionLatency(TestSubscriptionLatencyRequest) returns (stream TestSubscriptionLatencyResponse);
+  // active proxy
+  rpc SelectConfig(SelectConfigRequest) returns (SelectConfigResponse);
+  rpc GetActiveConfig(GetActiveConfigRequest) returns (GetActiveConfigResponse);
+
+  // Updates run as jobs in the daemon, one per target, so any UI can show progress
+  // and offer pause, resume and stop. CheckUpdate asks GitHub without downloading,
+  // from a cache one day old at most: a caller may say how old it will accept, and a
+  // check that finds nothing new costs a conditional request rather than a download.
+  rpc CheckUpdate(CheckUpdateRequest) returns (CheckUpdateResponse);
+  // IgnoreUpdate hides this update prompt in the GUI until a newer release is
+  // published or the daemon restarts. It does not change whether an update is
+  // available, and a check that finds the same release keeps the prompt hidden.
+  rpc IgnoreUpdate(IgnoreUpdateRequest) returns (IgnoreUpdateResponse);
+  // Import only release-authorized desktop components; the daemon independently
+  // verifies the signed descriptor and received bytes before executing anything.
+  rpc ImportDesktopUpdate(stream ImportDesktopUpdateRequest) returns (ImportDesktopUpdateResponse);
+  rpc StartUpdate(StartUpdateRequest) returns (StartUpdateResponse);
+  rpc PauseUpdate(PauseUpdateRequest) returns (PauseUpdateResponse);
+  rpc ResumeUpdate(ResumeUpdateRequest) returns (ResumeUpdateResponse);
+  rpc StopUpdate(StopUpdateRequest) returns (StopUpdateResponse);
+  // WatchUpdate sends the job's state now and on every change, until it finishes.
+  rpc WatchUpdate(WatchUpdateRequest) returns (stream WatchUpdateResponse);
+
+  // ListGeoCategories lists every category in the installed geosite.dat or geoip.dat,
+  // so a UI can offer them all (by search), not just the ones it knows by name.
+  rpc ListGeoCategories(ListGeoCategoriesRequest) returns (ListGeoCategoriesResponse);
+}
+
+// Everything a UI needs to draw the daemon's state and decide what to offer,
+// e.g. asking for root when the user wants TUN and tun_available is false.
+message Status {
+  string version = 1;      // daemon version
+  string xray_version = 2;
+  int64 uptime_seconds = 3;
+
+  // privileges
+  bool privileged = 4;        // running as root
+  bool service_installed = 5; // installed as the OS service; false means started in the background
+  int64 served_uid = 6;       // the one user this daemon serves; -1 on Windows
+  string served_user = 7;
+  bool tun_available = 8;
+  string tun_unavailable_reason = 9; // "ROOT_REQUIRED" when tun_available is false
+
+  // what runs
+  bool xray_running = 10;
+  bool proxy_running = 11;
+  string proxy_address = 12; // e.g. "0.0.0.0:7890"
+  bool tun_running = 13;
+  string last_error = 14;    // why what runs doesn't match the settings; empty when it does
+
+  // settings and selection
+  Settings settings = 15;
+  string active_subscription_id = 16;
+  string active_config_id = 17;
+  string active_config_name = 18;
+  bool active_stale = 19;     // the selection is gone from its subscription; its copy keeps running
+  uint32 fell_back_rules = 20; // rules whose target couldn't be used (see ListRoutingRules)
+  ReleaseInfo latest_release = 21; // from the daemon's daily check; unset until it has run
+  string geo_updated_at = 22;      // RFC 3339 time geosite.dat was last written; empty if missing
+  string geo_dir = 23;             // where the daemon reads geosite.dat and geoip.dat
+  // Enabled rules that can't be built with the installed geo data (see CheckRules).
+  // While any are listed, the daemon either runs without them (each marked suspended)
+  // or isn't applying the config at all; last_error says which.
+  repeated RuleProblem rule_problems = 24;
+  // Monotonically increasing revision of the daemon state.
+  //
+  // Contract:
+  // - Scoped to the daemon process lifetime (defined by started_at_ms). If the daemon
+  //   restarts, revision resets and started_at_ms changes.
+  // - Increments by at least 1 whenever client-visible state other than traffic counters changes (e.g. settings,
+  //   power, routing rules, active server selection, subscriptions, or fallback mode).
+  // - Value 0 indicates an initial state or an older daemon without revision support.
+  // - Clients caching state (e.g. server lists, rule lists) can compare the received
+  //   revision against their cached revision; if equal and started_at_ms matches,
+  //   cached state other than traffic counters remains valid and expensive list refetches
+  //   can be skipped. Status.outbound_traffic and SubscriptionConfig.upload_bytes and
+  //   download_bytes can change without a revision increment and must be refreshed separately.
+  uint64 revision = 25;
+  // When this daemon process started. A new value means it restarted, so a memory-only
+  // choice such as an ignored update prompt is gone.
+  int64 started_at_ms = 26;
+  // The service as the OS sees it. service_installed says its definition exists;
+  // service_running says the service manager is running it now; service_enabled says the
+  // person hasn't turned it off (macOS Login Items, systemd enablement).
+  bool service_running = 27;
+  bool service_enabled = 28;
+  // bundled says this daemon runs from the desktop app's bundle. Such a copy belongs to
+  // the app updater: it must not replace itself, and an update of the app carries it.
+  bool bundled = 29;
+  // Cumulative traffic bytes per outbound tag since the daemon started, retained across
+  // Xray restarts only for this daemon process lifetime.
+  repeated OutboundTraffic outbound_traffic = 30;
+}
+
+message GetStatusRequest {}
+message GetStatusResponse { Status status = 1; }
+
+message WatchStatusRequest {}
+message WatchStatusResponse { Status status = 1; }
+
+message WatchTrafficRequest {
+  uint32 interval_ms = 1; // 0 means one second; at least 250
+}
+message WatchTrafficResponse {
+  uint64 uplink_bps = 1;     // bytes per second leaving, over the last interval
+  uint64 downlink_bps = 2;   // bytes per second arriving
+  uint64 uplink_total = 3;   // bytes since Xray started
+  uint64 downlink_total = 4;
+}
+
+message OutboundTraffic {
+  string tag = 1;
+  uint64 uplink_bytes = 2;
+  uint64 downlink_bytes = 3;
+}
+
+message ServerTraffic {
+  string subscription_id = 1;
+  string config_id = 2;
+  uint64 upload_bytes = 3;
+  uint64 download_bytes = 4;
+}
+
+message GetOutboundTrafficRequest {}
+message GetOutboundTrafficResponse {
+  repeated OutboundTraffic outbounds = 1;
+  repeated ServerTraffic servers = 2;
+}
+
+message ShutdownRequest {}
+message ShutdownResponse {}
+message RestartRequest {}
+message RestartResponse {}
+
+// power, modes and settings
+
+// Where traffic that matches no rule goes.
+enum Fallback {
+  FALLBACK_UNSPECIFIED = 0;
+  FALLBACK_DIRECT = 1;
+  FALLBACK_PROXY = 2;
+}
+
+// Xray runs while power or always_on_proxy is on. The proxy inbound runs whenever
+// Xray does; the TUN only while power and tun are on and the daemon is root.
+message Settings {
+  bool power = 1;
+  bool tun = 2;
+  bool always_on_proxy = 3;
+  Fallback fallback = 4;
+  bool allow_lan = 5;           // proxy listens on all interfaces, not just this machine
+  uint32 proxy_port = 6;        // mixed SOCKS5 + HTTP; default 7890
+  string doh_dns = 7;           // DNS for everything except proxy server names; goes through the proxy
+  repeated string dns_servers = 8; // plain DNS (IPs) for proxy server names; goes direct
+  repeated string tun_dns = 9;     // DNS the TUN interface advertises; empty means dns_servers
+  string tun_gateway = 10;         // IPv4 CIDR for the TUN interface
+  uint32 sub_interval_minutes = 11; // background subscription refresh; a subscription's own interval wins
+  string xray_log_level = 12;       // debug, info, warning, error, or none; default warning
+  bool analytics = 13;              // send anonymous usage/error events to PostHog
+  bool rules_enabled = 14;          // false runs without the user's rules; each rule keeps its own disabled flag
+}
+
+message GetSettingsRequest {}
+message GetSettingsResponse {
+  Settings settings = 1;
+  Settings defaults = 2; // what each setting is when not customized
+}
+
+message StringList { repeated string values = 1; }
+
+// Unset fields are left alone. Power, tun and fallback have their own RPCs because
+// they carry preconditions.
+message UpdateSettingsRequest {
+  optional bool always_on_proxy = 1;
+  optional bool allow_lan = 2;
+  optional uint32 proxy_port = 3;
+  optional string doh_dns = 4;
+  StringList dns_servers = 5;
+  StringList tun_dns = 6;
+  optional string tun_gateway = 7;
+  optional uint32 sub_interval_minutes = 8; // 5 to 43200
+  optional string xray_log_level = 9;       // debug, info, warning, error, or none
+  optional bool analytics = 10;             // anonymous usage/error events
+  optional bool rules_enabled = 11;         // false runs without the user's rules, keeping them saved
+}
+message UpdateSettingsResponse { Settings settings = 1; }
+
+message SetPowerRequest { bool on = 1; }
+message SetPowerResponse {}
+
+// FALLBACK_PROXY fails with FAILED_PRECONDITION until a config is selected.
+message SetFallbackRequest { Fallback fallback = 1; }
+message SetFallbackResponse {}
+
+// Enabling fails with FAILED_PRECONDITION when the daemon isn't root; the status
+// carries a google.rpc.ErrorInfo with domain "masir" and reason "ROOT_REQUIRED".
+// Nothing is saved in that case; elevate the daemon and call again.
+message SetTunEnabledRequest { bool enabled = 1; }
+message SetTunEnabledResponse {}
+
+message StreamLogsRequest {
+  bool follow = 1;       // send history, then keep streaming
+  uint32 lines = 2;      // most recent entries to send first; 0 means all buffered
+  string min_level = 3;  // debug, info, warn, error; empty means all
+}
+message StreamLogsResponse { LogEntry entry = 1; }
+
+// CaptureEvent is the CLI's analytics hook. properties_json is a JSON object; the
+// daemon validates it, adds common properties, and drops it when analytics is off.
+message CaptureEventRequest {
+  string event = 1;
+  string properties_json = 2;
+  int64 timestamp_ms = 3; // when it happened; 0 means now
+}
+message CaptureEventResponse {}
+
+message LogEntry {
+  int64 timestamp_ms = 1;
+  string level = 2;
+  string message = 3;
+}
+
+message GetXrayVersionRequest {}
+message GetXrayVersionResponse {
+  string version = 1;
+}
+
+message GetXrayConfigRequest {}
+message GetXrayConfigResponse { string json = 1; }
+
+message TestLatencyRequest { string xray_config_json = 1; string probe_url = 2; string test_id = 3; }
+message TestLatencyResponse { int64 latency_ms = 1; string error = 2; }
+
+message CancelLatencyTestRequest  { string test_id = 1; }
+message CancelLatencyTestResponse {}
+
+// Mutations report failure through gRPC status codes: INVALID_ARGUMENT, NOT_FOUND,
+// ALREADY_EXISTS, FAILED_PRECONDITION (e.g. an outbound still used by a rule).
+// A tag left empty is taken from the JSON ("tag", or "ruleTag" for rules).
+// Tags starting with "masir-" are reserved.
+
+// routing
+
+// A rule's target is one of:
+//   "direct" | "block" | "proxy"     built-in outbounds ("proxy" is the selected config)
+//   "config:<subscription_id>/<config_id>"  a config pinned from any subscription
+//   "outbound:<tag>"                 a custom outbound
+// A pinned config that disappears (or whose subscription is removed) falls back to "proxy".
+message RoutingRule {
+  string rule_tag = 1;
+  string rule_json = 2;              // the match part; never contains outboundTag
+  string target = 3;
+  string resolved_outbound_tag = 4;  // what the running config uses
+  bool fell_back = 5;                // the target couldn't be used; resolved_outbound_tag is the fallback
+  bool disabled = 6;                 // saved, but not part of the running config
+  string disabled_reason = 7;        // why it was turned off, if it was said
+}
+
+// RuleProblem is an enabled rule that can't be built, with the geo data installed.
+message RuleProblem {
+  string rule_tag = 1;
+  repeated string missing = 2; // the references that can't be resolved, e.g. "geoip:in-ir"
+  string message = 3;          // what is wrong, and what to use instead where known
+  bool suspended = 4;          // the daemon runs without this rule until it can be built again
+}
+
+message CheckRulesRequest {}
+message CheckRulesResponse {
+  repeated RuleProblem problems = 1; // empty: every enabled rule can be built
+  // The saved rules file differs from the rules the daemon is running (it was edited while
+  // the daemon ran, and the daemon doesn't re-read it). The problems are then those of the
+  // saved file, which is what the next start, and an update's new version, will load.
+  bool saved_differs = 2;
+}
+
+// SetRuleEnabled changes every listed rule in one step, so turning off all the rules
+// CheckRules named takes effect together (one still-broken rule would block the rest).
+message SetRuleEnabledRequest {
+  repeated string rule_tags = 1;
+  bool enabled = 2;
+  string reason = 3; // kept with each rule that is turned off
+}
+message SetRuleEnabledResponse {}
+
+message ListRoutingRulesRequest {}
+message ListRoutingRulesResponse { repeated RoutingRule rules = 1; }
+
+// rule_json is an xray field rule without outboundTag/balancerTag; the target picks the outbound.
+message AddRoutingRequest { string rule_json = 1; string rule_tag = 2; bool prepend = 3; string target = 4; }
+message AddRoutingResponse {}
+
+message RemoveRoutingRequest { string rule_tag = 1; }
+message RemoveRoutingResponse {}
+
+// Unset fields are left alone; the rule keeps its position.
+message AlterRoutingRequest {
+  string rule_tag = 1;
+  optional string rule_json = 2;
+  optional string target = 3;
+  optional string new_rule_tag = 4; // rename
+}
+message AlterRoutingResponse {}
+
+// Moves the rule so it ends up at index (0 is first); an index past the end makes it last.
+message MoveRoutingRequest { string rule_tag = 1; uint32 index = 2; }
+message MoveRoutingResponse {}
+
+message TestRoutingRequest { string domain = 1; string ip = 2; uint32 port = 3; string network = 4; string inbound_tag = 5; }
+// matched is false when no rule applies and xray falls back to the first outbound.
+message TestRoutingResponse { string outbound_tag = 1; bool matched = 2; }
+
+// inbounds and outbounds: custom ones only; the built-ins come from settings.
+
+message TaggedConfig {
+  string tag = 1;
+  string json = 2;
+}
+
+message ListInboundsRequest {}
+message ListInboundsResponse { repeated TaggedConfig inbounds = 1; }
+
+message ListOutboundsRequest {}
+message ListOutboundsResponse { repeated TaggedConfig outbounds = 1; }
+
+// inbounds
+message AddInboundRequest { string tag = 1; string inbound_json = 2; }
+message AddInboundResponse {}
+
+message RemoveInboundRequest { string tag = 1; }
+message RemoveInboundResponse {}
+
+message AlterInboundRequest { string tag = 1; string inbound_json = 2; }
+message AlterInboundResponse {}
+
+// outbounds
+message AddOutboundRequest { string tag = 1; string outbound_json = 2; }
+message AddOutboundResponse {}
+
+message RemoveOutboundRequest { string tag = 1; }
+message RemoveOutboundResponse {}
+
+message AlterOutboundRequest { string tag = 1; string outbound_json = 2; }
+message AlterOutboundResponse {}
+
+// subscriptions
+
+message Subscription {
+  string id = 1;
+  string name = 2;
+  string url = 3;
+  int64 created_at_ms = 4;
+  int64 updated_at_ms = 5; // last successful fetch; 0 if never
+  int64 checked_at_ms = 6; // last fetch attempt
+  string last_error = 7;   // empty when the last fetch succeeded
+  uint32 update_interval_minutes = 8;        // in effect: custom, else the provider's, else the default
+  uint32 custom_update_interval_minutes = 9; // 0 means automatic
+  Usage usage = 10;                          // unset if the provider doesn't report it
+  uint32 config_count = 11;
+  repeated SubscriptionConfig configs = 12;
+}
+
+// Traffic and expiry from the provider's subscription-userinfo header.
+message Usage {
+  int64 upload_bytes = 1;
+  int64 download_bytes = 2;
+  int64 total_bytes = 3;  // 0 means unlimited
+  int64 expire_at_ms = 4; // 0 means never
+}
+
+message SubscriptionConfig {
+  string id = 1; // stable across refreshes while the server's settings don't change
+  string name = 2;
+  string protocol = 3;
+  string address = 4;
+  uint32 port = 5;
+  string network = 6;  // transport, e.g. tcp, ws, grpc, xhttp
+  string security = 7; // e.g. tls, reality, none
+  string outbound_json = 8;
+  LatencyResult latency = 9; // unset if never tested
+  // Cumulative traffic for this server/config since the daemon started, retained across
+  // Xray restarts only for this daemon process lifetime.
+  uint64 upload_bytes = 10;
+  uint64 download_bytes = 11;
+}
+
+message LatencyResult {
+  int64 latency_ms = 1;
+  string error = 2; // set when the probe failed
+  int64 tested_at_ms = 3;
+}
+
+message ListSubscriptionsRequest {
+  bool include_configs = 1;
+}
+message ListSubscriptionsResponse { repeated Subscription subscriptions = 1; }
+
+message GetSubscriptionRequest { string id = 1; }
+message GetSubscriptionResponse {
+  Subscription subscription = 1;
+  repeated SubscriptionConfig configs = 2;
+}
+
+// Fetches immediately; nothing is saved if the fetch or parse fails.
+// An empty name falls back to the provider's profile-title, then the URL host.
+message AddSubscriptionRequest {
+  string url = 1;
+  string name = 2;
+  uint32 custom_update_interval_minutes = 3;
+}
+message AddSubscriptionResponse { Subscription subscription = 1; }
+
+// Unset fields are left alone. A new url is fetched before it's saved.
+message AlterSubscriptionRequest {
+  string id = 1;
+  optional string name = 2;
+  optional string url = 3;
+  optional uint32 custom_update_interval_minutes = 4;
+}
+message AlterSubscriptionResponse { Subscription subscription = 1; }
+
+message RemoveSubscriptionRequest { string id = 1; }
+message RemoveSubscriptionResponse {}
+
+// Re-fetches now. On failure the old configs are kept and last_error is set.
+message UpdateSubscriptionRequest { string id = 1; }
+message UpdateSubscriptionResponse { Subscription subscription = 1; }
+
+// Streams one result per config as each finishes; results are also saved.
+// Empty config_ids tests every config. Cancel the stream to stop early.
+message TestSubscriptionLatencyRequest {
+  string subscription_id = 1;
+  repeated string config_ids = 2;
+  string probe_url = 3;
+}
+message TestSubscriptionLatencyResponse {
+  string config_id = 1;
+  LatencyResult result = 2;
+}
+
+// active proxy
+
+// Makes the config the "proxy" outbound. A copy is kept, so it keeps working
+// if the subscription later drops it or is removed.
+// It doesn't change power or fallback; call SetFallback(FALLBACK_PROXY) to send
+// unruled traffic through it.
+message SelectConfigRequest {
+  string subscription_id = 1;
+  string config_id = 2;
+  string reason = 3; // id, interactive, fastest, or api
+}
+message SelectConfigResponse {}
+
+message GetActiveConfigRequest {}
+// Empty ids mean nothing was selected from a subscription. config is unset
+// when the selection no longer exists in its subscription (it keeps running).
+message GetActiveConfigResponse {
+  string subscription_id = 1;
+  string config_id = 2;
+  SubscriptionConfig config = 3;
+}
+
+// ---- Updates ----
+
+enum UpdateTarget {
+  UPDATE_TARGET_UNSPECIFIED = 0;
+  UPDATE_TARGET_MASIR = 1; // masir and masird, from this project's GitHub releases
+  UPDATE_TARGET_GEO = 2;   // geosite.dat and geoip.dat, from Loyalsoldier/v2ray-rules-dat
+}
+
+enum UpdateState {
+  UPDATE_STATE_UNSPECIFIED = 0; // no job has run since the daemon started
+  UPDATE_STATE_CHECKING = 1;    // finding the latest release
+  UPDATE_STATE_DOWNLOADING = 2;
+  UPDATE_STATE_PAUSED = 3;      // the partial download is kept; ResumeUpdate continues it
+  UPDATE_STATE_VERIFYING = 4;   // checking SHA-256 sums
+  UPDATE_STATE_INSTALLING = 5;
+  UPDATE_STATE_RESTARTING = 6;  // masird is exiting to start the new version
+  UPDATE_STATE_DONE = 7;
+  UPDATE_STATE_UP_TO_DATE = 8;  // nothing newer to install
+  UPDATE_STATE_FAILED = 9;
+  UPDATE_STATE_STOPPED = 10;    // stopped by StopUpdate; the partial download is deleted
+  // Installing would leave enabled rules the new data can't build (UpdateJob.blocked_rules),
+  // so nothing was installed. StartUpdate with disable_broken_rules turns them off and
+  // installs; the verified download is kept, so that needs no new download.
+  UPDATE_STATE_BLOCKED = 11;
+}
+
+message ReleaseInfo {
+  string current_version = 1;
+  string latest_version = 2;
+  bool available = 3;        // latest is newer than current (never for development builds)
+  string url = 4;            // the release page
+  int64 published_at_ms = 5;
+  int64 checked_at_ms = 6; // when the release was last confirmed with GitHub
+  // The version the GUI hid until a newer release is published or the daemon
+  // restarts. Available stays true, so the CLI and other clients still see the update.
+  string ignored_version = 7;
+  bool desktop_import_supported = 8; // old daemons leave this false
+
+}
+
+message UpdateJob {
+  UpdateTarget target = 1;
+  UpdateState state = 2;
+  string version = 3;        // being installed: a release tag, or the geo data's release
+  string file = 4;           // the file downloading now
+  int64 bytes_done = 5;      // across all files of the job
+  int64 bytes_total = 6;     // 0 while unknown
+  string error = 7;          // why it failed
+  int64 started_at_ms = 8;
+  int64 finished_at_ms = 9;
+  // For a masir update: where the new binaries were unpacked, so a CLI installed
+  // somewhere masird can't write can copy its own new binary from there.
+  string staged_dir = 10;
+  // The enabled rules that stopped this job: with UPDATE_STATE_BLOCKED, the rules the new geo
+  // data can't build; with UPDATE_STATE_FAILED, the rules the new masir version can't build
+  // (nothing was replaced).
+  repeated RuleProblem blocked_rules = 11;
+}
+
+message CheckUpdateRequest {
+  // Force asks GitHub now, even when the last check is less than one day old.
+  bool force = 1;
+  // MaxAgeMs is how old the release check may be for this answer: the daemon returns
+  // its cached release when it is younger, and asks GitHub (conditionally, when it can)
+  // otherwise. Zero means the daily default, and a longer ask is capped at it so one
+  // client can't make the daemon trust a stale release. A daemon that predates this
+  // field ignores it and answers from its own cache.
+  int64 max_age_ms = 2;
+}
+message CheckUpdateResponse { ReleaseInfo release = 1; }
+
+message IgnoreUpdateRequest { string version = 1; } // empty ignores the latest release
+message IgnoreUpdateResponse { ReleaseInfo release = 1; }
+
+message StartUpdateRequest {
+  UpdateTarget target = 1;
+  bool force = 2; // install even when not newer, or from a development build
+  // The CLI's own binary, so a privileged daemon can update that copy too. Unset when
+  // the caller doesn't know it.
+  string client_binary = 3;
+  string trigger = 4; // user, background, or api
+  // Geo update: turn off the enabled rules the new data can't build, and install. Without
+  // it such an update is blocked. Never set by background updates.
+  bool disable_broken_rules = 5;
+  // DeferRestart installs the new masir binary but leaves the running daemon as it is,
+  // so the GUI can update itself and restart into the new binary on its next launch.
+  bool defer_restart = 6;
+}
+message StartUpdateResponse { UpdateJob job = 1; }
+
+message PauseUpdateRequest { UpdateTarget target = 1; }
+message PauseUpdateResponse { UpdateJob job = 1; }
+
+message ResumeUpdateRequest { UpdateTarget target = 1; }
+message ResumeUpdateResponse { UpdateJob job = 1; }
+
+message StopUpdateRequest { UpdateTarget target = 1; }
+message StopUpdateResponse { UpdateJob job = 1; }
+
+message WatchUpdateRequest { UpdateTarget target = 1; }
+message WatchUpdateResponse { UpdateJob job = 1; }
+
+// ---- Geo data ----
+
+enum GeoKind {
+  GEO_KIND_UNSPECIFIED = 0;
+  GEO_KIND_SITE = 1; // geosite.dat: geosite:<code> domain lists
+  GEO_KIND_IP = 2;   // geoip.dat: geoip:<code> address lists
+}
+
+message GeoCategory {
+  string code = 1;    // lowercase, as used after geosite: or geoip:
+  uint32 entries = 2; // domains or address ranges in it
+}
+
+message ListGeoCategoriesRequest { GeoKind kind = 1; }
+message ListGeoCategoriesResponse { repeated GeoCategory categories = 1; }
+
+// First message carries only descriptor/signature. Subsequent messages carry ordered
+// chunks for masir (masir.exe on Windows), geoip.dat and geosite.dat. Client must set
+// a deadline no more than five minutes away. Empty file chunks are not accepted.
+message ImportDesktopUpdateRequest {
+  bytes manifest_bytes = 1;
+  bytes signature = 2;
+  string file = 3;
+  bytes data = 4;
+}
+message ImportDesktopUpdateResponse { string version = 1; }

@@ -1,0 +1,24 @@
+{
+  "name": "Masir",
+  "slug": "masir-desktop",
+  "identifier": "com.gozargah.masir.desktop",
+  "version": "0.1.0",
+  "updates": {
+    "publicKey": "SQxOnMeVtf9SP4F9deXYOKiTLTn+R2dlv7rQgp3StoA=",
+    "github": "Gozargah/Masir",
+    "deltas": 1
+  },
+  "macos": {
+    "infoPlist": {
+      "LSUIElement": true
+    }
+  },
+  "linux": {
+    "webview": false,
+    "comment": "A native client for Xray: subscriptions, routing rules and a system-wide tunnel.",
+    "categories": [
+      "Network",
+      "Utility"
+    ]
+  }
+}

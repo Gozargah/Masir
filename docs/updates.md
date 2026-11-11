@@ -1,0 +1,241 @@
+# Updates
+
+Two signed channels update masir: the daemon and command line from the release's minisign
+`checksums.txt`, and the desktop app from MyGo's ed25519 manifest. This is how they run,
+what they download, and how a change stays compatible with copies already installed.
+
+## What asks, and when
+
+| Who | When | Costs |
+|---|---|---|
+| the daemon | a minute after it starts, then hourly while its cache is a day old | one GitHub request, none while the cache is fresh |
+| the app | on a status, when the daemon's cache is a day old | one request, from the daemon's cache |
+| the app | when the person opens the panel (macOS) or focuses the window, at most every 10 minutes | a conditional request: a 304 when nothing changed |
+| the app | the signed app feed, once per release it hasn't answered for, and every 6 hours | the feed resolution |
+
+`CheckUpdate.max_age_ms` is how a UI says how old an answer it will accept. The daemon
+answers from its cache when it is younger, asks GitHub otherwise, and never trusts a
+release more than a day old: a longer ask is capped. GitHub's `ETag` is kept with the
+cached release, so a check that finds nothing new is a `304` with no body. That saves the
+download, not the quota: an unauthenticated request counts even when it answers `304`
+(measured, not assumed). Six an hour is a tenth of GitHub's 60-an-hour limit for an IP,
+and the app feed is read from `github.com`, which is not the API and has no such limit.
+
+A hidden prompt (`IgnoreUpdate`) is for one version. It stays hidden across checks — a UI
+that asks every ten minutes must not bring it back — and clears when a newer release is
+published, or when the daemon restarts.
+
+## What an update downloads
+
+Every download is `<app>-<role>-<os>-<version>-<arch>`.
+
+| Download | Holds |
+|---|---|
+| `masir-cli-<os>-<v>-<arch>.tar.gz` | masir and both geo files: offline installation and combined updates |
+| `masir-desktop-portable-<os>-<v>-<arch>.tar.gz` | the app, on macOS and Linux; also the archive its updater reads |
+| `masir-desktop-update-windows-<v>-<arch>.tar.gz` | the app on Windows, where the portable download is a `.zip` |
+| `masir-desktop-<from>-to-<v>-<os>-<arch>.delta` | the change from the previous app release |
+
+The CLI updater downloads the full archive and installs its executable and both geo files
+as one release. Windows CLI archives use `.zip`; other systems use `.tar.gz`. Thin
+`masir-cli-update-…` archives are no longer published. Desktop deltas remain optional:
+a missing or inapplicable delta falls back to the full desktop payload.
+
+### Transition from binary-only updates
+
+The previous updater already falls back to the full archive when the thin archive is
+absent. Keep the full asset names, `checksums.txt`, its minisign signature and the signing
+key unchanged. Existing clients can install this release without a reinstall, but their
+old updater extracts only the executable: existing geo files stay unchanged during that
+first update. Once the new daemon is running, later updates install the bundled geo pair
+as well. There is no extra first-launch download. Very old clients must be checked against
+their shipped naming convention before claiming compatibility.
+
+## What an update installs
+
+When both sides have the same newer release and the daemon advertises desktop import,
+the patched GUI downloads only the desktop delta or full archive. MyGo verifies and
+reconstructs the complete app, then invokes a preparation hook before app replacement.
+The GUI streams the bundled executable and geo pair, plus `service-update.json` and its
+minisign signature, to the daemon. These two small metadata files live inside the existing
+desktop payload; they are not additional release assets.
+
+Desktop bundles store geo data as `geoip.dat.gz` and `geosite.dat.gz`, with expanded
+sizes and SHA-256 hashes in `geo.json`. The component signer hashes the verified
+expanded bytes, and the GUI expands them while streaming to the service. The signed
+descriptor and import protocol still name the original `.dat` files; existing
+import-capable services need no protocol upgrade. Both gzip integrity and expanded
+size/hash limits are checked before an import can complete. The service independently
+checks its signed descriptor and every received byte as before.
+
+The initial v0.1.0 release establishes shared desktop import and upgrades through the
+separate CLI archive path. Keep compressed resources and their GUI decoding support
+in the same release: an intermediate GUI with raw-only shared import cannot prepare
+a later compressed desktop payload. This compatibility check matters when splitting
+or backporting these changes.
+
+Initial service installation expands and verifies both resources in private staging
+before replacing the service executable. Installed services and standalone CLI archives
+continue to use raw `.dat` files. Without a service, the bundled daemon materializes a
+verified pair outside the application: in the user's config cache, a root-owned Unix
+run directory, or a protected Administrators-owned Windows cache. A content-addressed
+directory is published only when the entire pair is complete. Its original hashes
+are retained to distinguish managed data from later manual replacements. The selected
+cache is remembered across bundle versions: if either file differs, the pair remains
+selected and is never regenerated over the changes. Unchanged data can advance to a
+new bundled pair. As with the previous immutable bundle data, direct geo updates for this cache
+ask the person to update the app. Service geo updates remain independent. No first-run
+download is needed, and extraction never changes the signed app bundle.
+
+The daemon verifies that descriptor with its own embedded minisign keys (never with the
+development unsigned override). The signed role, version, OS, architecture, exact component
+names, sizes and SHA-256 hashes authorize the transfer. A bounded local stream writes only
+those three files into private staging (root-controlled on Unix; Administrators-owned
+with protected System/Administrators-only ACLs under Program Files on Windows), and every
+byte is checked before preflight or execution. The existing combined installer installs the executable and geo pair without
+restarting. MyGo then commits the app; the GUI asks the service manager/daemon to restart,
+checks the expected version and tunnel, reconciles the service definition and relaunches.
+A failed service import prevents app commit; a failed app commit leaves the old daemon
+process running and the prepared service version on disk. Retrying an identical service
+payload preserves its earlier rollback backups. The copies remain protocol-compatible
+through this interval; this is not a crash-atomic multi-file transaction.
+
+Older daemons do not advertise import, so the first transition keeps the independent CLI
+archive download followed by the desktop update. Stock/unpatched source builds and releases
+whose desktop/daemon versions differ use that same fallback. Standalone CLI updates still
+use the signed full CLI archive. With no service and a bundled daemon, the desktop update
+continues to replace the bundle and restart its daemon as before.
+
+Deltas remain useful: they reconstruct the same complete app with less network traffic.
+A failed or unavailable delta falls back to the full desktop archive, so "one part" means
+one shared desktop update, not a guarantee of exactly one HTTP request.
+
+The app bundle has one writer (MyGo's updater). A daemon or CLI inside `*.app` refuses to
+replace itself and says to update the app.
+
+### Replacing the desktop app manually
+
+Launching a newer signed desktop app compares its release with the installed daemon
+and offers **Update daemon** in the footer and Settings update control. Opening the app
+never installs or elevates. The installed service is identified from its reported
+status, even when the app selects a bundled CLI because the legacy service path moved.
+
+Clicking the action requests OS administrator permission and runs the bundled CLI's
+`daemon import-desktop` helper directly. It independently verifies the signed local
+components, preflights the rules, preserves custom geo files and rollback backups, and
+restarts the service through the supervisor. The GUI confirms the running version and
+tunnel before reporting success. Failures display **Retry** with the error in the tooltip;
+status events do not retry them or fall back to GitHub.
+
+Equal versions, newer services, development versions and bundled fallback daemons are
+left alone. Missing local components produce a visible error on click, before any
+administrator prompt. Unsigned or altered components fail verification in the helper;
+there is no release-download fallback for this action.
+
+The bundled helper works offline and with private repositories: it never asks GitHub for assets. The helper uses
+its own embedded signing keys, checks the installed service version, independently
+verifies the manifest and all component bytes in protected staging, and uses the existing
+geo-preserving installer and rule preflight. It stops the old service through the OS
+supervisor only after verification/preflight, rechecks saved rules after stopping, and
+restarts the installed service on both success and failure. A process lock serializes
+helpers; a crash releases it. A rejected signature, declined permission, or failed
+preflight stays visible for explicit retry and does not trigger a download.
+The elevated compatibility helper uses the new installer’s custom geo preservation policy
+even when the installed service predates it.
+On Windows, user-owned service directories are migrated into a fresh
+Administrators-owned directory. Pre-0.1.0 unauthenticated user-owned executables are refused
+and require reinstalling the service (`masir daemon enable`). Fixed-name geo files are preserved
+through no-follow, single-link snapshots; old DLLs are not copied. The old tree is retained under
+a random `.geo-*.legacy` sibling for administrator recovery, never recursively deleted by the
+helper. An unsafe recovery target is refused rather than restarted.
+
+On macOS the service installs under `/Library/PrivilegedHelperTools/masir`, whose parent is
+root-controlled. Legacy `/usr/local/lib/masir` services outside root control are refused and
+require reinstalling the service (`masir daemon enable`). The helper pins the service directory,
+rejects links and non-regular/oversized resources, preserves custom geo data and service icons,
+and publishes into the protected location after signature and rule checks. An app-managed CLI link
+to the old service is repointed to the current bundled CLI.
+
+The app-managed CLI is a link into the app on macOS/Linux and the app's bin directory on
+the Windows user PATH, so replacing the app at the same location updates that command too.
+Unrelated standalone or package-manager CLI installations are not overwritten. This
+repository has no ownership record that would safely identify those as app-managed.
+
+The bundled geo pair replaces the active pair only when the installed provenance still
+matches. Custom or legacy data without provenance is preserved.
+It is the release's tested baseline, not a promise of newer upstream data; `masir update
+geo` still fetches the latest upstream pair separately. If the baseline cannot build an
+enabled rule, the combined update fails before changing any active file. The previous
+pair is retained as `.previous` alongside the active data, and a binary installation
+failure restores it. Service rollback restores the saved binary and saved geo pair when
+both data backups exist. CLI and geo jobs are serialized, including background refreshes.
+
+## Compatibility rules
+
+A release must work with the copies already installed, in both directions:
+
+- **Protocol**: additive fields only, never reuse a field number, and a new enum value
+  only reachable when a client asks for it. `buf breaking` in `make proto-lint` enforces
+  the field rules.
+- **Hints, not requirements**: `max_age_ms` is a hint. A daemon that predates it ignores
+  the field and answers from its daily cache, which is what the app did before the hint
+  existed. `defer_restart` is only ever set by a GUI that handles a daemon which restarts
+  anyway (an older daemon ignores the field and restarts at the end of the job).
+- **Asset names have fallbacks**: a client asks for the exact name, then for the older
+  name it knows. Keep the full CLI names and desktop manifest URLs stable. Thin CLI assets may be
+  retired because the previous updater falls back to the full archive.
+- **Every asset is signed**: new downloads join `checksums.txt` (minisign) or
+  `checksums-desktop.txt` (minisign). Deltas are covered by both the signed manifest and
+  the desktop list (they are named `masir-desktop-…`). The app's manifest is signed with
+  the MyGo ed25519 key. A build without its key refuses updates rather than installing an
+  unverified one.
+- **One version number**: `mygo.json` and the release tag are the same number, so the app
+  can key its feed check on the release the daemon reports. The 6-hour fallback keeps that
+  from being load-bearing if the two ever diverge.
+
+## Verifying a release by hand
+
+```sh
+minisign -V -P <MASIR_UPDATE_PUBKEY> -m checksums.txt -x checksums.txt.minisig
+shasum -a 256 -c checksums.txt
+
+minisign -V -P <MASIR_UPDATE_PUBKEY> -m checksums-desktop.txt -x checksums-desktop.txt.minisig
+shasum -a 256 -c checksums-desktop.txt
+```
+
+## Changing this
+
+- A new artifact: add it to the release, to a signed checksum list, and to the name table
+  above; give it a role (`portable`, `update`, …) rather than a bare name.
+- A new behaviour the GUI asks for: a new field, plus the behaviour without it. Test the
+  old-daemon path with the fakes in `apps/masir-gui/updates_test.go`.
+- A new signing key: `publicKeys` in the daemon accepts a comma-separated list, so add the
+  new key beside the old one for a release before removing the old one.
+
+## Preserving manually replaced geo data
+
+`installed-geo.json` records SHA-256 hashes and sizes of the last complete pair Masir
+installed. Service installs, verified geo refreshes and CLI release archives establish
+this baseline. App/service updates compare the active pair with that prior baseline,
+not with incoming release hashes. If either file differs, both files are preserved.
+Existing files without provenance are conservatively preserved; missing or invalid
+custom data causes validation to fail rather than being silently repaired.
+
+The updater snapshots preserved data into private staging and preflights the new
+executable against that snapshot. It rechecks that the active pair did not change
+during validation before replacing the executable. Current files stay untouched;
+rollback backups include the preserved pair and its prior provenance. Metadata advances
+only when Masir actually installs a managed pair. Background geo refreshes skip custom
+or untracked data. An explicit geo-refresh command remains a deliberate replacement
+and establishes a fresh managed baseline after success.
+
+Bundled fallback caches likewise retain manual changes on restart and across app
+updates. Legacy caches are detected conservatively if no active-cache pointer exists;
+ambiguous modified caches fail rather than guessing. No custom-folder setting or
+protocol migration is introduced.
+
+This policy requires the updater executing the installation to contain this change.
+Already-shipped older updaters cannot retroactively apply it on their first upgrade;
+keep an independent backup of manual geo replacements for that transition. Their
+existing `.previous` geo backups may also allow recovery, but are not a substitute for
+an independent backup.

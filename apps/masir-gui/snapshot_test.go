@@ -1,0 +1,278 @@
+package main
+
+import (
+	"image/png"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/egoist/mygo/ui"
+
+	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
+)
+
+// TestSnapshots writes what the panel looks like to PNG files when MASIR_SNAPSHOTS names
+// a directory, for looking at without running the app. It checks nothing itself.
+func TestSnapshots(t *testing.T) {
+	dir := os.Getenv("MASIR_SNAPSHOTS")
+	if dir == "" {
+		t.Skip("set MASIR_SNAPSHOTS to a directory to write the pictures to")
+	}
+	shots := []struct {
+		name string
+		dark bool
+		do   func(a *app, tt *ui.Tester)
+	}{
+		{"daemon-update", true, func(a *app, tt *ui.Tester) {
+			a.version = "0.2.0"
+			a.status.Version = "0.1.0"
+			a.updates.state.bundleOffer = true
+			a.updates.state.phase = updateAvailable
+		}},
+		{"rolling-mid", true, func(a *app, tt *ui.Tester) {
+			a.latency[serverKey{"s1", "c1"}] = 2075
+			a.rules.rules = append(a.rules.rules, a.rules.rules[0])
+			tt.Frame()
+			tt.Advance(110 * time.Millisecond) // part way through the roll
+		}},
+
+		{"latency-shimmer", true, func(a *app, tt *ui.Tester) {
+			a.open = sectionServers
+			for _, s := range a.subscriptions.servers {
+				a.testing[s.key] = true
+			}
+			tt.Frame()
+			tt.Advance(550 * time.Millisecond)
+		}},
+		{"connected-breathe", true, func(a *app, tt *ui.Tester) {
+			a.status.Settings.Power, a.status.XrayRunning = true, true
+			tt.Frame()
+			tt.Advance(1200 * time.Millisecond)
+		}},
+		{"connecting-pulse", true, func(a *app, tt *ui.Tester) {
+			a.status.Settings.Power, a.status.XrayRunning = true, false
+			tt.Frame()
+			tt.Advance(time.Second)
+		}},
+		{"connection-disconnected", true, func(a *app, tt *ui.Tester) {}},
+		{"header-session-dark", true, headerSessionSnapshot},
+		{"header-session-light", false, headerSessionSnapshot},
+		{"header-result-expired", true, func(a *app, tt *ui.Tester) {
+			headerSessionSnapshot(a, tt)
+			a.connection = connectionState{checked: true, internetOK: true, proxyOK: true, proxyTested: true, identity: a.connectionIdentity(), resultUntil: time.Now().Add(-time.Second)}
+		}},
+		{"connection-tunnel", true, func(a *app, tt *ui.Tester) {
+			a.status.Settings.Power = true
+			a.status.Settings.Tun = true
+			a.status.XrayRunning = true
+			a.status.TunRunning = true
+			a.status.ProxyRunning = true
+			a.status.ProxyAddress = "127.0.0.1:7890"
+			a.status.UptimeSeconds = 3661
+		}},
+		{"connection-healthy", true, func(a *app, tt *ui.Tester) {
+			a.status.Settings.Power = true
+			a.status.XrayRunning = true
+			a.status.TunRunning = true
+			a.status.ProxyRunning = true
+			a.status.ProxyAddress = "127.0.0.1:7890"
+			a.connection = connectionState{resultUntil: time.Now().Add(3 * time.Second), checked: true, internetOK: true, proxyOK: true, proxyTested: true, identity: a.connectionIdentity()}
+		}},
+		{"connection-proxy-failed", true, func(a *app, tt *ui.Tester) {
+			a.status.Settings.Power = true
+			a.status.XrayRunning = true
+			a.status.TunRunning = true
+			a.status.ProxyRunning = true
+			a.status.ProxyAddress = "127.0.0.1:7890"
+			a.connection = connectionState{resultUntil: time.Now().Add(3 * time.Second), checked: true, internetOK: true, proxyTested: true, identity: a.connectionIdentity()}
+		}},
+		{"connection-testing", true, func(a *app, tt *ui.Tester) {
+			a.status.Settings.Power = true
+			a.status.XrayRunning = true
+			a.connection.testing = true
+		}},
+		{"servers-refresh-failed", true, func(a *app, tt *ui.Tester) {
+			a.subscriptions.subscriptions[0].LastError = "Provider could not be reached"
+			a.open = sectionServers
+		}},
+		{"subscriptions-scrollbar", true, func(a *app, tt *ui.Tester) {
+			subscriptionSnapshotData(a)
+			a.openPage(subscriptionsPath)
+			tt.Frame()
+			tt.Advance(time.Second)
+			tt.Move(panelWidth-5, 200)
+		}},
+		{"subscriptions-overview-dark", true, func(a *app, tt *ui.Tester) { subscriptionSnapshotData(a); a.openPage(subscriptionsPath) }},
+		{"subscriptions-overview-light", false, func(a *app, tt *ui.Tester) { subscriptionSnapshotData(a); a.openPage(subscriptionsPath) }},
+		{"subscriptions-healthy", true, func(a *app, tt *ui.Tester) {
+			s := a.subscriptions.subscriptions[0]
+			s.Url = "https://provider.example/sub"
+			s.UpdateIntervalMinutes = 720
+			s.Usage = &pb.Usage{DownloadBytes: 40e9, TotalBytes: 100e9, ExpireAtMs: time.Now().Add(30 * 24 * time.Hour).UnixMilli()}
+			a.openPage(subscriptionsPath)
+		}},
+		{"subscriptions-empty", true, func(a *app, tt *ui.Tester) { a.subscriptions.subscriptions = nil; a.openPage(subscriptionsPath) }},
+		{"subscriptions-failing", true, func(a *app, tt *ui.Tester) {
+			a.subscriptions.subscriptions[0].LastError = "Provider could not be reached. Existing nodes kept."
+			a.openPage(subscriptionsPath)
+		}},
+		{"subscriptions-expired", true, func(a *app, tt *ui.Tester) {
+			a.subscriptions.subscriptions[0].Usage = &pb.Usage{ExpireAtMs: 1, DownloadBytes: 100e9, TotalBytes: 100e9}
+			a.openPage(subscriptionsPath)
+		}},
+		{"subscription-details", true, func(a *app, tt *ui.Tester) { a.openSubscription("s1") }},
+		{"subscription-details-light", false, func(a *app, tt *ui.Tester) { a.openSubscription("s1") }},
+		{"subscription-details-inactive", true, func(a *app, tt *ui.Tester) {
+			a.status.ActiveSubscriptionId = "other"
+			a.subscriptions.subscriptions[0].UpdateIntervalMinutes = 15
+			a.openSubscription("s1")
+		}},
+		{"subscription-details-failed", true, func(a *app, tt *ui.Tester) {
+			a.subscriptions.subscriptions[0].LastError = "The provider could not be reached. Existing servers have been kept."
+			a.openSubscription("s1")
+		}},
+		{"subscription-details-populated", true, func(a *app, tt *ui.Tester) {
+			s := a.subscriptions.subscriptions[0]
+			s.Url = "https://primary.example/sub"
+			s.UpdateIntervalMinutes = 15
+			s.UpdatedAtMs = time.Now().Add(-3 * time.Minute).UnixMilli()
+			s.Usage = &pb.Usage{DownloadBytes: 42e9, TotalBytes: 100e9, ExpireAtMs: time.Now().Add(30 * 24 * time.Hour).UnixMilli()}
+			s.Configs = append(s.Configs, manyConfigs(20)...)
+			a.openSubscription("s1")
+		}},
+		{"subscriptions-refreshing", true, func(a *app, tt *ui.Tester) {
+			subscriptionSnapshotData(a)
+			a.subscriptionRefreshing = map[string]bool{"s1": true}
+			a.openPage(subscriptionsPath)
+		}},
+		{"subscription-edit", true, func(a *app, tt *ui.Tester) {
+			a.openSubscription("s1")
+			a.openSubscriptionEdit()
+			a.subscriptionPage.name = "marzban"
+			a.subscriptionPage.url = "https://provider.example/sub"
+			a.subscriptionPage.interval = "0"
+		}},
+		{"subscription-edit-error", true, func(a *app, tt *ui.Tester) {
+			a.openSubscription("s1")
+			a.openSubscriptionEdit()
+			a.subscriptionPage.err = "Enter an interval in whole minutes, or 0 for automatic."
+		}},
+		{"main-light", false, func(a *app, tt *ui.Tester) {}},
+		{"main-dark", true, func(a *app, tt *ui.Tester) {}},
+		{"servers-dark", true, func(a *app, tt *ui.Tester) { _ = tt.Click(ltr("United Kingdom")) }},
+		{"rules-dark", true, func(a *app, tt *ui.Tester) { _ = tt.Click("RULES") }},
+		{"settings-dark", true, func(a *app, tt *ui.Tester) { _ = tt.Click("Settings") }},
+		{"settings-middle", true, func(a *app, tt *ui.Tester) {
+			_ = tt.Click("Settings")
+			tt.Advance(time.Second)
+			tt.Scroll(panelWidth/2, 300, 0, 430)
+			tt.Advance(time.Second)
+		}},
+		{"settings-logging", true, func(a *app, tt *ui.Tester) {
+			_ = tt.Click("Settings")
+			tt.Advance(time.Second)
+			tt.Scroll(panelWidth/2, 300, 0, 650)
+			tt.Advance(time.Second)
+		}},
+		{"settings-select", true, func(a *app, tt *ui.Tester) {
+			_ = tt.Click("Settings")
+			tt.Advance(time.Second)
+			tt.Scroll(panelWidth/2, 300, 0, 430)
+			tt.Advance(time.Second)
+			_ = tt.Click("Warning") // the log level select's trigger
+			tt.Advance(100 * time.Millisecond)
+		}},
+		{"update-available", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.rel = &pb.ReleaseInfo{CurrentVersion: "0.1.0", LatestVersion: "v0.2.0", Available: true, CheckedAtMs: time.Now().UnixMilli()}
+			a.updates.state.phase = updateAvailable
+		}},
+		{"update-downloading", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.rel = &pb.ReleaseInfo{CurrentVersion: "0.1.0", LatestVersion: "v0.2.0", Available: true, CheckedAtMs: time.Now().UnixMilli()}
+			a.updates.state.job = &pb.UpdateJob{Target: pb.UpdateTarget_UPDATE_TARGET_MASIR, State: pb.UpdateState_UPDATE_STATE_DOWNLOADING, BytesDone: 42, BytesTotal: 100}
+			a.updates.state.parts, a.updates.state.phase = 2, updateDownloading
+		}},
+		{"update-paused", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.rel = &pb.ReleaseInfo{CurrentVersion: "0.1.0", LatestVersion: "v0.2.0", Available: true, CheckedAtMs: time.Now().UnixMilli()}
+			a.updates.state.job = &pb.UpdateJob{Target: pb.UpdateTarget_UPDATE_TARGET_MASIR, State: pb.UpdateState_UPDATE_STATE_PAUSED, BytesDone: 42, BytesTotal: 100}
+			a.updates.state.parts, a.updates.state.phase = 2, updatePaused
+		}},
+		{"update-app-downloading", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.rel = &pb.ReleaseInfo{CurrentVersion: "0.1.0", LatestVersion: "v0.2.0", Available: true, CheckedAtMs: time.Now().UnixMilli()}
+			a.updates.state.parts, a.updates.state.phase = 2, updateAppDownloading
+			a.updates.state.progress, a.updates.state.total = 74, 100
+		}},
+		{"settings-update", true, func(a *app, tt *ui.Tester) {
+			_ = tt.Click("Settings")
+			tt.Advance(time.Second)
+			a.updates.state.rel = &pb.ReleaseInfo{CurrentVersion: "0.1.0", LatestVersion: "v0.2.0", Available: true, CheckedAtMs: time.Now().UnixMilli()}
+			a.updates.state.phase = updateAvailable
+			tt.Scroll(panelWidth/2, 400, 0, 1200)
+			tt.Advance(time.Second)
+		}},
+		{"system-dark", true, func(a *app, tt *ui.Tester) {
+			_ = tt.Click("Settings")
+			tt.Advance(time.Second)
+			tt.Scroll(panelWidth/2, 420, 0, 1200)
+			tt.Advance(100 * time.Millisecond)
+		}},
+		{"add-dark", true, func(a *app, tt *ui.Tester) { a.openPage(addSubscriptionPath) }},
+		{"add-error", false, func(a *app, tt *ui.Tester) {
+			a.subURL = "https://provider.example/sub"
+			a.subError = "Couldn't reach the provider. Check the link and try again."
+			a.openPage(addSubscriptionPath)
+		}},
+	}
+	for _, s := range shots {
+		a := newTestApp(ukServers())
+		a.down, a.up = 120<<10, 8<<10
+		tt := ui.NewTester(a.view, panelWidth, 600)
+		dark := s.dark
+		switch os.Getenv("MASIR_SNAPSHOT_THEME") {
+		case "light":
+			dark = false
+		case "dark":
+			dark = true
+		}
+		tt.SetDark(dark)
+		s.do(a, tt)
+		if s.name != "rolling-mid" {
+			tt.Frame()              // fixtures change state directly; paint-only animations do not rebuild it
+			tt.Advance(time.Second) // let the panels finish opening
+		}
+		tt.SetSize(panelWidth, int(a.restHeight()))
+		if s.name != "rolling-mid" {
+			tt.Advance(time.Second)
+		} else {
+			tt.Frame()
+		}
+		tt.Frame()
+		f, err := os.Create(filepath.Join(dir, s.name+".png"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := png.Encode(f, tt.Image()); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+	}
+}
+
+// Keep documentation providers fictional, with subscription URLs under .example.
+func subscriptionSnapshotData(a *app) {
+	now := time.Now()
+	a.subscriptions.subscriptions = []*pb.Subscription{
+		{Id: "s1", Name: "Primary", Url: "https://primary.example/sub", ConfigCount: 8, UpdateIntervalMinutes: 15, UpdatedAtMs: now.Add(-3 * time.Minute).UnixMilli(), Usage: &pb.Usage{DownloadBytes: 794.1e9}},
+		{Id: "s2", Name: "Work", Url: "https://work.example/sub", ConfigCount: 5, UpdateIntervalMinutes: 15, UpdatedAtMs: now.Add(-time.Minute).UnixMilli(), Usage: &pb.Usage{DownloadBytes: 82.4e9, TotalBytes: 100e9, ExpireAtMs: now.Add(3 * 24 * time.Hour).UnixMilli()}},
+		{Id: "s3", Name: "Backup", Url: "https://backup.example/sub", ConfigCount: 9, UpdateIntervalMinutes: 60, UpdatedAtMs: now.Add(-2 * time.Hour).UnixMilli(), LastError: "The provider could not be reached"},
+		{Id: "s4", Name: "My subscription with a very long descriptive name", Url: "https://example.com/sub", ConfigCount: 1},
+	}
+}
+
+func headerSessionSnapshot(a *app, tt *ui.Tester) {
+	a.status.Settings.Power = true
+	a.status.XrayRunning = true
+	a.status.ProxyRunning = true
+	a.status.ProxyAddress = "127.0.0.1:7890"
+	a.since = time.Now().Add(-81 * time.Second)
+}
