@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+
+reviews:
+  # Profile: "assertive", "chill", or "strict"
+  profile: "chill"
+  
+  # Auto review configuration for pull requests
+  auto_review:
+    enabled: true
+    # Review draft pull requests
+    drafts: true
+    # Target branches for auto-review (".*" matches all base branches)
+    base_branches:
+      - ".*"
+    # Auto re-review on incremental commits
+    auto_incremental_review: true
+    # Prevent infinite review loops
+    auto_pause_after_reviewed_commits: 10
+
+  # High-level summary of changes
+  tools:
+    github-checks:
+      enabled: true
+
+  # Ignore auto-generated or vendored files from deep review
+  path_filters:
+    - "!**/*.pb.go"
+    - "!**/*.sum"
+    - "!build/**"
+    - "!dist/**"

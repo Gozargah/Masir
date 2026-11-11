@@ -1,0 +1,105 @@
+--- a/updater.go
++++ b/updater.go
+@@ -217,6 +217,14 @@
+ // /Applications of an administrator, or an app directory the user owns on
+ // Linux and Windows. Apps installed by a package manager are updated by it.
+ func (up *Update) Install(ctx context.Context, progress func(downloaded, total int64)) error {
++	return up.InstallWithPrepared(ctx, progress, nil)
++}
++
++// InstallWithPrepared invokes prepare with the verified, reconstructed app directory
++// before replacement. An error leaves the running app untouched. The directory is
++// temporary and must not be retained. Callers must independently authorize privileged
++// operations performed by their hook.
++func (up *Update) InstallWithPrepared(ctx context.Context, progress func(int64, int64), prepare func(string) error) error {
+ 	target, err := installTarget()
+ 	if err != nil {
+ 		return err
+@@ -225,7 +233,7 @@
+ 	if up.source != nil {
+ 		get = up.source.Open
+ 	}
+-	if err := installUpdate(ctx, get, up.manifest, up.key, up.current, target, progress); err != nil {
++	if err := installUpdatePrepared(ctx, get, up.manifest, up.key, up.current, target, progress, prepare); err != nil {
+ 		return fmt.Errorf("mygo: installing the update: %w", err)
+ 	}
+ 	if runtime.GOOS == "linux" {
+@@ -261,6 +269,10 @@
+ // version current: from its delta for current when there is one, else, or
+ // when the delta fails, from its archive, both downloaded with get.
+ func installUpdate(ctx context.Context, get update.Getter, m update.Manifest, key, current, target string, progress func(downloaded, total int64)) error {
++	return installUpdatePrepared(ctx, get, m, key, current, target, progress, nil)
++}
++
++func installUpdatePrepared(ctx context.Context, get update.Getter, m update.Manifest, key, current, target string, progress func(int64, int64), prepare func(string) error) error {
+ 	pub, err := update.ParsePublicKey(key)
+ 	if err != nil {
+ 		return err
+@@ -286,6 +298,15 @@
+ 		}
+ 	}
+ 
++	if prepare != nil {
++		originalSwap := swap
++		swap = func(dir, target string) error {
++			if err := prepare(dir); err != nil {
++				return err
++			}
++			return originalSwap(dir, target)
++		}
++	}
+ 	if d := m.Delta(current); d != nil {
+ 		err := applyDelta(ctx, get, *d, pub, m.Version, target, work, unpacked, progress)
+ 		if err == nil {
+--- a/updater_test.go
++++ b/updater_test.go
+@@ -469,3 +469,49 @@
+ 		t.Error("SetSource(nil) did not restore the feed")
+ 	}
+ }
++
++func TestPreparedHookRunsOnlyAfterVerificationAndBeforeReplacement(t *testing.T) {
++	for _, deltaFrom := range []string{"", "1.1.9"} {
++		t.Run("delta-"+deltaFrom, func(t *testing.T) {
++			srv, key, m, _ := updateServer(t, "1.2.0", "v2", deltaFrom)
++			_ = srv
++			target, main := installedApp(t)
++			called := false
++			hook := func(dir string) error {
++				called = true
++				if b, _ := os.ReadFile(main); string(b) != "v1" {
++					t.Fatal("replaced the running app before the hook")
++				}
++				found := false
++				filepath.WalkDir(dir, func(path string, e os.DirEntry, err error) error {
++					if err == nil && !e.IsDir() {
++						if b, _ := os.ReadFile(path); string(b) == "v2" {
++							found = true
++						}
++					}
++					return err
++				})
++				if !found {
++					t.Fatal("hook did not receive the reconstructed app")
++				}
++				return fmt.Errorf("service refused")
++			}
++			err := installUpdatePrepared(context.Background(), httpGet, m, key, "1.1.9", target, nil, hook)
++			if err == nil || !called {
++				t.Fatalf("hook err=%v called=%v", err, called)
++			}
++			if b, _ := os.ReadFile(main); string(b) != "v1" {
++				t.Fatal("failed hook changed the app")
++			}
++			called = false
++			m.Signature = "invalid"
++			for i := range m.Deltas {
++				m.Deltas[i].Signature = "invalid"
++			}
++			err = installUpdatePrepared(context.Background(), httpGet, m, key, "1.1.9", target, nil, hook)
++			if err == nil || called {
++				t.Fatal("unauthenticated payload reached hook")
++			}
++		})
++	}
++}

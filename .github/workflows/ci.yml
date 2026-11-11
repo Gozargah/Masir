@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache-dependency-path: "**/go.sum"
+      - name: Vet and test
+        shell: bash
+        run: |
+          race=-race # needs cgo on Windows, which the runner doesn't set up
+          if [ "$RUNNER_OS" = "Windows" ]; then race=; fi
+          for m in apps/masir apps/masir-gui libs/masir-daemon libs/masir-core libs/masir-proto; do
+            echo "::group::$m"
+            (cd "$m" && go vet ./... && go test $race ./...)
+            echo "::endgroup::"
+          done
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache-dependency-path: "**/go.sum"
+      - name: Build every OS and architecture
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
+      - uses: actions/upload-artifact@v7
+        with:
+          name: masir-snapshot
+          path: |
+            build/release/*.tar.gz
+            build/release/*.zip
+            build/release/checksums.txt
+          retention-days: 7

@@ -1,0 +1,26 @@
+pkgbase = masir-bin
+	pkgdesc = A fast client for Xray: subscriptions, routing rules and a system-wide tunnel
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/Gozargah/Masir
+	arch = x86_64
+	arch = aarch64
+	license = LicenseRef-Proprietary
+	depends = gtk3
+	depends = webkit2gtk-4.1
+	depends = libayatana-appindicator
+	depends = glibc
+	depends = hicolor-icon-theme
+	optdepends = polkit: elevate privileges for TUN mode without sudo
+	provides = masir
+	provides = masir-desktop
+	conflicts = masir
+	conflicts = masir-desktop
+	options = !strip
+	options = !debug
+	source_x86_64 = masir-bin-0.1.0-amd64.deb::https://github.com/Gozargah/Masir/releases/download/v0.1.0/masir-desktop-linux-0.1.0-amd64.deb
+	sha256sums_x86_64 = d14262982d8a0c83ed232207c7ad9c745a7aff5a204e884eebca54416a4bd9b9
+	source_aarch64 = masir-bin-0.1.0-arm64.deb::https://github.com/Gozargah/Masir/releases/download/v0.1.0/masir-desktop-linux-0.1.0-arm64.deb
+	sha256sums_aarch64 = fcc3555f9c7ae815ee394cadded640067757325aaf33d4bff81331121ccab0eb
+
+pkgname = masir-bin

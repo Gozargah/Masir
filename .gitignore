@@ -1,0 +1,27 @@
+dist
+
+# binaries from `go build` run inside an app directory
+apps/masir/masir
+apps/masir-gui/masir-gui
+*.exe
+build
+go-clack
+
+# keys
+*.pub
+*.key
+
+# local analytics key for builds
+.env
+
+# mygo dev builds
+apps/masir-gui/.mygo
+apps/masir-gui/resources/darwin-*/
+apps/masir-gui/resources/linux-*/
+apps/masir-gui/resources/windows-*/
+
+# the patched mygo copy a GUI build makes (scripts/build-gui.sh)
+.mygo-patched
+.mygo-patched.go.mod
+.mygo-patched.go.sum
+.mygo-patched.lock

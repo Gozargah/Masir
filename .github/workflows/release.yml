@@ -1,0 +1,302 @@
+name: Release
+
+# Pushing a tag like v0.2.0 publishes a release; `masir update` finds it from there.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the changelog needs history
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache-dependency-path: "**/go.sum"
+      - name: Require the update signing setup
+        env:
+          PUBKEY: ${{ vars.MASIR_UPDATE_PUBKEY }}
+          SECRET: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "$PUBKEY" ] || [ -z "$SECRET" ]; then
+            echo "::error::set the MASIR_UPDATE_PUBKEY variable (minisign public key) and the MINISIGN_SECRET_KEY secret (its secret key) first"
+            exit 1
+          fi
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The minisign public key(s) the built masir checks releases against.
+          MASIR_UPDATE_PUBKEY: ${{ vars.MASIR_UPDATE_PUBKEY }}
+          # Public PostHog project token and host, stored as repository variables.
+          # GoReleaser reads them from .Env.MASIR_POSTHOG_KEY / .Env.MASIR_POSTHOG_HOST
+          # in .goreleaser.yaml.
+          MASIR_POSTHOG_KEY: ${{ vars.MASIR_POSTHOG_KEY }}
+          MASIR_POSTHOG_HOST: ${{ vars.MASIR_POSTHOG_HOST }}
+      - name: Sign the checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MASIR_UPDATE_PUBKEY: ${{ vars.MASIR_UPDATE_PUBKEY }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          cd build/release
+          minisign -S -s "$RUNNER_TEMP/minisign.key" -m checksums.txt -x checksums.txt.minisig
+          rm -f "$RUNNER_TEMP/minisign.key"
+          # A signature the configured public key doesn't accept must not be published.
+          # (Any one of several comma-separated keys will do.)
+          ok=
+          for key in $(printf '%s' "$MASIR_UPDATE_PUBKEY" | tr ',' ' '); do
+            if minisign -V -P "$key" -m checksums.txt -x checksums.txt.minisig; then ok=1; fi
+          done
+          [ -n "$ok" ] || { echo "::error::the signature doesn't verify with MASIR_UPDATE_PUBKEY"; exit 1; }
+          # Until this lands, `masir update` refuses the release ("isn't signed") and
+          # tries again later; it never installs an unsigned one.
+          gh release upload "$GITHUB_REF_NAME" checksums.txt.minisig --clobber
+  gui:
+    # After the draft release exists, so `gh release upload` has somewhere to put the apps.
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            name: darwin
+          - os: windows-latest
+            name: windows
+          - os: ubuntu-latest
+            name: linux
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MASIR_UPDATE_PUBKEY: ${{ vars.MASIR_UPDATE_PUBKEY }}
+      MASIR_POSTHOG_KEY: ${{ vars.MASIR_POSTHOG_KEY }}
+      MASIR_POSTHOG_HOST: ${{ vars.MASIR_POSTHOG_HOST }}
+      MASIR_SIGN_COMPONENTS: "1"
+      MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+      MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.work
+          cache-dependency-path: "**/go.sum"
+      - name: Require the app update signing key
+        shell: bash
+        env:
+          SECRET: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+          COMPONENT_SECRET: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "$SECRET" ] || [ -z "$COMPONENT_SECRET" ]; then
+            echo "::error::set MINISIGN_SECRET_KEY and the MYGO_UPDATER_PRIVATE_KEY secret (the app update signing key)"
+            exit 1
+          fi
+      - name: Set the app's version from the tag
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          perl -0pi -e 's/"version":\s*"[^"]*"/"version": "'"$version"'"/' apps/masir-gui/mygo.json
+          grep '"version"' apps/masir-gui/mygo.json
+      - name: Build the macOS app (arm64 and Intel)
+        if: matrix.name == 'darwin'
+        shell: bash
+        run: make gui GUI_OS=darwin
+      - name: Build the Windows app (amd64 and arm64)
+        if: matrix.name == 'windows'
+        shell: bash
+        run: GUI_OS=windows GUI_ARCHES="amd64 arm64" sh scripts/build-gui.sh
+      - name: Build the Linux app (amd64 and arm64)
+        if: matrix.name == 'linux'
+        shell: bash
+        run: make gui GUI_OS=linux
+      - name: Build the Linux RPMs (x64 and ARM64)
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          # rpmbuild packs the archives the step above just produced; it cross-packages
+          # the ARM64 one on this x64 runner since nothing is compiled.
+          sudo apt-get update -qq && sudo apt-get install -y -qq rpm imagemagick
+          version="${GITHUB_REF_NAME#v}"
+          for arch in amd64 arm64; do
+            sh scripts/build-rpm.sh \
+              "apps/masir-gui/dist/linux-$arch/masir-desktop-portable-linux-$version-$arch.tar.gz"
+          done
+      - name: Upload the macOS app
+        if: matrix.name == 'darwin'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for arch in arm64 amd64; do
+            dir="apps/masir-gui/dist/darwin-$arch"
+            gh release upload "$GITHUB_REF_NAME" \
+              "$dir/masir-desktop-darwin-$version-$arch.dmg" \
+              "$dir/masir-desktop-portable-darwin-$version-$arch.tar.gz" \
+              "$dir/update-darwin-$arch.json" --clobber
+            # Delta updates, when the build had a published version to diff against.
+            for delta in "$dir"/*.delta; do
+              [ -e "$delta" ] || continue
+              gh release upload "$GITHUB_REF_NAME" "$delta" --clobber
+            done
+          done
+      - name: Upload the Windows app
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          foreach ($arch in @("amd64", "arm64")) {
+            $src = "apps/masir-gui/dist/windows-$arch"
+            # The portable zip is the app as a person should get it: not the update
+            # tarball, delta or manifest that sit beside it for the updater, and not the
+            # setup .exe, which is the other way to install and is uploaded on its own.
+            $portable = Join-Path $env:RUNNER_TEMP "portable-windows-$arch"
+            Remove-Item $portable -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Path $portable | Out-Null
+            Copy-Item "$src/*" $portable -Recurse -Force
+            foreach ($junk in @("*.tar.gz", "*.delta", "update-*.json", "masir-desktop-setup-*.exe")) {
+              Remove-Item (Join-Path $portable $junk) -Force -ErrorAction SilentlyContinue
+            }
+            $out = "masir-desktop-portable-windows-$version-$arch.zip"
+            Compress-Archive -Path "$portable/*" -DestinationPath $out
+            gh release upload $env:GITHUB_REF_NAME $out `
+              "$src/masir-desktop-setup-windows-$version-$arch.exe" `
+              "$src/masir-desktop-update-windows-$version-$arch.tar.gz" `
+              "$src/update-windows-$arch.json" --clobber
+            # Delta updates, when the build had a published version to diff against.
+            Get-ChildItem "$src/*.delta" -ErrorAction SilentlyContinue | ForEach-Object {
+              gh release upload $env:GITHUB_REF_NAME $_.FullName --clobber
+            }
+          }
+      - name: Upload the Linux app
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for arch in amd64 arm64; do
+            dir="apps/masir-gui/dist/linux-$arch"
+            gh release upload "$GITHUB_REF_NAME" \
+              "$dir/masir-desktop-linux-$version-$arch.deb" \
+              "$dir/masir-desktop-linux-$version-$arch.rpm" \
+              "$dir/masir-desktop-portable-linux-$version-$arch.tar.gz" \
+              "$dir/update-linux-$arch.json" --clobber
+            # Delta updates, when the build had a published version to diff against.
+            for delta in "$dir"/*.delta; do
+              [ -e "$delta" ] || continue
+              gh release upload "$GITHUB_REF_NAME" "$delta" --clobber
+            done
+          done
+  desktop-checksums:
+    # The release job signs the command-line archives; the desktop assets are uploaded
+    # later by the gui jobs, so they need their own signed checksum list. One published
+    # key then verifies every download a person installs.
+    needs: [gui]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      MASIR_UPDATE_PUBKEY: ${{ vars.MASIR_UPDATE_PUBKEY }}
+      MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+    steps:
+      - name: Download the desktop assets
+        run: |
+          mkdir -p desktop
+          gh release download "$GITHUB_REF_NAME" --dir desktop \
+            --pattern 'masir-desktop-*' --pattern 'update-*'
+      - name: Sign their checksums
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          cd desktop
+          # Every desktop download: the archives, the manifests and the deltas (which are
+          # named masir-desktop-… too). The app's own key signs the manifest, and this
+          # list lets anyone verify what they downloaded.
+          sha256sum masir-desktop-* update-* | sort -k2 > checksums-desktop.txt
+          minisign -S -s "$RUNNER_TEMP/minisign.key" -m checksums-desktop.txt -x checksums-desktop.txt.minisig
+          rm -f "$RUNNER_TEMP/minisign.key"
+          ok=
+          for key in $(printf '%s' "$MASIR_UPDATE_PUBKEY" | tr ',' ' '); do
+            if minisign -V -P "$key" -m checksums-desktop.txt -x checksums-desktop.txt.minisig; then ok=1; fi
+          done
+          [ -n "$ok" ] || { echo "::error::the desktop checksums don't verify with MASIR_UPDATE_PUBKEY"; exit 1; }
+          gh release upload "$GITHUB_REF_NAME" checksums-desktop.txt checksums-desktop.txt.minisig --clobber
+
+  publish:
+    # A release stays a draft until the command line, every system's app and the desktop
+    # checksums are in it. Failed app builds leave it unpublished instead of shipping a
+    # release that is missing a platform; re-run the failed job, then this one.
+    needs: [release, gui, desktop-checksums]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Every download the notes link exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          # The notes are written by hand (release.header) and the assets are uploaded by
+          # three other jobs. Check the first against the second before anyone sees it: a
+          # missing upload would otherwise publish a release whose table 404s.
+          #
+          # A draft's download URLs answer 404 until it is published, so compare every
+          # linked file with the assets the release has, not by fetching it. The draft is
+          # found in the releases list, which includes drafts for a token with push access.
+          release=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\")")
+          if [ -z "$release" ]; then
+            echo "::error::no release for $GITHUB_REF_NAME"
+            exit 1
+          fi
+          printf '%s' "$release" | jq -r '.body' > "$RUNNER_TEMP/notes.md"
+          printf '%s' "$release" | jq -r '.assets[].name' | sort -u > "$RUNNER_TEMP/assets.txt"
+          grep -oE "/releases/download/[^ )]+" "$RUNNER_TEMP/notes.md" \
+            | sed 's|.*/||' | sort -u > "$RUNNER_TEMP/linked.txt" || true
+          if [ ! -s "$RUNNER_TEMP/linked.txt" ]; then
+            echo "::error::the release notes link no downloads"
+            exit 1
+          fi
+          missing=$(comm -23 "$RUNNER_TEMP/linked.txt" "$RUNNER_TEMP/assets.txt")
+          if [ -n "$missing" ]; then
+            echo "::error::the notes link files the release does not have:"
+            printf '  %s\n' $missing
+            exit 1
+          fi
+          # Full CLI archives are also the compatibility fallback for already installed
+          # binary-only updaters. Require all six even if the notes table changes.
+          version="${GITHUB_REF_NAME#v}"
+          for os in darwin linux windows; do
+            ext=tar.gz
+            [ "$os" != windows ] || ext=zip
+            for arch in amd64 arm64; do
+              asset="masir-cli-$os-$version-$arch.$ext"
+              grep -Fxq "$asset" "$RUNNER_TEMP/assets.txt" || {
+                echo "::error::missing offline CLI/update archive: $asset"
+                exit 1
+              }
+            done
+          done
+          if grep -q '^masir-cli-update-' "$RUNNER_TEMP/assets.txt"; then
+            echo "::error::obsolete thin CLI archives remain in the draft release"
+            exit 1
+          fi
+          echo "checked $(wc -l < "$RUNNER_TEMP/linked.txt" | tr -d ' ') links against $(wc -l < "$RUNNER_TEMP/assets.txt" | tr -d ' ') assets"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest

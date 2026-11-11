@@ -1,0 +1,520 @@
+package main
+
+import (
+	"fmt"
+	"runtime"
+	"strconv"
+
+	"github.com/egoist/mygo/ui"
+)
+
+func (a *app) settingsView(c *ui.Context, p palette) {
+	ui.Column(c).Fill().Children(func() {
+		ui.Column(c).Padding(pageInset, tw(4), 0, tw(4)).Shrink(0).Children(func() {
+			a.pageHeader(c, p, "Settings")
+		})
+		// The scroll itself runs to the panel's edge, so its bar sits beside the cards
+		// instead of over them; the sections keep the same margins inside it.
+		ui.Scroll(c.Key("settings-scroll")).Grow(1).Basis(0).MinHeight(0).
+			ScrollbarInsets(0, 2, 0).Children(func() {
+			ui.Column(c).Gap(tw(3)).Padding(0, tw(4), tw(0), tw(4)).Shrink(0).Children(func() {
+				a.advancedSection(c, p)
+				a.dnsSection(c, p)
+				a.loggingSection(c, p)
+				a.privacySection(c, p)
+				a.systemSection(c, p)
+				if button(c, "quit", "Quit Masir", false, false, false, p) {
+					quit()
+				}
+				ui.Column(c.Key("app")).Padding(0, 0, tw(4)).Gap(tw(3)).AlignItems(ui.Center).Justify(ui.SpaceBetween).Shrink(0).Children(func() {
+					ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Start).FillWidth().Gap(tw(0.5)).Grow(1).Children(func() {
+						ui.Column(c).Gap(tw(0.2)).Children(func() {
+							label(c, "Masir GUI "+versionLabel(a.version), sizeSubhead, 18, 500, p.text)
+							ui.Link(c, "Github ↗", "https://github.com/Gozargah/Masir").FontSize(10).FixedLineHeight(13).FontWeight(300).TextColor(ui.Hex("#73b0ff"))
+						})
+						ui.Column(c).Gap(tw(0.5)).Children(func() {
+							mono(c, "Daemon: "+versionLabel(a.status.GetVersion()), sizeMicro, 13, 400, p.muted).MaxLines(2)
+							mono(c, "xray: v"+a.status.GetXrayVersion(), sizeMicro, 13, 400, p.muted).MaxLines(2)
+						})
+					})
+					if a.showUpdateControl() {
+						ui.Row(c).FillWidth().Gap(tw(1)).AlignItems(ui.Center).Children(func() {
+							a.updateControl(c, p, true)
+						})
+					}
+				})
+			})
+		})
+	})
+}
+
+func (a *app) advancedSection(c *ui.Context, p palette) {
+	titled(c, p, "ADVANCED", nil, func() {
+		cardBox(c, p, func() {
+			always := a.alwaysOnProxy()
+			a.settingToggle(c, p, "always", "Always-on Proxy Port", "A local proxy port always available for apps you configure manually, using your active outbound.", always, func(on bool) {
+				a.setAlwaysOnProxy(on)
+			})
+			cardDivider(c, p)
+			ui.Column(c.Key("port-row")).Padding(tw(2.5), tw(3)).Gap(tw(1)).Shrink(0).Children(func() {
+				ui.Row(c).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(tw(2)).Children(func() {
+					label(c, "Port Number", sizeSubhead, 18, 500, p.text)
+					box := ui.Row(c).Width(76).Padding(tw(1), tw(2)).Radius(tw(1.5)).Shrink(0).Clip()
+					var in ui.Element
+					box.Children(func() {
+						in = ui.TextInputBase(c.Key("port"), &a.portText).Grow(1).MinWidth(0).
+							FontSize(sizeSubhead).TextAlign(ui.End).Font("monospace").FontWeight(500).
+							TextColor(p.text).Label("Port Number")
+						in.Valid()
+						if in.Changed() {
+							if v := digitsOnly(a.portText); v != a.portText {
+								a.portText = v
+							}
+						}
+					})
+					bg, border, _ := inputColors(p, in.Focused())
+					box.Background(bg).Border(1, border)
+					if in.Submitted() || (!in.Focused() && a.portEdited) {
+						a.applyPort()
+					}
+					if in.Focused() {
+						a.portEdited = true
+					}
+				})
+				label(c, "Mixed SOCKS5 / HTTP", sizeCaption, 14.85, 400, p.muted)
+			})
+			cardDivider(c, p)
+			lan := a.allowLAN()
+			a.settingToggle(c, p, "lan", "Share on the Network", "Let other devices on your network use the local proxy.", lan, func(on bool) {
+				a.setAllowLAN(on)
+			})
+			cardDivider(c, p)
+			login := a.loginEnabled()
+			hint := "Start Masir in the menu bar when you sign in."
+			if a.loginNeedsApproval {
+				hint = "Allow Masir in Login Items to start at login."
+			}
+			a.settingToggle(c, p, "login", "Open at Login", hint, login, func(on bool) {
+				a.setLoginEnabled(on)
+			})
+			if a.loginNeedsApproval && runtime.GOOS == "darwin" {
+				ui.Row(c).Padding(0, tw(3), tw(2.5)).Children(func() {
+					if button(c, "login-items", "Open Login Items", false, false, false, p) {
+						if err := openLoginItems(); err != nil {
+							a.fail("Couldn't open Login Items: ", err)
+						}
+					}
+				})
+			}
+			cardDivider(c, p)
+			a.settingToggle(c, p, "disconnect-quit", "Disconnect on Quit", "Turn off the connection when you quit Masir.", a.disconnectOnQuitEnabled(), func(on bool) {
+				a.setDisconnectOnQuit(on)
+			})
+			cardDivider(c, p)
+			minutes := a.subInterval()
+			a.selectRow(c, p, "interval", "Refresh Subscriptions",
+				"How often masir checks each subscription for new servers.",
+				strconv.Itoa(int(minutes)), intervalChoices(minutes), false, func(v string) {
+					n, err := strconv.Atoi(v)
+					if err != nil {
+						return
+					}
+					a.setSubInterval(uint32(n))
+				})
+		})
+	})
+}
+
+// settingToggle is a card row with a title, a subdued switch and a hint under them.
+func (a *app) settingToggle(c *ui.Context, p palette, key, title, hint string, on bool, set func(bool)) {
+	ui.Row(c.Key("toggle-"+key)).Padding(tw(2.5), tw(3)).Gap(tw(3)).AlignItems(ui.Center).Shrink(0).Children(func() {
+		ui.Column(c).Gap(tw(0.5)).Grow(1).Basis(0).MinWidth(0).Children(func() {
+			ui.Row(c).Gap(tw(2)).AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
+				label(c, title, sizeSubhead, 18, 500, p.text)
+				if next, changed := nativeSwitch(c, key, title, on, switchSubdued, false, false, p); changed {
+					set(next)
+				}
+			})
+			label(c, hint, sizeCaption, 14.85, 400, p.muted)
+		})
+	})
+}
+
+// ---- dns, logging and privacy ----
+
+// choice is one option of a drop-down: the value saved, and how it reads.
+type choice struct{ value, label string }
+
+// gatewayChoices is the addresses v1 offered, plus this version's default. The current
+// value is kept as an option of its own when it came from the command line.
+func gatewayChoices(current string) []choice {
+	out := []choice{
+		{"10.10.20.1/24", "10.10.20.1/24"},
+		{"10.10.10.1/24", "10.10.10.1/24"},
+		{"10.0.0.1/24", "10.0.0.1/24"},
+		{"172.19.0.1/24", "172.19.0.1/24"},
+		{"192.168.127.1/24", "192.168.127.1/24"},
+		{"198.18.0.1/24", "198.18.0.1/24"},
+	}
+	for _, o := range out {
+		if o.value == current {
+			return out
+		}
+	}
+	if current != "" {
+		out = append([]choice{{current, current}}, out...)
+	}
+	return out
+}
+
+// intervalChoices is the subscription refresh interval, in minutes.
+func intervalChoices(current uint32) []choice {
+	out := []choice{
+		{"15", "Every 15 minutes"},
+		{"30", "Every 30 minutes"},
+		{"60", "Every hour"},
+		{"180", "Every 3 hours"},
+		{"720", "Every 12 hours"},
+		{"1440", "Every 24 hours"},
+	}
+	for _, o := range out {
+		if o.value == strconv.Itoa(int(current)) {
+			return out
+		}
+	}
+	return append([]choice{{strconv.Itoa(int(current)), intervalLabel(current)}}, out...)
+}
+
+// intervalLabel reads a refresh interval as the choice row shows it.
+func intervalLabel(minutes uint32) string {
+	switch {
+	case minutes == 720:
+		return "Every 12 hours"
+	case minutes%1440 == 0:
+		return fmt.Sprintf("Every %d day(s)", minutes/1440)
+	case minutes%60 == 0:
+		return fmt.Sprintf("Every %d hour(s)", minutes/60)
+	default:
+		return fmt.Sprintf("Every %d minutes", minutes)
+	}
+}
+
+// logLevelChoices is Xray's log level, quietest first.
+func logLevelChoices() []choice {
+	return []choice{
+		{"none", "Off"},
+		{"error", "Error"},
+		{"warning", "Warning"},
+		{"info", "Info"},
+		{"debug", "Debug"},
+	}
+}
+
+// dohChoices is the DNS-over-HTTPS resolvers the app offers; a resolver set from the
+// command line is kept as an option of its own.
+func dohChoices(current string) []choice {
+	out := []choice{
+		{"https://1.1.1.1/dns-query", "https://1.1.1.1/dns-query"},
+		{"https://dns.google/dns-query", "https://dns.google/dns-query"},
+		{"https://dns.quad9.net/dns-query", "https://dns.quad9.net/dns-query"},
+		{"https://dns.adguard-dns.com/dns-query", "https://dns.adguard-dns.com/dns-query"},
+	}
+	for _, o := range out {
+		if o.value == current {
+			return out
+		}
+	}
+	if current != "" {
+		out = append([]choice{{current, current}}, out...)
+	}
+	return out
+}
+
+// settingHead is the title and hint at the top of a settings row.
+func settingHead(c *ui.Context, p palette, title, hint string) ui.Element {
+	return ui.Column(c).Gap(tw(0.5)).Children(func() {
+		label(c, title, sizeSubhead, 18, 500, p.text)
+		if hint != "" {
+			label(c, hint, sizeCaption, 14.85, 400, p.muted)
+		}
+	})
+}
+
+// labelOf is the label of a choice, or the value itself when it isn't one of them.
+func labelOf(opts []choice, value string) string {
+	for _, o := range opts {
+		if o.value == value {
+			return o.label
+		}
+	}
+	return value
+}
+
+// selectRow is a card row with a title, a hint and a drop-down of choices. Inline puts the
+// value at the row's end; otherwise the drop-down spans the row under the hint, for a
+// value too wide to share the line.
+func (a *app) selectRow(c *ui.Context, p palette, key, title, hint, current string, opts []choice, inline bool, set func(string)) {
+	selected := labelOf(opts, current)
+	byLabel := make(map[string]string, len(opts))
+	for _, o := range opts {
+		byLabel[o.label] = o.value
+	}
+	draw := func() {
+		sel := ui.SelectBase(c, &selected)
+		sel.Trigger.Label(title).Cursor(ui.CursorPointer).Padding(tw(1), tw(2)).
+			Radius(tw(1.5)).Gap(tw(1)).AlignItems(ui.Center).
+			Background(p.subdued).Border(1, p.borderDefault)
+		if inline {
+			sel.Trigger.Shrink(0)
+		} else {
+			sel.Trigger.Justify(ui.SpaceBetween).Margin(4, 0, 0, 0)
+		}
+		sel.Trigger.Children(func() {
+			label(c, selected, sizeCaption, 16, 500, p.text).SingleLine()
+			ui.Icon(c, iconChevronDown).FontSize(11).TextColor(p.tertiary).Shrink(0)
+		})
+		sel.Popup(func(panel ui.Element) {
+			panel.Padding(tw(1)).Radius(tw(2)).Background(p.popup).Border(1, p.borderDefault)
+			if p.dark {
+				panel.Shadow(0, 6, 20, 0, ui.RGBA(0, 0, 0, 0.35))
+			} else {
+				panel.Shadow(0, 6, 20, 0, ui.RGBA(0, 0, 0, 0.12))
+			}
+			if inline {
+				panel.MinWidth(tw(40))
+			}
+			for _, o := range opts {
+				item := sel.Item(o.label).Padding(tw(1.5), tw(2)).Radius(6).Gap(tw(1.5)).
+					AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				if item.Highlighted() {
+					item.Background(p.accentSurface)
+				}
+				item.Children(func() {
+					ui.Box(c).Size(12, 12).Shrink(0).Children(func() {
+						if o.value == current {
+							ui.Icon(c, iconCheck).FontSize(12).TextColor(p.accent)
+						}
+					})
+					label(c, o.label, sizeCaption, 16, 500, p.text).SingleLine()
+				})
+			}
+		})
+		if sel.Trigger.Changed() {
+			set(byLabel[selected])
+		}
+	}
+	if inline {
+		ui.Row(c.Key("select-"+key)).Padding(tw(2.5), tw(3)).Gap(tw(3)).AlignItems(ui.Center).
+			Justify(ui.SpaceBetween).Shrink(0).Children(func() {
+			ui.Box(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
+				settingHead(c, p, title, hint)
+			})
+			draw()
+		})
+		return
+	}
+	ui.Column(c.Key("select-"+key)).Padding(tw(2.5), tw(3)).Gap(tw(1)).Shrink(0).Children(func() {
+		settingHead(c, p, title, hint)
+		draw()
+	})
+}
+
+// settingField is a card row with a title, a hint and a text field under them.
+func (a *app) settingField(c *ui.Context, p palette, key, title, hint, placeholder string, f *textSetting, commit func(string)) {
+	ui.Column(c.Key("field-"+key)).Padding(tw(2.5), tw(3)).Gap(tw(1)).Shrink(0).Children(func() {
+		settingHead(c, p, title, hint)
+		box := ui.Row(c).Margin(4, 0, 0).Padding(tw(1), tw(2)).Radius(tw(1.5)).Shrink(0).Clip()
+		var in ui.Element
+		box.Children(func() {
+			in = ui.TextInputBase(c.Key(key), &f.text).Placeholder(placeholder).Grow(1).MinWidth(0).
+				FontSize(sizeCaption).TextColor(p.text).Label(title)
+			in.Valid()
+		})
+		bg, border, placeholderColor := inputColors(p, in.Focused())
+		in.PlaceholderColor(placeholderColor)
+		box.Background(bg).Border(1, border)
+		if in.Submitted() || (!in.Focused() && f.edited) {
+			commit(f.text)
+		}
+		if in.Focused() {
+			f.edited = true
+		}
+	})
+}
+
+func (a *app) dnsSection(c *ui.Context, p palette) {
+	gateway := a.gateway()
+	titled(c, p, "DNS & GATEWAY", nil, func() {
+		cardBox(c, p, func() {
+			a.selectRow(c, p, "gateway", "TUN Gateway",
+				"The tunnel's own address. Pick one that doesn't clash with your network.",
+				gateway, gatewayChoices(gateway), false, a.setGateway)
+			cardDivider(c, p)
+			doh := a.dohURL()
+			a.selectRow(c, p, "doh", "DNS over HTTPS",
+				"Resolves names for proxied traffic, through the proxy.",
+				doh, dohChoices(doh), false, a.setDoH)
+			cardDivider(c, p)
+			a.settingField(c, p, "dns", "Bootstrap DNS", "Plain DNS for proxy server names, sent direct. Separate addresses with commas.",
+				"1.1.1.1, 8.8.8.8", &a.dns, a.saveBootstrapDNS)
+			cardDivider(c, p)
+			a.settingField(c, p, "tundns", "TUN DNS", "DNS the tunnel advertises. Leave empty to use the bootstrap DNS.",
+				"Same as bootstrap DNS", &a.tunDNS, a.saveTunDNS)
+		})
+	})
+}
+
+// logFollowCommand is how the person watches the daemon's log, which carries Xray's own
+// warnings and errors too. It is the v1 panel's live tail, without needing root.
+const logFollowCommand = "masir logs --follow"
+
+func (a *app) loggingSection(c *ui.Context, p palette) {
+	level := a.logLevel()
+	titled(c, p, "LOGGING", nil, func() {
+		cardBox(c, p, func() {
+			a.selectRow(c, p, "loglevel", "Xray Log Level", "",
+				level, logLevelChoices(), true, a.setLogLevel)
+			cardDivider(c, p)
+			ui.Column(c.Key("follow-log")).Padding(tw(2.5), tw(3)).Gap(tw(1)).Shrink(0).Children(func() {
+				label(c, "Follow the Log", sizeSubhead, 18, 500, p.text)
+				hint := "Xray's own warnings and errors appear in the daemon's log."
+				if level == "none" {
+					hint = "Nothing is logged while the level is Off."
+				}
+				label(c, hint, sizeCaption, 14.85, 400, p.muted)
+				ui.Row(c).Margin(4, 0, 0).Gap(tw(1)).AlignItems(ui.Center).Children(func() {
+					ui.Row(c).Grow(1).Basis(0).MinWidth(0).Padding(tw(1.5), tw(2)).Radius(tw(1.5)).
+						Background(p.subdued).Border(1, p.borderDefault).Children(func() {
+						mono(c, logFollowCommand, sizeCaption, 16, 400, p.text).SingleLine().Selectable()
+					})
+					if iconButton(c, "log-copy", iconCopy, "Copy the log command", p, iconSM, variantSubtle, 13) {
+						c.WriteClipboard(logFollowCommand)
+						a.notify("Copied " + logFollowCommand)
+					}
+					if iconButton(c, "log-terminal", iconTerminal, "Open in Terminal", p, iconSM, variantSubtle, 13) {
+						if err := openTerminalIn(logFollowCommand); err != nil {
+							a.fail("Couldn't open a terminal: ", err)
+						}
+					}
+				})
+				if !a.cliState().installed {
+					label(c, "Install the command line tool below to run it.", sizeCaption, 14, 400, p.degraded)
+				}
+			})
+			cardDivider(c, p)
+			ui.Column(c.Key("xray-config")).Padding(tw(2.5), tw(3)).Gap(tw(1)).Shrink(0).Children(func() {
+				ui.Row(c).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(tw(2)).Children(func() {
+					label(c, "Xray Config", sizeSubhead, 18, 500, p.text)
+					if thinButton(c, "open-config", "Open JSON", false, false, false, p) {
+						a.openXrayConfig()
+					}
+				})
+				label(c, "The configuration the daemon is running right now, as masir get-config prints it.",
+					sizeCaption, 14.85, 400, p.muted)
+			})
+		})
+	})
+}
+
+func (a *app) privacySection(c *ui.Context, p palette) {
+	titled(c, p, "PRIVACY", nil, func() {
+		cardBox(c, p, func() {
+			a.settingToggle(c, p, "analytics", "Anonymous Analytics",
+				"Sends anonymous usage and crash data to help improve Masir. It never includes addresses, names, or the sites you visit.",
+				a.analyticsOn(), a.setAnalytics)
+		})
+	})
+}
+
+func (a *app) systemSection(c *ui.Context, p palette) {
+	st := a.status
+	cli := a.cliState()
+	titled(c, p, "SYSTEM", nil, func() {
+		cardBox(c, p, func() {
+			ui.Column(c).Padding(tw(2.5), tw(3)).Gap(tw(1.5)).Shrink(0).Children(func() {
+				ui.Row(c).AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
+					label(c, "Background Service", sizeSubhead, 18, 500, p.text)
+					switch {
+					case st.GetServiceInstalled() && st.GetServiceRunning():
+						badge(c, "Active", nil, p.healthy, p.healthySurface, 0, 0)
+					case st.GetServiceInstalled() && !st.GetServiceEnabled():
+						badge(c, "Disabled", nil, p.degraded, p.degradedSurface, 0, 0)
+					case st.GetServiceInstalled():
+						badge(c, "Stopped", nil, p.degraded, p.degradedSurface, 0, 0)
+					case st.GetPrivileged():
+						badge(c, "This Session", nil, p.degraded, p.degradedSurface, 0, 0)
+					default:
+						badge(c, "Not Installed", nil, p.muted, p.neutralSurface, 0, 0)
+					}
+				})
+				label(c, "Starts the daemon at boot, so connecting in tunnel mode never asks for permission again.", sizeCaption, 14.85, 400, p.muted)
+				if st.GetServiceInstalled() && !st.GetServiceEnabled() {
+					label(c, "The system has it turned off. Allow Masir in Login Items, or start it here.", sizeCaption, 14.85, 400, p.degraded)
+				}
+				ui.Column(c).Gap(tw(1)).Margin(4, 0, 0).Children(func() {
+					if st.GetServiceInstalled() {
+						if !st.GetServiceRunning() {
+							if thinButton(c, "service-start", "Start Service", true, a.serviceBusy, a.serviceBusy, p) {
+								a.startDaemonService()
+							}
+						}
+						if runtime.GOOS == "darwin" && !st.GetServiceEnabled() {
+							if thinButton(c, "service-login-items", "Open Login Items", false, false, false, p) {
+								if err := openLoginItems(); err != nil {
+									a.fail("Couldn't open Login Items: ", err)
+								}
+							}
+						}
+						if thinButton(c, "service-remove", "Remove Service", false, a.serviceBusy, a.serviceBusy, p) {
+							a.removeDaemonService()
+						}
+					} else if thinButton(c, "service-install", "Install Service", true, a.serviceBusy, a.serviceBusy, p) {
+						a.installDaemonService()
+					}
+				})
+			})
+			cardDivider(c, p)
+			ui.Column(c).Padding(tw(2.5), tw(3)).Gap(tw(1.5)).Shrink(0).Children(func() {
+				ui.Row(c).AlignItems(ui.Center).Justify(ui.SpaceBetween).Children(func() {
+					label(c, "Command Line Tool", sizeSubhead, 18, 500, p.text)
+					if cli.installed {
+						badge(c, "Installed", nil, p.healthy, p.healthySurface, 0, 0)
+					} else {
+						badge(c, "Not Installed", nil, p.muted, p.neutralSurface, 0, 0)
+					}
+				})
+				switch {
+				case cli.installed && cli.ours:
+					label(c, "Use masir in your terminal; the app keeps this command up to date.", sizeCaption, 14.85, 400, p.muted)
+				case cli.installed:
+					label(c, "masir is already installed at "+cli.path+"; Masir leaves it unchanged.", sizeCaption, 14.85, 400, p.muted)
+				default:
+					label(c, "Use masir in your terminal; the app sets it up automatically.", sizeCaption, 14.85, 400, p.muted)
+				}
+				if !cli.installed {
+					ui.Column(c).Gap(tw(1)).Margin(4, 0, 0).Children(func() {
+						if thinButton(c, "cli-install", "Install", true, a.cliBusy, a.cliBusy, p) {
+							a.installCommandLine()
+						}
+					})
+				}
+				if cli.needsShell {
+					label(c, "Open a new terminal to use masir.", sizeCaption, 14, 400, p.degraded)
+				} else if cli.installed && cli.ours && !cli.onPath {
+					label(c, "Add "+cli.dir+" to your PATH to run it by name.", sizeCaption, 14, 400, p.degraded)
+					mono(c, cli.path, sizeMicro, 13, 400, p.muted).MaxLines(2).Selectable()
+				}
+			})
+			cardDivider(c, p)
+			ui.Column(c).Padding(tw(2.5), tw(3)).Gap(tw(1.5)).Shrink(0).Children(func() {
+				label(c, "Resets the proxy port, DNS, gateway, refresh interval and logging. Your servers, rules, power and privacy choice stay as they are.",
+					sizeCaption, 14.85, 400, p.muted)
+				ui.Column(c).Gap(tw(1)).Margin(4, 0, 0).Children(func() {
+					if thinButton(c, "reset-settings", "Restore Defaults", false, false, false, p) {
+						a.restoreDefaults()
+					}
+				})
+			})
+		})
+	})
+}

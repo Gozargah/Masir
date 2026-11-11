@@ -1,0 +1,20 @@
+[38;2;0;199;132m❯[0m masir status
+
+[1mMasir Daemon[0m [38;2;124;135;143m0.1.0[0m [38;2;0;199;132m● Active[0m [38;2;124;135;143m(privileged, service)[0m
+[38;2;124;135;143m├── Serving: [0mdemo (uid 1000)
+[38;2;124;135;143m└── Uptime:  [0m1h 0m [38;2;124;135;143m(since 2000-01-01 00:00:00)[0m
+
+[1mXray Core[0m [38;2;124;135;143mv26.10.29[0m [38;2;0;199;132m● Active[0m
+[38;2;124;135;143m├── Mode:              [0m[38;2;0;199;132mTUN (system-wide routing)[0m
+[38;2;124;135;143m├── Routing Fallback:  [0m[36mProxy[0m[38;2;124;135;143m (unmatched traffic goes through the active proxy)[0m
+[38;2;124;135;143m├── Always-on Proxy:   [0m[38;2;0;199;132mON[0m[38;2;124;135;143m (the proxy stays up while masir is off)[0m
+[38;2;124;135;143m├── Proxy Port:        [0m127.0.0.1:7890
+[38;2;124;135;143m├── DoH DNS:           [0mhttps://1.1.1.1/dns-query
+[38;2;124;135;143m├── DNS Servers:       [0m1.1.1.1, 8.8.8.8
+[38;2;124;135;143m├── Xray Log:          [0mwarning
+[38;2;124;135;143m└── Geo Data:          [0m2000-01-01 [38;2;124;135;143m(1h ago, /Library/PrivilegedHelperTools/masir)[0m
+
+[1mConnectivity[0m
+[38;2;124;135;143m├── Internet: [0m[38;2;0;199;132m✔ 70ms[0m
+[38;2;124;135;143m└── Proxy:    [0m[36mEngland[0m  [38;2;0;199;132m✔ 96ms[0m
+[38;2;0;199;132m✔[0m Online, and the active proxy works.
