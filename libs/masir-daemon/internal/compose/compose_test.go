@@ -128,6 +128,9 @@ func TestBuildFollowsMasirTS(t *testing.T) {
 	if r := ruleByTag(c, "pin"); r["outboundTag"] != "sub-s1-c1" {
 		t.Errorf("pinned rule = %v", r)
 	}
+	if r := ruleByTag(c, "masir-dns-hijack"); r["network"] != "tcp,udp" {
+		t.Errorf("dns hijack rule network = %v, want tcp,udp", r["network"])
+	}
 	if c.Routing.DomainStrategy != "IPIfNonMatch" {
 		t.Errorf("an ip rule should switch domainStrategy, got %q", c.Routing.DomainStrategy)
 	}
@@ -262,6 +265,9 @@ func TestBuildInbounds(t *testing.T) {
 	if dns, _ := json.Marshal(settings["dns"]); string(dns) != `["1.1.1.1","8.8.8.8"]` {
 		t.Errorf("tun dns should fall back to dns servers, got %s", dns)
 	}
+	if gw, _ := json.Marshal(settings["gateway"]); string(gw) != `["10.10.20.1/24","fd00::1/64"]` {
+		t.Errorf("tun gateway should include ipv4 and ipv6, got %s", gw)
+	}
 
 	_, off := build(t, Input{State: st})
 	if len(off.Inbounds) != 0 {
@@ -271,18 +277,32 @@ func TestBuildInbounds(t *testing.T) {
 
 func TestTunBlocksDNSLeaksOnWindows(t *testing.T) {
 	st := testState(t)
-	leak := func(os string) any {
+	tunSettings := func(os string) map[string]any {
 		goos = os
 		defer func() { goos = runtime.GOOS }()
 		_, c := build(t, Input{State: st, Proxy: true, Tun: true})
 		settings, _ := c.Inbounds[1]["settings"].(map[string]any)
-		return settings["autoSystemWfpBlockLeak"]
+		return settings
 	}
-	if got, _ := json.Marshal(leak("windows")); string(got) != `["dns"]` {
-		t.Errorf("windows: autoSystemWfpBlockLeak = %s, want [\"dns\"]", got)
+	win := tunSettings("windows")
+	if got, _ := json.Marshal(win["autoSystemWfpBlockLeak"]); string(got) != `["dns","misconfigtun"]` {
+		t.Errorf("windows: autoSystemWfpBlockLeak = %s, want [\"dns\",\"misconfigtun\"]", got)
 	}
-	if got := leak("darwin"); got != nil {
-		t.Errorf("the filter is Windows-only, got %v on macOS", got)
+	if win["desc"] != "Masir" {
+		t.Errorf("windows: desc = %v, want Masir", win["desc"])
+	}
+	for _, os := range []string{"linux", "freebsd"} {
+		s := tunSettings(os)
+		if s["autoSystemDnsToGateway"] != true {
+			t.Errorf("%s: autoSystemDnsToGateway = %v, want true", os, s["autoSystemDnsToGateway"])
+		}
+	}
+	mac := tunSettings("darwin")
+	if mac["autoSystemWfpBlockLeak"] != nil {
+		t.Errorf("the filter is Windows-only, got %v on macOS", mac["autoSystemWfpBlockLeak"])
+	}
+	if mac["autoSystemDnsToGateway"] != nil {
+		t.Errorf("autoSystemDnsToGateway is Linux/FreeBSD only, got %v on macOS", mac["autoSystemDnsToGateway"])
 	}
 }
 
