@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ type fakeDaemon struct {
 	calls                                []string
 	failPow                              error
 	failFallback, failRemove, failEnable error
+	failAdd                              error
 	release                              *pb.ReleaseInfo
 	releaseErr                           error
 	updateJob                            *pb.UpdateJob
@@ -94,6 +96,27 @@ func (f *fakeDaemon) ListSubscriptions(_ context.Context, r *pb.ListSubscription
 }
 func (f *fakeDaemon) GetSubscription(_ context.Context, r *pb.GetSubscriptionRequest, _ ...grpc.CallOption) (*pb.GetSubscriptionResponse, error) {
 	return &pb.GetSubscriptionResponse{Configs: f.configs[r.Id]}, nil
+}
+func (f *fakeDaemon) AddSubscription(_ context.Context, r *pb.AddSubscriptionRequest, _ ...grpc.CallOption) (*pb.AddSubscriptionResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "add "+r.Url)
+	if f.failAdd != nil {
+		return nil, f.failAdd
+	}
+	id := fmt.Sprintf("s%d", len(f.subs)+1)
+	name := r.Name
+	if name == "" {
+		name = "imported"
+	}
+	sub := &pb.Subscription{
+		Id:                          id,
+		Name:                        name,
+		Url:                         r.Url,
+		CustomUpdateIntervalMinutes: r.CustomUpdateIntervalMinutes,
+	}
+	f.subs = append(f.subs, sub)
+	return &pb.AddSubscriptionResponse{Subscription: sub}, nil
 }
 func (f *fakeDaemon) ListRoutingRules(context.Context, *pb.ListRoutingRulesRequest, ...grpc.CallOption) (*pb.ListRoutingRulesResponse, error) {
 	return &pb.ListRoutingRulesResponse{Rules: f.rules}, nil

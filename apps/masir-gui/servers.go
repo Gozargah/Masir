@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -117,9 +118,38 @@ func (a *app) testServers(only ...server) {
 }
 
 func (a *app) removeSubscription(id string) {
-	a.run("Couldn't remove the subscription: ", func(ctx context.Context) error {
+	var subName string
+	for _, s := range a.subscriptions.subscriptions {
+		if s.Id == id {
+			subName = subscriptionName(s)
+			break
+		}
+	}
+	a.async(func() {
+		ctx, cancel := rpc()
+		defer cancel()
 		_, err := a.d.RemoveSubscription(ctx, &pb.RemoveSubscriptionRequest{Id: id})
-		return err
+		a.post(func() {
+			a.refreshLists()
+			if err != nil {
+				a.fail("Couldn't remove the subscription: ", err)
+				return
+			}
+			for a.path != mainPath && a.router.CanGoBack() {
+				a.goBack()
+			}
+			if a.scrollToSubID == id {
+				a.scrollToSubID = ""
+			}
+			if a.collapsedSubs != nil {
+				delete(a.collapsedSubs, id)
+			}
+			msg := "Subscription deleted"
+			if subName != "" {
+				msg = fmt.Sprintf("Subscription %q deleted", subName)
+			}
+			a.notify(msg)
+		})
 	})
 }
 
@@ -154,7 +184,7 @@ func (a *app) refreshSubscription(id string) {
 }
 
 func (a *app) addSubscription() {
-	url, name := strings.TrimSpace(a.subURL), strings.TrimSpace(a.subName)
+	url, name, interval := strings.TrimSpace(a.subURL), strings.TrimSpace(a.subName), a.subCustomInterval
 	if url == "" || a.subBusy {
 		return
 	}
@@ -162,15 +192,35 @@ func (a *app) addSubscription() {
 	a.async(func() {
 		ctx, cancel := rpc()
 		defer cancel()
-		_, err := a.d.AddSubscription(ctx, &pb.AddSubscriptionRequest{Url: url, Name: name})
+		res, err := a.d.AddSubscription(ctx, &pb.AddSubscriptionRequest{
+			Url:                         url,
+			Name:                        name,
+			CustomUpdateIntervalMinutes: interval,
+		})
 		a.post(func() {
 			a.subBusy = false
 			if err != nil {
 				a.subError = describe(err)
 				return
 			}
-			a.subURL, a.subName = "", ""
+			msg := "Subscription added"
+			var newSubID string
+			if res != nil && res.Subscription != nil {
+				newSubID = res.Subscription.Id
+				if res.Subscription.Name != "" {
+					msg = fmt.Sprintf("Subscription %q added", res.Subscription.Name)
+				}
+			}
+			a.notifySuccess(msg)
+			a.subURL, a.subName, a.subCustomInterval = "", "", 0
+			a.query = ""
 			a.open = sectionServers
+			if newSubID != "" {
+				a.scrollToSubID = newSubID
+				if a.collapsedSubs != nil {
+					delete(a.collapsedSubs, newSubID)
+				}
+			}
 			a.goBack() // the form opened over the main page
 			a.refreshLists()
 		})

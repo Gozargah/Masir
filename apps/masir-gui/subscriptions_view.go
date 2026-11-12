@@ -121,6 +121,10 @@ func (a *app) subscriptionAction(action string, req *pb.AlterSubscriptionRequest
 		return
 	}
 	id := st.id
+	var subName string
+	if s := a.selectedSubscription(); s != nil {
+		subName = subscriptionName(s)
+	}
 	st.busy, st.err = true, ""
 	a.async(func() {
 		ctx, cancel := rpc()
@@ -143,8 +147,23 @@ func (a *app) subscriptionAction(action string, req *pb.AlterSubscriptionRequest
 				a.subscriptionPage.err = describe(err)
 				return
 			}
-			if (action == "edit" && a.path == editSubscriptionPath) || (action == "remove" && a.path == subscriptionDetailsPath) {
+			if action == "edit" && a.path == editSubscriptionPath {
 				a.goBack()
+			} else if action == "remove" {
+				for a.path != mainPath && a.router.CanGoBack() {
+					a.goBack()
+				}
+				if a.scrollToSubID == id {
+					a.scrollToSubID = ""
+				}
+				if a.collapsedSubs != nil {
+					delete(a.collapsedSubs, id)
+				}
+				msg := "Subscription deleted"
+				if subName != "" {
+					msg = fmt.Sprintf("Subscription %q deleted", subName)
+				}
+				a.notify(msg)
 			}
 		})
 	})

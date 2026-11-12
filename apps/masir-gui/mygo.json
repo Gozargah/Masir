@@ -3,6 +3,9 @@
   "slug": "masir-desktop",
   "identifier": "com.gozargah.masir.desktop",
   "version": "0.1.0",
+  "urlSchemes": [
+    "masir"
+  ],
   "updates": {
     "publicKey": "SQxOnMeVtf9SP4F9deXYOKiTLTn+R2dlv7rQgp3StoA=",
     "github": "Gozargah/Masir",

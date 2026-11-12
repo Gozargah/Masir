@@ -54,6 +54,8 @@ func (s *shell) toggle() {
 func (a *app) resetForOpen() {
 	a.resetRouter()
 	a.path, a.open, a.lastSub = mainPath, sectionNone, mainPath
+	a.subCustomInterval = 0
+	a.scrollToSubID = ""
 	a.motion = motion{instant: a.motion.instant} // a new panel starts at rest
 	clear(a.warmed)                              // a new window shapes its pages again
 	a.lastMotion = time.Time{}
@@ -267,6 +269,9 @@ func main() {
 		mygo.App.SetActivationPolicy(mygo.ActivationPolicyAccessory)
 	}
 	mygo.App.OnWindowAllClosed(func() {})
+	if err := mygo.App.RegisterURLScheme("masir"); err != nil {
+		log.Print("register url scheme: ", err)
+	}
 	if !mygo.App.RequestSingleInstanceLock() {
 		return
 	}
@@ -287,6 +292,9 @@ func main() {
 	}
 	mygo.App.OnSecondInstance(func([]string, string) {
 		s.show()
+	})
+	mygo.App.OnOpenURL(func(rawURL string) {
+		s.handleDeeplink(rawURL)
 	})
 	mygo.App.WhenReady(func() {
 		a.binary = daemonBinary()
