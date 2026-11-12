@@ -93,6 +93,7 @@ type app struct {
 
 	// The add-subscription form.
 	subURL, subName                           string
+	subCustomInterval                         uint32
 	subBusy                                   bool
 	subError                                  string
 	importHeight                              float32
@@ -123,6 +124,7 @@ type app struct {
 	serverScrollRestored bool
 	lastServerTop        int
 	lastServerQuery      string
+	scrollToSubID        string
 
 	ruleScrollKey      string
 	ruleScrollRow      int
