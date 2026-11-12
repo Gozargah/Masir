@@ -51,7 +51,23 @@ func (a *app) serverPicker(c *ui.Context, p palette) {
 	a.serverItems = items
 	queryCleared := a.query == "" && a.lastServerQuery != ""
 	a.lastServerQuery = a.query
-	if (!a.serverScrollRestored || queryCleared) && len(items) > 0 {
+	if a.scrollToSubID != "" && len(items) > 0 {
+		target := -1
+		for i, it := range items {
+			if it.group != nil && it.group.id == a.scrollToSubID {
+				target = i
+				break
+			}
+		}
+		if target >= 0 {
+			a.serversList.ScrollTo(target, ui.Start)
+			a.serverScrollRow = target
+			a.serverScrollKey = serverItemKey(items[target])
+			a.lastServerTop = target
+			a.scrollToSubID = ""
+			a.serverScrollRestored = true
+		}
+	} else if (!a.serverScrollRestored || queryCleared) && len(items) > 0 {
 		target := findServerScrollRow(items, a.serverScrollKey, a.serverScrollRow)
 		if target > 0 {
 			a.serversList.ScrollTo(target, ui.Start)

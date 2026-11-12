@@ -162,6 +162,41 @@ func TestSubscriptionRemovalRequiresConfirmationAndUsesRemoveRPC(t *testing.T) {
 	if f.removed != "s1" || a.path != mainPath {
 		t.Fatalf("removed=%s path=%s", f.removed, a.path)
 	}
+	wantToast := `Subscription "marzban" deleted`
+	if !tt.HasText(wantToast) {
+		t.Fatalf("expected toast %q in UI, got texts: %v", wantToast, tt.Texts())
+	}
+	if _, ok := tt.Find("Notification: Notice"); !ok {
+		t.Fatalf("expected 'Notification: Notice' (info toast) in UI")
+	}
+}
+
+func TestSubscriptionRemovalFromSubscriptionsListReturnsToMainWithToast(t *testing.T) {
+	f := &featureDaemon{fakeDaemon: ukServers()}
+	a := newTestApp(f.fakeDaemon)
+	a.d = f
+	a.openPage(subscriptionsPath)
+	a.openSubscription("s1")
+	tt := tester(a)
+	if err := tt.Click("Remove"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("Remove"); err != nil {
+		t.Fatal(err)
+	}
+	if f.removed != "s1" {
+		t.Fatalf("expected removed 's1', got %s", f.removed)
+	}
+	if a.path != mainPath {
+		t.Fatalf("expected to return to mainPath, got %s", a.path)
+	}
+	wantToast := `Subscription "marzban" deleted`
+	if !tt.HasText(wantToast) {
+		t.Fatalf("expected toast text %q in UI, got texts: %v", wantToast, tt.Texts())
+	}
+	if _, ok := tt.Find("Notification: Notice"); !ok {
+		t.Fatalf("expected 'Notification: Notice' (info toast) in UI")
+	}
 }
 
 func TestSubscriptionRemovalCancelKeep(t *testing.T) {
