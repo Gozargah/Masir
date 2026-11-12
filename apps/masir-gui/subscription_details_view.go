@@ -213,7 +213,7 @@ func (a *app) subscriptionDetailsFooter(c *ui.Context, p palette, s *pb.Subscrip
 				a.refreshSubscription(s.Id)
 			}
 			if !st.removing {
-				b := ui.ButtonBase(c.Key("remove-subscription")).Label("Remove subscription").Height(22).Padding(0, 8).Gap(3).Radius(5).Center().Cursor(ui.CursorPointer).Shrink(0)
+				b := ui.ButtonBase(c.Key("remove-subscription")).Label("Remove").Height(22).Padding(0, 8).Gap(3).Radius(5).Center().Cursor(ui.CursorPointer).Shrink(0)
 				if b.Hovered() {
 					b.Background(p.errorSurface)
 				}
@@ -232,18 +232,45 @@ func (a *app) subscriptionDetailsFooter(c *ui.Context, p palette, s *pb.Subscrip
 		if st.removing {
 			label(c, "Remove this subscription and its servers?", sizeCaption, 15, 500, p.errorC)
 			ui.Row(c).Gap(6).Children(func() {
-				ui.Column(c).Grow(1).Basis(0).Children(func() {
-					danger := p
-					danger.accent, danger.accentHover = p.errorC, p.errorC
-					if button(c, "confirm-remove", "Remove subscription", true, busy, st.busy, danger) {
-						a.subscriptionAction("remove", nil)
+				removeBtn := ui.ButtonBase(c.Key("confirm-remove")).Label("Remove").Height(22).Padding(0, 8).Gap(3).Radius(5).Center().Cursor(ui.CursorPointer).Grow(1).Basis(0)
+				bg := p.errorC
+				if removeBtn.Hovered() && !busy {
+					if p.dark {
+						bg = ui.Hex("#e0382e")
+					} else {
+						bg = ui.Hex("#961818")
 					}
-				})
-				ui.Column(c).Grow(1).Basis(0).Children(func() {
-					if button(c, "cancel-remove", "Keep", false, busy, false, p) {
-						st.removing = false
+				}
+				removeBtn.Background(bg)
+				if busy {
+					removeBtn.Opacity(0.5)
+				}
+				removeBtn.Children(func() {
+					if st.busy {
+						ui.Spinner(c).Size(11, 11)
+					} else {
+						ui.Icon(c, iconTrash).FontSize(11).TextColor(ui.Hex("#ffffff"))
 					}
+					label(c, "Remove", sizeMicro, 14, 500, ui.Hex("#ffffff"))
 				})
+				if removeBtn.Clicked() && !busy {
+					a.subscriptionAction("remove", nil)
+				}
+
+				keepBtn := ui.ButtonBase(c.Key("cancel-remove")).Label("Keep").Height(22).Padding(0, 8).Gap(3).Radius(5).Center().Cursor(ui.CursorPointer).Grow(1).Basis(0)
+				keepBtn.Background(p.cardHover).Border(1, p.borderDefault)
+				if keepBtn.Hovered() && !busy {
+					keepBtn.Background(p.cardActive)
+				}
+				if busy {
+					keepBtn.Opacity(0.5)
+				}
+				keepBtn.Children(func() {
+					label(c, "Keep", sizeMicro, 14, 500, p.text)
+				})
+				if keepBtn.Clicked() && !busy {
+					st.removing = false
+				}
 			})
 		}
 	})
