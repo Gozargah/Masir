@@ -58,17 +58,15 @@ var trayBlue = color.NRGBA{R: 10, G: 132, B: 255, A: 255}
 // On: green, matching the status dot.
 func trayIcon(on bool) ([]byte, error) {
 	const size, ss = 32, 4 // pixels, and samples per pixel side
-	// Logo geometry from redesign: 3 parallel lines angled at 45° with rounded caps.
-	// Matches app icon alignment:
-	// - Left line: bottom cap aligns with center line bottom along perpendicular baseline.
-	// - Center line: full diagonal.
-	// - Right line: top cap aligns with center line top along perpendicular baseline.
-	const halfW = 5.4 / 2
+	// Follow the white mark in resources/icon.png, with slightly heavier strokes
+	// for menu-bar legibility. Give the outer strokes a little extra separation
+	// while preserving the compact silhouette and longer middle diagonal.
+	const halfW = 4.5 / 2
 
 	lines := [3][2][2]float64{
-		{{4.33, 17.41}, {12.13, 9.62}},  // Left line: bottom-aligned with center
-		{{9.46, 22.54}, {22.54, 9.46}},   // Center line
-		{{19.87, 22.38}, {27.67, 14.59}}, // Right line: top-aligned with center
+		{{3.7, 20.0}, {13.4, 10.3}},
+		{{7.9, 24.1}, {24.1, 7.9}},
+		{{18.6, 21.7}, {28.3, 12.0}},
 	}
 
 	distToLines := func(x, y float64) float64 {
@@ -76,7 +74,7 @@ func trayIcon(on bool) ([]byte, error) {
 		for _, l := range lines {
 			x1, y1 := l[0][0], l[0][1]
 			x2, y2 := l[1][0], l[1][1]
-			dx, dy := x2 - x1, y2 - y1
+			dx, dy := x2-x1, y2-y1
 			l2 := dx*dx + dy*dy
 			t := math.Max(0, math.Min(1, ((x-x1)*dx+(y-y1)*dy)/l2))
 			d := math.Hypot(x-(x1+t*dx), y-(y1+t*dy))
