@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egoist/mygo/ui"
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
+	"github.com/egoist/mygo/ui"
 	"google.golang.org/grpc"
 )
 
@@ -150,17 +150,40 @@ func TestSubscriptionRemovalRequiresConfirmationAndUsesRemoveRPC(t *testing.T) {
 	a.d = f
 	a.openSubscription("s1")
 	tt := tester(a)
-	if err := tt.Click("Remove subscription"); err != nil {
+	if err := tt.Click("Remove"); err != nil {
 		t.Fatal(err)
 	}
 	if f.removed != "" {
 		t.Fatal("removed without confirmation")
 	}
-	if err := tt.Click("Remove subscription"); err != nil {
+	if err := tt.Click("Remove"); err != nil {
 		t.Fatal(err)
 	}
 	if f.removed != "s1" || a.path != mainPath {
 		t.Fatalf("removed=%s path=%s", f.removed, a.path)
+	}
+}
+
+func TestSubscriptionRemovalCancelKeep(t *testing.T) {
+	f := &featureDaemon{fakeDaemon: ukServers()}
+	a := newTestApp(f.fakeDaemon)
+	a.d = f
+	a.openSubscription("s1")
+	tt := tester(a)
+	if err := tt.Click("Remove"); err != nil {
+		t.Fatal(err)
+	}
+	if !a.subscriptionPage.removing {
+		t.Fatal("expected removing confirmation to be open")
+	}
+	if err := tt.Click("Keep"); err != nil {
+		t.Fatal(err)
+	}
+	if a.subscriptionPage.removing {
+		t.Fatal("expected removing confirmation to be closed after Keep")
+	}
+	if f.removed != "" {
+		t.Fatalf("removed=%s; expected nothing removed", f.removed)
 	}
 }
 
@@ -353,7 +376,7 @@ func TestSubscriptionDetailsVirtualizesServers(t *testing.T) {
 	if !ok || footer.Y < list.Y+list.H {
 		t.Fatal("refresh footer scrolled into server list")
 	}
-	if !tt.HasText("Remove subscription") || !tt.HasText("Refresh marzban") {
+	if !tt.HasText("Remove") || !tt.HasText("Refresh marzban") {
 		t.Fatal("footer actions disappeared after scrolling")
 	}
 	a.openSubscription("s1")
