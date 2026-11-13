@@ -185,7 +185,7 @@ func (a *app) ruleAppsEditor(c *ui.Context, p palette) {
 			if st.tab == ruleAppsManual {
 				label(c, "Executable names and paths", sizeCaption, 16, 500, p.muted).Grow(1)
 			} else {
-				searchInput(c, "app-search", &st.query, "Search applications…", p, false)
+				searchInput(c, "app-search", &st.query, "Search applications…", p)
 			}
 		}, func() {
 			ui.Row(c).Gap(2).Children(func() {

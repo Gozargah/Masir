@@ -86,11 +86,13 @@ func decodeRule(r *pb.RoutingRule) rulePageState {
 func (a *app) newRule() {
 	a.rulePage = decodeRule(nil)
 	a.loadRuleApps()
+	a.prepareRuleGeo()
 	a.openPage(ruleEditPath)
 }
 func (a *app) editRule(r *pb.RoutingRule) {
 	a.rulePage = decodeRule(r)
 	a.loadRuleApps()
+	a.prepareRuleGeo()
 	a.openPage(ruleEditPath)
 }
 func (a *app) openRule(r *pb.RoutingRule) {
@@ -310,6 +312,9 @@ func conditionSummary(key, value string) string {
 	first := entries[0]
 	if key == "domain" {
 		first = strings.TrimPrefix(strings.TrimPrefix(first, "domain:"), "full:")
+		if code, ok := strings.CutPrefix(first, "geosite:"); ok {
+			first, _ = geoWebsiteTitle(code)
+		}
 	}
 	if key == "process" {
 		first = fallbackName(first)
@@ -380,7 +385,7 @@ func (a *app) ruleConditionsCard(c *ui.Context, p palette, editing bool, st *rul
 				item.Panel(func() {
 					panelTheme := ruleFormTheme(c, p, true)
 					ui.Themed(c, &panelTheme).Label(d.title + " options").Gap(8).Shrink(0).Children(func() {
-						if d.key == "process" {
+						if d.key == "process" || d.key == "domain" {
 							a.ruleConditionEditor(c, p, d)
 						} else {
 							ui.Column(c).Padding(10).Gap(8).Children(func() { a.ruleConditionEditor(c, p, d) })
@@ -580,11 +585,6 @@ func (a *app) ruleSelectionSummary(c *ui.Context, p palette, key, value string) 
 	title := conditionSummary(key, entries[0])
 	if key == "network" || key == "protocol" {
 		title = strings.ToUpper(title)
-	}
-	if key == "domain" && strings.HasPrefix(entries[0], "geosite:") {
-		if name, _, _, ok := humanizeGeosite(entries[0]); ok {
-			title = name
-		}
 	}
 	if key == "ip" && strings.HasPrefix(entries[0], "geoip:") {
 		if name, _, _, ok := humanizeGeoIP(entries[0]); ok {

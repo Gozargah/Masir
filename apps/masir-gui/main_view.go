@@ -287,12 +287,14 @@ func (a *app) clearSearch(s section) {
 
 // panelBar is the search row at the top of the open panels: the field and a button.
 func panelBar(c *ui.Context, p palette, field func(), button func()) {
-	ui.Box(c).Height(1).Background(p.borderSubtle).Shrink(0)
-	ui.Row(c).Padding(tw(2)).Gap(tw(1)).AlignItems(ui.Center).Shrink(0).Children(func() {
-		field()
-		button()
+	ui.Column(c).Children(func() {
+		ui.Box(c).Height(1).Background(p.borderSubtle).Shrink(0)
+		ui.Row(c).Padding(tw(2)).Gap(tw(1)).AlignItems(ui.Center).Shrink(0).Children(func() {
+			field()
+			button()
+		})
+		ui.Box(c).Height(1).Background(p.borderSubtle).Shrink(0)
 	})
-	ui.Box(c).Height(1).Background(p.borderSubtle).Shrink(0)
 }
 
 func (a *app) footer(c *ui.Context, p palette) {

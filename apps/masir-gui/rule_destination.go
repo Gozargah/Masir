@@ -55,7 +55,7 @@ func (a *app) ruleDestinationAccordion(c *ui.Context, p palette) {
 					label(c, "Add a subscription to pin a specific server.", sizeCaption, 16, 400, p.muted).Padding(8)
 					return
 				}
-				panelBar(c, p, func() { searchInput(c, "destination-search", &a.ruleDestinationQuery, "Search servers…", p, false) }, func() {})
+				panelBar(c, p, func() { searchInput(c, "destination-search", &a.ruleDestinationQuery, "Search servers…", p) }, func() {})
 				a.ruleDestinationServers(c, p)
 			})
 			// The parent scroll follows the native expansion immediately and stops

@@ -67,7 +67,7 @@ func formatTopic(topic string) string {
 	case "ads", "advertisement":
 		return "Ads"
 	case "porn":
-		return "Adult websites"
+		return "Porn websites"
 	case "forum":
 		return "Forums"
 	case "video":
@@ -107,7 +107,7 @@ func humanizeGeosite(code string) (title string, flag string, icon *ui.SVG, ok b
 	case "category-ads":
 		return "Ads", "", iconGlobe, true
 	case "category-porn":
-		return "Adult Websites", "", iconGlobe, true
+		return "Porn Websites", "", iconGlobe, true
 	case "gfw":
 		return "Blocked in China (GFW)", "", iconGlobe, true
 	case "greatfire":

@@ -23,10 +23,7 @@ func (a *app) settingsView(c *ui.Context, p palette) {
 				a.loggingSection(c, p)
 				a.privacySection(c, p)
 				a.systemSection(c, p)
-				if button(c, "quit", "Quit Masir", false, false, false, p) {
-					quit()
-				}
-				ui.Column(c.Key("app")).Padding(0, 0, tw(4)).Gap(tw(3)).AlignItems(ui.Center).Justify(ui.SpaceBetween).Shrink(0).Children(func() {
+				ui.Column(c.Key("app")).Gap(tw(3)).AlignItems(ui.Center).Justify(ui.SpaceBetween).Shrink(0).Children(func() {
 					ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Start).FillWidth().Gap(tw(0.5)).Grow(1).Children(func() {
 						ui.Column(c).Gap(tw(0.2)).Children(func() {
 							label(c, "Masir GUI "+versionLabel(a.version), sizeSubhead, 18, 500, p.text)
@@ -41,6 +38,11 @@ func (a *app) settingsView(c *ui.Context, p palette) {
 						ui.Row(c).FillWidth().Gap(tw(1)).AlignItems(ui.Center).Children(func() {
 							a.updateControl(c, p, true)
 						})
+					}
+				})
+				ui.Column(c).Padding(0, 0, tw(4)).Children(func() {
+					if button(c, "quit", "Quit Masir", false, false, false, p) {
+						quit()
 					}
 				})
 			})

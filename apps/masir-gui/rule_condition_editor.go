@@ -57,32 +57,50 @@ func (a *app) ruleConditionEditor(c *ui.Context, p palette, d ruleCondition) {
 		st.values[d.key] = value
 	case "process":
 		a.ruleAppsEditor(c, p)
-	case "domain", "ip", "source":
-		title, placeholder := "IP addresses or ranges", "1.1.1.1, 10.0.0.0/8"
-		if d.key == "domain" {
+	case "domain":
+		ui.Column(c).Padding(10, 10, 0).Children(func() {
 			if ruleSegments(c, "domain-mode", &st.domainMode, p, "Domain", "Exact", "Category", "Regex") {
 				st.entry = ""
 			}
-			title = []string{"Domain and subdomains", "Exact hostname", "Website category", "Regular expression"}[st.domainMode]
-			placeholder = []string{"example.com", "www.example.com", "geosite:cn", "^.*\\.example\\.com$"}[st.domainMode]
-		} else if d.key == "ip" {
+		})
+		if st.domainMode == 2 {
+			a.ruleGeoEditor(c, p, d)
+		} else {
+			ui.Column(c).Padding(0, 10, 10).Gap(8).Children(func() {
+				title := []string{"Domain and subdomains", "Exact hostname", "Website category", "Regular expression"}[st.domainMode]
+				placeholder := []string{"example.com", "www.example.com", "geosite:cn", "^.*\\.example\\.com$"}[st.domainMode]
+				a.ruleEntryEditor(c, p, d, title, placeholder)
+			})
+		}
+	case "ip", "source":
+		title, placeholder := "IP addresses or ranges", "1.1.1.1, 10.0.0.0/8"
+		if d.key == "ip" {
 			placeholder = "1.1.1.1, 10.0.0.0/8 or geoip:private"
 		}
-		submitted := field(c, p, "condition-entry", title, &st.entry, placeholder, d.icon, p.muted, nil)
-		if ui.Button(c.Key("add-entry"), "Add").Disabled(strings.TrimSpace(st.entry) == "").Clicked() || submitted {
-			a.addRuleConditionEntry(d.key)
-		}
-		a.ruleConditionEntries(c, p, d)
+		a.ruleEntryEditor(c, p, d, title, placeholder)
 	}
 	if d.key != "process" && len(ruleEntries(d.key, st.values[d.key])) > 0 {
-		if ui.Button(c.Key("any-"+d.key), "Reset to Any").Disabled(st.busy).Clicked() {
-			st.values[d.key] = ""
-			st.err = ""
-			if d.key == "process" {
-				a.ruleApps.selected = map[string]bool{}
+		reset := func() {
+			if ui.Button(c.Key("any-"+d.key), "Reset to Any").Disabled(st.busy).Clicked() {
+				st.values[d.key] = ""
+				st.err = ""
 			}
 		}
+		if d.key == "domain" {
+			ui.Column(c).Padding(0, 10, 10).Children(reset)
+		} else {
+			reset()
+		}
 	}
+}
+
+func (a *app) ruleEntryEditor(c *ui.Context, p palette, d ruleCondition, title, placeholder string) {
+	st := &a.rulePage
+	submitted := field(c, p, "condition-entry", title, &st.entry, placeholder, d.icon, p.muted, nil)
+	if ui.Button(c.Key("add-entry"), "Add").Disabled(st.busy || strings.TrimSpace(st.entry) == "").Clicked() || submitted {
+		a.addRuleConditionEntry(d.key)
+	}
+	a.ruleConditionEntries(c, p, d)
 }
 
 func (a *app) addRuleConditionEntry(key string) {
@@ -170,6 +188,8 @@ func ruleSegments(c *ui.Context, key string, selected *int, p palette, options .
 		groupName = "Application source"
 	case "domain-mode":
 		groupName = "Domain matching mode"
+	case "geo-scope":
+		groupName = "Website list source"
 	case "network":
 		groupName = "Network type"
 	case "destination-kind":

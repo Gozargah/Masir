@@ -283,6 +283,36 @@ func TestSnapshots(t *testing.T) {
 				},
 			})
 		}
+		for _, view := range []string{"all", "search", "selected", "loading", "error"} {
+			shots = append(shots, struct {
+				name string
+				dark bool
+				do   func(*app, *ui.Tester)
+			}{"geo-picker-" + view + "-" + themeName, dark, func(a *app, tt *ui.Tester) {
+				a.newRule()
+				a.rulePage.expanded, a.rulePage.domainMode = "domain", 2
+				a.rulePage.values["domain"] = "geosite:category-ads-all\ngeosite:google"
+				a.ruleGeo = ruleGeoState{loaded: true, dirty: true, lastTab: -1, known: map[string]bool{}}
+				for _, code := range []string{"category-ads-all", "category-ai-!cn", "apple", "google", "ir", "netflix", "youtube"} {
+					a.ruleGeo.all = append(a.ruleGeo.all, geoWebsiteOption(code, 1200))
+					a.ruleGeo.known[code] = true
+				}
+				switch view {
+				case "search":
+					a.ruleGeo.query = "iran"
+				case "selected":
+					a.ruleGeo.tab = 1
+				case "loading":
+					a.ruleGeo.all = nil
+					a.ruleGeo.loaded = false
+					a.ruleGeo.loading = true
+				case "error":
+					a.ruleGeo.all = nil
+					a.ruleGeo.err = "Couldn't load website lists. Retry, or enter a category in Manual."
+				}
+				tt.SetSize(panelWidth, 620)
+			}})
+		}
 		shots = append(shots, struct {
 			name string
 			dark bool
