@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/egoist/mygo/ui"
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
+	"github.com/egoist/mygo/ui"
 )
 
 type subscriptionPageState struct {
@@ -87,11 +87,11 @@ func (a *app) subscriptionsView(c *ui.Context, p palette) {
 			label(c, "No subscriptions yet. Add a subscription to import servers.", sizeBody, 18, 400, p.muted).Padding(0, pageInset, pageInset)
 			return
 		}
-		ui.List(c, &a.subscriptionList, len(subs), func(i int) {
+		containListScroll(ui.List(c, &a.subscriptionList, len(subs), func(i int) {
 			s := a.subscriptions.subscriptions[i]
 			a.subscriptionCard(c, p, s)
 
-		}).Label("Subscription list").Padding(0, pageInset, pageInset).ScrollbarInsets(0, 2, 0).Gap(8).Grow(1).Basis(0).MinHeight(0)
+		})).Label("Subscription list").Padding(0, pageInset, pageInset).ScrollbarInsets(0, 2, 0).Gap(8).Grow(1).Basis(0).MinHeight(0)
 	})
 }
 

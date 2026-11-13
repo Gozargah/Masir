@@ -47,7 +47,7 @@ func paletteFor(c *ui.Context) palette {
 			errorC: ui.Hex("#ff453a"), errorSurface: ui.RGBA(255, 69, 58, 0.16), errorBorder: ui.RGBA(255, 69, 58, 0.25),
 			neutral: ui.Hex("#8e8e93"), neutralSurface: ui.RGBA(255, 255, 255, 0.08),
 			direct: ui.Hex("#94a3b8"), directSurface: ui.RGBA(148, 163, 184, 0.15),
-			pinned: ui.Hex("#0a84ff"), pinnedSurface: ui.RGBA(10, 132, 255, 0.15),
+			pinned: ui.Hex("#a9d4ff"), pinnedSurface: ui.RGBA(20, 53, 84, 0.88),
 			accent: ui.Hex("#0a84ff"), accentHover: ui.Hex("#0066d6"), accentSurface: ui.RGBA(10, 132, 255, 0.15),
 			scrollbar: ui.RGBA(255, 255, 255, 0.28), scrollbarHover: ui.RGBA(255, 255, 255, 0.45),
 		}

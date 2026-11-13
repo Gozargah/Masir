@@ -58,7 +58,7 @@ func ruleInfo(r *pb.RoutingRule) info {
 	case len(list("process")) > 0:
 		l := list("process")
 		out.title, out.icon, out.section = strings.TrimSuffix(strings.TrimPrefix(l[0], "self/"), "/")+more(l), iconApp, "Applications"
-		if strings.HasSuffix(strings.TrimSuffix(l[0], "/"), ".app") {
+		if strings.ContainsAny(l[0], "/\\") && !strings.HasPrefix(l[0], "self/") {
 			out.appPath = l[0]
 			out.title = fallbackName(l[0]) + more(l)
 		}
@@ -185,6 +185,10 @@ func (a *app) metaFor(r *pb.RoutingRule) ruleMeta {
 
 // indexRules parses every rule now, off the frames that show the list.
 func (a *app) indexRules() {
+	if r := a.ruleByTag(a.ruleReview.original); r != nil {
+		a.ruleReview = decodeRule(r)
+		a.ruleReview.more = true
+	}
 	for _, r := range a.rules.rules {
 		a.metaFor(r)
 	}

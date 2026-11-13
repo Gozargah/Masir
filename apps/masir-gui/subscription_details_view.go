@@ -64,14 +64,14 @@ func (a *app) subscriptionDetailsView(c *ui.Context, p palette) {
 					}
 					return ""
 				}
-				ui.List(c, &a.subscriptionNodes, max(1, len(configs)), func(i int) {
+				containListScroll(ui.List(c, &a.subscriptionNodes, max(1, len(configs)), func(i int) {
 					if len(configs) == 0 {
 						label(c, "No servers yet. Refresh to try importing them again.", sizeCaption, 16, 400, p.muted).Padding(10, 6)
 						return
 					}
 					cfg := configs[i]
 					a.subscriptionServerItem(c, p, server{key: serverKey{s.Id, cfg.Id}, subName: s.Name, cfg: cfg})
-				}).Label("Subscription servers").Background(p.subdued).Padding(4, 6, 6).ScrollbarInsets(0, 1, 0).Gap(3).Grow(1).Basis(0).MinHeight(0)
+				})).Label("Subscription servers").Background(p.subdued).Padding(4, 6, 6).ScrollbarInsets(0, 1, 0).Gap(3).Grow(1).Basis(0).MinHeight(0)
 			})
 		})
 		a.subscriptionDetailsFooter(c, p, s)

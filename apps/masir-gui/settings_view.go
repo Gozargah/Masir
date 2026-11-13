@@ -57,30 +57,17 @@ func (a *app) advancedSection(c *ui.Context, p palette) {
 			})
 			cardDivider(c, p)
 			ui.Column(c.Key("port-row")).Padding(tw(2.5), tw(3)).Gap(tw(1)).Shrink(0).Children(func() {
-				ui.Row(c).AlignItems(ui.Center).Justify(ui.SpaceBetween).Gap(tw(2)).Children(func() {
-					label(c, "Port Number", sizeSubhead, 18, 500, p.text)
-					box := ui.Row(c).Width(76).Padding(tw(1), tw(2)).Radius(tw(1.5)).Shrink(0).Clip()
-					var in ui.Element
-					box.Children(func() {
-						in = ui.TextInputBase(c.Key("port"), &a.portText).Grow(1).MinWidth(0).
-							FontSize(sizeSubhead).TextAlign(ui.End).Font("monospace").FontWeight(500).
-							TextColor(p.text).Label("Port Number")
-						in.Valid()
-						if in.Changed() {
-							if v := digitsOnly(a.portText); v != a.portText {
-								a.portText = v
-							}
-						}
-					})
-					bg, border, _ := inputColors(p, in.Focused())
-					box.Background(bg).Border(1, border)
-					if in.Submitted() || (!in.Focused() && a.portEdited) {
-						a.applyPort()
-					}
-					if in.Focused() {
-						a.portEdited = true
-					}
-				})
+				in := labeledInput(c, p, "port", "Port Number", &a.portText, "7890", iconHash, p.muted, inputHeight, nil)
+				if in.Changed() {
+					a.portText = digitsOnly(a.portText)
+				}
+				if in.Submitted() || (!in.Focused() && a.portEdited) {
+					a.applyPort()
+				}
+				if in.Focused() {
+					a.portEdited = true
+				}
+
 				label(c, "Mixed SOCKS5 / HTTP", sizeCaption, 14.85, 400, p.muted)
 			})
 			cardDivider(c, p)
@@ -261,16 +248,28 @@ func (a *app) selectRow(c *ui.Context, p palette, key, title, hint, current stri
 	}
 	draw := func() {
 		sel := ui.SelectBase(c, &selected)
-		sel.Trigger.Label(title).Cursor(ui.CursorPointer).Padding(tw(1), tw(2)).
-			Radius(tw(1.5)).Gap(tw(1)).AlignItems(ui.Center).
+		sel.Trigger.Label(title).Cursor(ui.CursorPointer).Height(inputHeight).Padding(0, 10).
+			Radius(inputRadius).Gap(6).AlignItems(ui.Center).
 			Background(p.subdued).Border(1, p.borderDefault)
 		if inline {
 			sel.Trigger.Shrink(0)
 		} else {
-			sel.Trigger.Justify(ui.SpaceBetween).Margin(4, 0, 0, 0)
+			sel.Trigger.Justify(ui.SpaceBetween)
 		}
+		bg, border, _ := inputColors(p, sel.Trigger.Focused())
+		sel.Trigger.Background(bg).Border(1, border)
 		sel.Trigger.Children(func() {
-			label(c, selected, sizeCaption, 16, 500, p.text).SingleLine()
+			glyph := iconGlobe
+			switch key {
+			case "interval":
+				glyph = iconClock
+			case "gateway":
+				glyph = iconLayers
+			case "loglevel":
+				glyph = iconTerminal
+			}
+			ui.Icon(c, glyph).FontSize(14).TextColor(p.muted).Shrink(0)
+			label(c, selected, sizeSubhead, 16, 400, p.text).Grow(1).Basis(0).MinWidth(0).SingleLine()
 			ui.Icon(c, iconChevronDown).FontSize(11).TextColor(p.tertiary).Shrink(0)
 		})
 		sel.Popup(func(panel ui.Element) {
@@ -303,36 +302,23 @@ func (a *app) selectRow(c *ui.Context, p palette, key, title, hint, current stri
 			set(byLabel[selected])
 		}
 	}
-	if inline {
-		ui.Row(c.Key("select-"+key)).Padding(tw(2.5), tw(3)).Gap(tw(3)).AlignItems(ui.Center).
-			Justify(ui.SpaceBetween).Shrink(0).Children(func() {
-			ui.Box(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
-				settingHead(c, p, title, hint)
-			})
-			draw()
-		})
-		return
-	}
-	ui.Column(c.Key("select-"+key)).Padding(tw(2.5), tw(3)).Gap(tw(1)).Shrink(0).Children(func() {
-		settingHead(c, p, title, hint)
+	ui.Column(c.Key("select-"+key)).Padding(tw(2.5), tw(3)).Gap(inputLabelGap).Shrink(0).Children(func() {
+		inputLabel(c, p, title)
 		draw()
+		if hint != "" {
+			label(c, hint, sizeCaption, 15, 400, p.muted)
+		}
 	})
 }
 
 // settingField is a card row with a title, a hint and a text field under them.
 func (a *app) settingField(c *ui.Context, p palette, key, title, hint, placeholder string, f *textSetting, commit func(string)) {
 	ui.Column(c.Key("field-"+key)).Padding(tw(2.5), tw(3)).Gap(tw(1)).Shrink(0).Children(func() {
-		settingHead(c, p, title, hint)
-		box := ui.Row(c).Margin(4, 0, 0).Padding(tw(1), tw(2)).Radius(tw(1.5)).Shrink(0).Clip()
-		var in ui.Element
-		box.Children(func() {
-			in = ui.TextInputBase(c.Key(key), &f.text).Placeholder(placeholder).Grow(1).MinWidth(0).
-				FontSize(sizeCaption).TextColor(p.text).Label(title)
-			in.Valid()
-		})
-		bg, border, placeholderColor := inputColors(p, in.Focused())
-		in.PlaceholderColor(placeholderColor)
-		box.Background(bg).Border(1, border)
+		in := labeledInput(c, p, key, title, &f.text, placeholder, iconGlobe, p.muted, inputHeight, nil)
+		if hint != "" {
+			label(c, hint, sizeCaption, 15, 400, p.muted)
+		}
+
 		if in.Submitted() || (!in.Focused() && f.edited) {
 			commit(f.text)
 		}

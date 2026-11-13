@@ -55,7 +55,7 @@ func (a *app) rulesPanel(c *ui.Context, p palette) {
 	panelBar(c, p, func() { searchInput(c, "rule-search", &a.ruleQuery, "Search rules...", p) }, func() {
 		ui.Row(c).Gap(tw(1)).AlignItems(ui.Center).Children(func() {
 			if iconButton(c, "rule-add", iconPlus, "Add rule", p, iconMD, variantSubtle, 12) {
-				a.notifyWarning("Adding rules from the panel isn't available yet")
+				a.newRule()
 			}
 		})
 	})
@@ -108,14 +108,14 @@ func (a *app) rulesPanel(c *ui.Context, p palette) {
 		a.lastRuleTop = target
 		a.lastRuleEnd = target
 	}
-	list := ui.List(c, &a.rulesList, len(a.ruleItems), func(i int) {
+	list := containListScroll(ui.List(c, &a.rulesList, len(a.ruleItems), func(i int) {
 		it := a.ruleItems[i]
 		if it.rule == nil {
 			a.ruleSectionRow(c, p, it.title, it.count)
 			return
 		}
 		a.ruleRow(c, p, it.rule)
-	}).Padding(0, tw(1.5), tw(1), tw(1)).Gap(tw(1.5)).Shrink(0)
+	})).Padding(0, tw(1.5), tw(1), tw(1)).Gap(tw(1.5)).Shrink(0)
 	if a.ruleQuery == "" {
 		list.MaxHeight(maxHeight)
 		if h := list.Bounds().H; h > 0 {
@@ -225,18 +225,24 @@ func (a *app) ruleRow(c *ui.Context, p palette, r *pb.RoutingRule) {
 			}
 			return sw.scroll(ev.DX, ev.DY, ev.Time)
 		})
+		handled := false
 		row.Children(func() {
 			a.ruleContent(c, p, r)
 			// A touchpad swipe is macOS's gesture; elsewhere the row's actions have a
 			// button of their own.
 			if runtime.GOOS != "darwin" && iconButton(c, "more-"+r.RuleTag, iconMore, "Rule actions", p, iconXS, variantGhost, 12) {
+				handled = true
 				b := row.Bounds()
 				a.menu = ruleMenu{open: true, tag: r.RuleTag, x: b.X + b.W - menuWidth - tw(2), y: b.Y + b.H}
 				sw.close(now)
 			}
 		})
-		if row.Clicked() && sw.open {
-			sw.close(now) // a click on an open row closes it
+		if row.Clicked() && !handled {
+			if sw.open {
+				sw.close(now)
+			} else {
+				a.openRule(r)
+			}
 		}
 		if row.RightClicked() {
 			px, py, _ := row.PointerPosition()
@@ -261,7 +267,7 @@ func (a *app) ruleContent(c *ui.Context, p palette, r *pb.RoutingRule) {
 		iconTile(c, p, func() {
 			switch {
 			case icon != nil && info.appPath != "":
-				ui.Image(c, icon).Size(tw(7), tw(7)).Radius(4).MarginY(-4)
+				ui.Image(c, icon).Size(tw(7), tw(7)).Radius(4).MarginY(-4).Label("Rule application icon")
 			case icon != nil:
 				ui.Image(c, icon).Size(18, 18).Radius(4)
 			case info.flag != "":
