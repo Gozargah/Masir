@@ -284,6 +284,7 @@ func main() {
 
 	a := newApp(d, "")
 	s := &shell{a: a}
+	a.pickerParent = func() *mygo.Window { return s.win }
 	a.post = func(fn func()) {
 		mygo.RunOnMain(func() {
 			fn()

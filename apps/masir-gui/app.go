@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"google.golang.org/grpc"
 
@@ -60,9 +61,14 @@ type app struct {
 	serviceChecked time.Time
 
 	// stores
-	subscriptions subscriptionStore
-	rules         ruleStore
-	updates       updateStore
+	subscriptions        subscriptionStore
+	ruleDestinationQuery string
+	ruleDestinations     ui.ListState
+	ruleReview           rulePageState
+	rulePage             rulePageState
+	ruleApps             ruleAppState
+	rules                ruleStore
+	updates              updateStore
 
 	// What the daemon last said.
 	reachable  bool
@@ -173,19 +179,21 @@ type app struct {
 
 	// Rules: the swipe of each row, which row is open, the right-click menu, the app names
 	// and icons, and where the list was last scrolled to.
-	swipes      map[string]*swipe
-	openSwipe   string
-	menu        ruleMenu
-	apps        *appInfos
-	favicons    *faviconStore
-	rulesMetas  map[string]ruleMeta
-	rulesList   ui.ListState
-	ruleItems   []ruleListItem
-	lastRuleTop int
-	lastRuleEnd int
-	serversList ui.ListState
-	serverItems []serverListItem
-	onHeight    func(float32) // tells the window how tall the content is at rest
+	swipes         map[string]*swipe
+	openSwipe      string
+	menu           ruleMenu
+	apps           *appInfos
+	favicons       *faviconStore
+	rulesMetas     map[string]ruleMeta
+	rulesList      ui.ListState
+	ruleItems      []ruleListItem
+	lastRuleTop    int
+	lastRuleEnd    int
+	serversList    ui.ListState
+	serverItems    []serverListItem
+	pickerParent   func() *mygo.Window
+	openRuleDialog func(mygo.OpenDialogOptions) ([]string, error)
+	onHeight       func(float32) // tells the window how tall the content is at rest
 
 	version string
 	palette palette // the colors of the frame being built, for helpers that format text

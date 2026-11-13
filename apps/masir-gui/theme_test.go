@@ -139,3 +139,20 @@ func TestFocusedDarkPlaceholderOverBrightMaterial(t *testing.T) {
 	tt.SetDark(true)
 	tt.Frame()
 }
+
+func TestDarkPinnedBadgeContrastOverNativeMaterial(t *testing.T) {
+	tt := ui.NewTester(func(c *ui.Context) {
+		if !c.Theme().Dark {
+			return
+		}
+		p := paletteFor(c)
+		for _, material := range []ui.Color{ui.Hex("#1e1e20"), ui.Hex("#60646c"), ui.Hex("#a0a4ac"), ui.Hex("#ffffff")} {
+			background := p.pinnedSurface.Over(p.card.Over(material))
+			if ratio := textContrast(p.pinned, background); ratio < 4.5 {
+				t.Errorf("pinned badge contrast %.2f:1 over %v, want at least 4.5:1", ratio, material)
+			}
+		}
+	}, 10, 10)
+	tt.SetDark(true)
+	tt.Frame()
+}

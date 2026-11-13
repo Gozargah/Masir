@@ -133,31 +133,68 @@ func inputColors(p palette, focused bool) (background, border, placeholder ui.Co
 	return
 }
 
-// field is a text field with its label above, a leading icon, and an action at the end.
-func field(c *ui.Context, p palette, key, title string, value *string, placeholder string, icon *ui.SVG, iconColor ui.Color, trailing func()) bool {
-	submitted := false
-	ui.Column(c.Key(key)).Gap(tw(1)).Shrink(0).Children(func() {
-		label(c, strings.ToUpper(title), sizeCaption, 14, 600, p.muted).LetterSpacing(0.4).Padding(0, tw(0.5))
-		box := ui.Row(c).Gap(tw(1.5)).Padding(tw(0.5), tw(2.5)).Radius(tw(2)).AlignItems(ui.Center).Shrink(0)
-		var in ui.Element
-		box.Children(func() {
-			ui.Icon(c, icon).FontSize(15).TextColor(iconColor).Shrink(0)
-			in = ui.TextInputBase(c.Key(key+"-input"), value).Placeholder(placeholder).Grow(1).
-				FontSize(sizeSubhead).TextColor(p.text).Padding(tw(1.5), 0)
-			if key == "sub-name" || key == "edit-sub-name" {
-				in.AutoFocus()
-			}
-			in.Valid()
-			if trailing != nil {
-				trailing()
-			}
-		})
-		bg, border, placeholderColor := inputColors(p, in.Focused())
-		in.PlaceholderColor(placeholderColor)
-		box.Background(bg).Border(1, border).Shadow(0, 1, 2, 0, ui.RGBA(0, 0, 0, 0.02))
-		submitted = in.Submitted()
+const (
+	inputHeight   float32 = 32
+	inputRadius   float32 = 8
+	inputLabelGap float32 = 4
+)
+
+type textEntryParts struct{ Control, Input ui.Element }
+
+func inputLabel(c *ui.Context, p palette, title string) {
+	label(c, strings.ToUpper(title), sizeCaption, 14, 600, p.muted).LetterSpacing(0.4).Padding(0, 2)
+}
+
+// All text entry uses MyGo's native input behavior inside the same control surface.
+// Only multiline editors grow taller; typography, icons and field chrome stay equal.
+func textEntry(c *ui.Context, p palette, key, title string, value *string, placeholder string, icon *ui.SVG, iconColor ui.Color, height float32, trailing func()) textEntryParts {
+	if icon == nil {
+		icon = iconTag
+	}
+	multiline := height > inputHeight
+	box := ui.Row(c.Key(key+"-control")).Label(title+" input").Height(max(inputHeight, height)).Gap(6).Padding(0, 10).Radius(inputRadius).AlignItems(ui.Center).Shrink(0).MinWidth(0)
+	if multiline {
+		box.Padding(8, 10).AlignItems(ui.Start)
+	}
+	var in ui.Element
+	box.Children(func() {
+		glyph := ui.Icon(c, icon).Label(title + " icon").FontSize(14).TextColor(iconColor).Shrink(0)
+		if multiline {
+			glyph.Margin(1, 0, 0, 0)
+		}
+		if multiline {
+			in = ui.TextAreaBase(c.Key(key+"-input"), value).AlignSelf(ui.Stretch)
+		} else {
+			in = ui.TextInputBase(c.Key(key+"-input"), value)
+		}
+		in.Label(title).Placeholder(placeholder).Grow(1).Basis(0).MinWidth(0).MinHeight(0).AlignSelf(ui.Stretch).FontSize(sizeSubhead).TextColor(p.text).Padding(0)
+		if !multiline {
+			in.Padding(6, 0)
+		}
+		if trailing != nil {
+			trailing()
+		}
 	})
-	return submitted
+	bg, border, placeholderColor := inputColors(p, in.Focused())
+	in.PlaceholderColor(placeholderColor)
+	box.Background(bg).Border(1, border).Shadow(0, 1, 2, 0, ui.RGBA(0, 0, 0, 0.02))
+	return textEntryParts{Control: box, Input: in}
+}
+
+func labeledInput(c *ui.Context, p palette, key, title string, value *string, placeholder string, icon *ui.SVG, iconColor ui.Color, height float32, trailing func()) ui.Element {
+	var in ui.Element
+	ui.Column(c.Key(key)).Gap(inputLabelGap).Shrink(0).Children(func() {
+		inputLabel(c, p, title)
+		in = textEntry(c, p, key, title, value, placeholder, icon, iconColor, height, trailing).Input
+		if key == "sub-name" || key == "edit-sub-name" {
+			in.AutoFocus()
+		}
+	})
+	return in
+}
+
+func field(c *ui.Context, p palette, key, title string, value *string, placeholder string, icon *ui.SVG, iconColor ui.Color, trailing func()) bool {
+	return labeledInput(c, p, key, title, value, placeholder, icon, iconColor, inputHeight, trailing).Submitted()
 }
 
 // iconTile is the rounded square that holds an app's icon, a flag or a rule's icon. Its

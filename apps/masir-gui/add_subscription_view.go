@@ -23,7 +23,7 @@ func (a *app) addSubscriptionView(c *ui.Context, p palette) {
 			content.Children(func() {
 				cardBox(c, p, func() {
 					ui.Column(c).Label("Subscription link fields").Padding(tw(2.5), tw(3)).Gap(tw(2.5)).Children(func() {
-						field(c, p, "sub-name", "Label (Optional)", &a.subName, "e.g. My Server Group", iconTag, p.muted, nil)
+						nameSubmitted := field(c, p, "sub-name", "Label (Optional)", &a.subName, "e.g. My Server Group", iconTag, p.muted, nil)
 						enter := field(c, p, "sub-url", "Subscription URL", &a.subURL, "https://example.com/sub/...", iconLink, p.muted, func() {
 							if iconButton(c, "paste", iconClipboard, "Paste from clipboard", p, iconXS, variantSubtle, 14) {
 								if s := readClipboard(); s != "" {
@@ -31,7 +31,7 @@ func (a *app) addSubscriptionView(c *ui.Context, p palette) {
 								}
 							}
 						})
-						if enter {
+						if nameSubmitted || enter {
 							a.addSubscription()
 						}
 					})

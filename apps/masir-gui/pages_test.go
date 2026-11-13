@@ -111,10 +111,17 @@ func TestEveryPageOpensAndReturns(t *testing.T) {
 			if a.lastSub != pg.path {
 				t.Fatalf("lastSub = %q, want %q, so the window can shrink from it", a.lastSub, pg.path)
 			}
-			if got := a.restHeight(); got != pg.height {
+			wantHeight := pg.height
+			if pg.path == ruleEditPath {
+				wantHeight = a.rulePage.editHeight
+				if wantHeight <= 0 || wantHeight > pg.height {
+					t.Fatalf("invalid measured rule height %v", wantHeight)
+				}
+			}
+			if got := a.restHeight(); got != wantHeight {
 				t.Fatalf("restHeight = %v, want the page's %v", got, pg.height)
 			}
-			if !slices.Contains(asked, pg.height) {
+			if !slices.Contains(asked, wantHeight) {
 				t.Fatalf("opening asked for %v, want the page's %v among them", asked, pg.height)
 			}
 

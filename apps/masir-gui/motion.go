@@ -173,6 +173,9 @@ func (a *app) restHeight() float32 {
 }
 
 func (a *app) subHeight() float32 {
+	if a.lastSub == ruleEditPath && a.rulePage.editHeight > 0 {
+		return a.rulePage.editHeight
+	}
 	if a.lastSub == addSubscriptionPath && a.importHeight > 0 {
 		return a.importHeight
 	}
