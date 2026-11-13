@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/egoist/mygo/ui"
 	"image"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -521,10 +522,16 @@ func TestRulePortEditorHasNoSuggestedPorts(t *testing.T) {
 func TestSelectedApplicationSummaryStacksIcons(t *testing.T) {
 	a := newTestApp(ukServers())
 	a.newRule()
-	for _, path := range []string{"/One.app", "/Two.app", "/Three.app"} {
+	dir := t.TempDir()
+	var matches []string
+	for _, name := range []string{"One.app", "Two.app", "Three.app"} {
+		// The summary only loads icons for native absolute paths, including a
+		// drive letter on Windows. Unix-rooted fixtures skip that branch there.
+		path := filepath.Join(dir, name)
 		a.apps.known[path] = &appMeta{name: path, icon: ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, 32, 32)))}
+		matches = append(matches, path+"/")
 	}
-	a.rulePage.values["process"] = "/One.app/\n/Two.app/\n/Three.app/\nmy-worker"
+	a.rulePage.values["process"] = strings.Join(append(matches, "my-worker"), "\n")
 	tt := tester(a)
 	tt.Frame()
 	tt.Frame()
