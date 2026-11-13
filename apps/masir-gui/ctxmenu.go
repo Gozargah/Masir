@@ -102,8 +102,3 @@ func (a *app) ruleByTag(tag string) *pb.RoutingRule {
 	}
 	return nil
 }
-
-// editRule opens a rule for editing. The editor isn't built yet.
-func (a *app) editRule(r *pb.RoutingRule) {
-	a.notifyWarning("Editing rules isn't available yet")
-}

@@ -103,6 +103,24 @@ func TestSnapshots(t *testing.T) {
 			tt.Advance(time.Second)
 			tt.Move(panelWidth-5, 200)
 		}},
+
+		{"rule-pinned-dark", true, func(a *app, tt *ui.Tester) { a.newRule(); a.rulePage.target = "config:s1/c2" }},
+		{"rule-pinned-light", false, func(a *app, tt *ui.Tester) { a.newRule(); a.rulePage.target = "config:s1/c2" }},
+		{"rule-new-dark", true, func(a *app, tt *ui.Tester) { a.newRule() }},
+		{"rule-new-light", false, func(a *app, tt *ui.Tester) { a.newRule() }},
+		{"rule-details", true, func(a *app, tt *ui.Tester) { a.openRule(a.rules.rules[0]) }},
+		{"rule-condition", true, func(a *app, tt *ui.Tester) {
+			a.newRule()
+			a.rulePage.expanded = "domain"
+			a.rulePage.values["domain"] = "domain:example.com\nfull:work.example.org"
+		}},
+		{"rule-destination", true, func(a *app, tt *ui.Tester) { a.newRule(); a.rulePage.expanded = "destination" }},
+		{"rule-apps", true, func(a *app, tt *ui.Tester) {
+			a.newRule()
+			a.ruleApps = ruleAppState{selected: map[string]bool{"/Applications/Safari.app/": true}, all: []ruleApp{{Name: "Safari", Path: "/Applications/Safari.app/", Icon: "/Applications/Safari.app", Running: true}, {Name: "Terminal", Path: "/System/Applications/Utilities/Terminal.app/", Icon: "/System/Applications/Utilities/Terminal.app", Running: true}}}
+			a.filterRuleApps()
+			a.rulePage.expanded = "process"
+		}},
 		{"subscriptions-overview-dark", true, func(a *app, tt *ui.Tester) { subscriptionSnapshotData(a); a.openPage(subscriptionsPath) }},
 		{"subscriptions-overview-light", false, func(a *app, tt *ui.Tester) { subscriptionSnapshotData(a); a.openPage(subscriptionsPath) }},
 		{"subscriptions-healthy", true, func(a *app, tt *ui.Tester) {
@@ -222,6 +240,103 @@ func TestSnapshots(t *testing.T) {
 			a.subError = "Couldn't reach the provider. Check the link and try again."
 			a.openPage(addSubscriptionPath)
 		}},
+	}
+
+	for _, dark := range []bool{true, false} {
+		themeName := "light"
+		if dark {
+			themeName = "dark"
+		}
+		for _, d := range ruleConditions {
+			shots = append(shots, struct {
+				name string
+				dark bool
+				do   func(*app, *ui.Tester)
+			}{
+				"rule-expanded-" + d.key + "-" + themeName, dark, func(a *app, tt *ui.Tester) {
+					a.newRule()
+					a.rulePage.more = true
+					a.rulePage.expanded = d.key
+					switch d.key {
+					case "domain":
+						a.rulePage.values[d.key] = "domain:example.com"
+					case "ip":
+						a.rulePage.values[d.key] = "1.1.1.1\n10.0.0.0/8"
+					case "port", "sourcePort":
+						a.rulePage.values[d.key] = "443"
+					case "network":
+						a.rulePage.values[d.key] = "tcp"
+					case "protocol":
+						a.rulePage.values[d.key] = "tls"
+					case "process":
+						a.rulePage.values[d.key] = "/Applications/Safari.app/"
+						a.ruleApps = ruleAppState{selected: map[string]bool{"/Applications/Safari.app/": true}, all: []ruleApp{{Name: "Safari", Path: "/Applications/Safari.app/", Icon: "/Applications/Safari.app", Running: true}}}
+						a.filterRuleApps()
+					}
+					if d.key != "process" && d.key != "domain" {
+						tt.SetSize(panelWidth, 620)
+						tt.Frame()
+						tt.Advance(time.Second)
+						tt.Scroll(285, 420, 0, 1000)
+						tt.Frame()
+					}
+				},
+			})
+		}
+		shots = append(shots, struct {
+			name string
+			dark bool
+			do   func(*app, *ui.Tester)
+		}{"rule-then-" + themeName, dark, func(a *app, tt *ui.Tester) {
+			a.newRule()
+			a.rulePage.expanded = "destination"
+			tt.SetSize(panelWidth, 620)
+			tt.Frame()
+			tt.Advance(time.Second)
+			tt.Scroll(285, 420, 0, 1000)
+			tt.Frame()
+		}})
+	}
+
+	for _, dark := range []bool{true, false} {
+		themeName := "light"
+		if dark {
+			themeName = "dark"
+		}
+		for _, mode := range []string{"apps", "running", "selected", "manual", "search-empty", "loading", "error", "long-name"} {
+			shots = append(shots, struct {
+				name string
+				dark bool
+				do   func(*app, *ui.Tester)
+			}{"app-picker-" + mode + "-" + themeName, dark, func(a *app, tt *ui.Tester) {
+				a.newRule()
+				appPickerTestFixture(a)
+				a.ruleApps.all = append(a.ruleApps.all, ruleApp{Name: "Terminal", Path: "/System/Applications/Utilities/Terminal.app/", Icon: "/System/Applications/Utilities/Terminal.app", Running: true})
+				a.rulePage.values["process"] = "/Applications/Browser.app/"
+				a.syncRuleAppSelection()
+				switch mode {
+				case "running":
+					a.ruleApps.tab = ruleAppsRunning
+				case "selected":
+					a.addPickedRuleApps([]string{"/Tools/Worker"}, true)
+				case "manual":
+					a.ruleApps.tab = ruleAppsManual
+					a.rulePage.values["process"] += "\n/Tools/Worker/\nmy-worker"
+					a.syncRuleAppSelection()
+				case "search-empty":
+					a.ruleApps.query = "nothing-matches"
+				case "loading":
+					a.ruleApps.all = nil
+					a.ruleApps.loading = true
+				case "error":
+					a.ruleApps.all = nil
+					a.ruleApps.err = "Couldn't read installed applications. Choose an app or folder, or use Manual."
+				case "long-name":
+					a.ruleApps.all[0].Name = "An application with a very long name that must stay inside its row"
+				}
+				a.filterRuleApps()
+			}})
+		}
 	}
 	for _, s := range shots {
 		a := newTestApp(ukServers())

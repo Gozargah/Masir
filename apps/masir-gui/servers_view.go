@@ -75,14 +75,14 @@ func (a *app) serverPicker(c *ui.Context, p palette) {
 		a.serverScrollRestored = true
 		a.lastServerTop = target
 	}
-	list := ui.List(c, &a.serversList, len(items), func(i int) {
+	list := containListScroll(ui.List(c, &a.serversList, len(items), func(i int) {
 		it := a.serverItems[i]
 		if it.group != nil {
 			a.groupHeader(c, p, *it.group)
 			return
 		}
 		a.serverItem(c, p, it.srv)
-	}).Padding(0, tw(1.5), 0, tw(1)).Gap(2).Shrink(0)
+	})).Padding(0, tw(1.5), 0, tw(1)).Gap(2).Shrink(0)
 	if a.query == "" {
 		list.MaxHeight(maxServerListHeight)
 		if h := list.Bounds().H; h > 0 {
@@ -245,16 +245,7 @@ func (a *app) serverItem(c *ui.Context, p palette, s server) {
 	}
 	tint(row, bg)
 	row.Children(func() {
-		flag, title, detail := serverTitle(s.cfg.Name)
-		ui.Row(c).Gap(tw(2.5)).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).MarginEnd(tw(2)).Children(func() {
-			iconTile(c, p, func() { flagElement(c, flag, 18) })
-			ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
-				ltrLabel(c, title, sizeBody, 16, 600, p.text)
-				if detail != "" {
-					ltrLabel(c, detail, sizeCaption, 14, 400, p.muted)
-				}
-			})
-		})
+		serverIdentity(c, p, s)
 		ui.Row(c).Gap(tw(1.5)).AlignItems(ui.Center).Shrink(0).Children(func() {
 			if latencyBadge(c, "lat", a.latency[s.key], a.testing[s.key], p) {
 				a.testServers(s)
@@ -264,6 +255,20 @@ func (a *app) serverItem(c *ui.Context, p palette, s server) {
 	if row.Clicked() {
 		a.selectServer(s)
 	}
+}
+
+// serverIdentity is shared by the connection picker and the rule-target picker.
+func serverIdentity(c *ui.Context, p palette, s server) {
+	flag, title, detail := serverTitle(s.cfg.Name)
+	ui.Row(c).Gap(tw(2.5)).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).MarginEnd(tw(2)).Children(func() {
+		iconTile(c, p, func() { flagElement(c, flag, 18) })
+		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
+			ltrLabel(c, title, sizeBody, 16, 600, p.text)
+			if detail != "" {
+				ltrLabel(c, detail, sizeCaption, 14, 400, p.muted)
+			}
+		})
+	})
 }
 
 // serverRow shows the selected server, or guidance when none is selected.
