@@ -285,17 +285,15 @@ func formatMs(ms int64) string {
 
 // searchInput is the search field of the design: a magnifier, the text, and a clear
 // button once there is some; it has no box of its own.
-func searchInput(c *ui.Context, key string, value *string, placeholder string, p palette) {
-	// h-7 with the icon at left-2 and the text from pl-7.
-	row := ui.Row(c.Key(key)).Grow(1).Height(tw(7)).AlignItems(ui.Center).Padding(0, tw(1.5), 0, tw(2)).Gap(tw(7) - tw(2) - 12)
-	row.Children(func() {
+func searchInput(c *ui.Context, key string, value *string, placeholder string, p palette, autofocus ...bool) {
+	ui.Row(c.Key(key)).Grow(1).Height(tw(7)).AlignItems(ui.Center).Padding(0, tw(1.5), 0, 0).Gap(8).Children(func() {
 		ui.Icon(c, iconSearch).FontSize(12).TextColor(p.tertiary).Shrink(0)
-		in := ui.TextInputBase(c.Key(key+"-input"), value).Placeholder(placeholder).PlaceholderColor(p.muted).Grow(1).
-			FontSize(sizeCaption).TextColor(p.text).Label(placeholder).AutoFocus() // typing starts as the list opens
-		_ = in
+		in := ui.TextInputBase(c.Key(key+"-input"), value).Placeholder(placeholder).PlaceholderColor(p.muted).Grow(1).MinWidth(0).FontSize(sizeCaption).TextColor(p.text).Label(placeholder)
+		if len(autofocus) == 0 || autofocus[0] {
+			in.AutoFocus()
+		}
 		if *value != "" {
-			clear := ui.ButtonBase(c.Key(key+"-clear")).Label("Clear search").Size(tw(4), tw(4)).Radius(tw(2)).
-				Background(p.cardHover).Center().Cursor(ui.CursorPointer).Shrink(0)
+			clear := ui.ButtonBase(c.Key(key+"-clear")).Label("Clear search").Size(tw(4), tw(4)).Radius(tw(2)).Background(p.cardHover).Center().Cursor(ui.CursorPointer).Shrink(0)
 			clear.Children(func() { ui.Icon(c, iconX).FontSize(10).TextColor(p.muted) })
 			if clear.Clicked() {
 				*value = ""

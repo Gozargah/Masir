@@ -6,6 +6,8 @@ import "github.com/egoist/mygo/ui"
 type pagePath string
 
 const (
+	ruleDetailsPath         pagePath = "/rules/details"
+	ruleEditPath            pagePath = "/rules/edit"
 	subscriptionsPath       pagePath = "/subscriptions"
 	subscriptionDetailsPath pagePath = "/subscriptions/details"
 	mainPath                pagePath = "/"
@@ -41,6 +43,8 @@ func init() {
 			build:  (*app).mainView,
 			main:   true,
 		},
+		{path: ruleDetailsPath, title: "Rule", height: 560, build: (*app).ruleDetailsView},
+		{path: ruleEditPath, title: "Edit Rule", height: 620, build: (*app).ruleEditView},
 		{path: subscriptionsPath, title: "Subscriptions", height: 520, build: (*app).subscriptionsView},
 		{path: subscriptionDetailsPath, title: "Subscription", height: 560, build: (*app).subscriptionDetailsView},
 		{path: editSubscriptionPath, title: "Edit Subscription", height: subscriptionEditHeight, build: (*app).subscriptionEditView},
@@ -154,6 +158,9 @@ func (a *app) syncPage() {
 
 // goBack returns through page history and sizes the window with its page spring.
 func (a *app) goBack() {
+	if (a.path == ruleEditPath || a.path == ruleDetailsPath) && a.rulePage.busy {
+		return
+	}
 	if a.path == editSubscriptionPath {
 		if a.subscriptionPage.busy {
 			return
