@@ -1,0 +1,138 @@
+package main
+
+import (
+	"strings"
+
+	"github.com/egoist/mygo/ui"
+)
+
+func (a *app) ruleDestinationAccordion(c *ui.Context, p palette) {
+	st := &a.rulePage
+	open := st.expanded == "destination"
+	acc := ui.AccordionBase(c)
+	acc.Root.Label("Rule destination").Radius(cardRadius).Background(p.card).Border(1, p.borderDefault).Clip().Shrink(0).Children(func() {
+		item := acc.Item(&open)
+		row := item.Trigger.Label("Choose destination").Disabled(st.busy).Height(40).Padding(0, 10).Gap(8).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+		if row.Hovered() {
+			row.Background(p.cardHover)
+		}
+		row.Children(func() {
+			label(c, "Target", sizeSubhead, 16, 500, p.text).Grow(1).Basis(0).MinWidth(0)
+			a.destinationBadge(c, p, st.target)
+			ui.Icon(c, iconChevronRight).FontSize(12).TextColor(p.tertiary).Rotate(90 * item.Progress())
+		})
+		if row.Changed() && !st.busy {
+			a.toggleRuleAccordion("destination")
+		}
+		item.Panel(func() {
+			panelTheme := ruleFormTheme(c, p, true)
+			body := ui.Themed(c, &panelTheme).Label("Destination options").Shrink(0)
+			body.Children(func() {
+				ui.Column(c).Padding(8).Gap(6).Children(func() {
+					index := -1
+					for i, target := range []string{"proxy", "direct", "block"} {
+						if target == st.target {
+							index = i
+						}
+					}
+					if ruleSegments(c, "destination-kind", &index, p, "Proxy", "Direct", "Block") {
+						st.target = []string{"proxy", "direct", "block"}[index]
+					}
+					hint := "Proxy follows your active server."
+					switch st.target {
+					case "direct":
+						hint = "Connect without the proxy."
+					case "block":
+						hint = "Reject matching connections."
+					default:
+						if strings.HasPrefix(st.target, "config:") {
+							hint = "Pinned to the selected server."
+						}
+					}
+					label(c, hint, sizeMicro, 15, 400, p.muted)
+				})
+				if len(a.subscriptions.servers) == 0 {
+					label(c, "Add a subscription to pin a specific server.", sizeCaption, 16, 400, p.muted).Padding(8)
+					return
+				}
+				panelBar(c, p, func() { searchInput(c, "destination-search", &a.ruleDestinationQuery, "Search servers…", p, false) }, func() {})
+				a.ruleDestinationServers(c, p)
+			})
+			// The parent scroll follows the native expansion immediately and stops
+			// following once the accordion reaches rest.
+			if st.revealTarget && open {
+				st.targetRevealSettled = item.Progress() >= 1
+			}
+
+		})
+	})
+}
+
+func (a *app) ruleDestinationServers(c *ui.Context, p palette) {
+	query := strings.ToLower(strings.TrimSpace(a.ruleDestinationQuery))
+	var servers []server
+	for _, s := range a.subscriptions.servers {
+		hay := s.search
+		if hay == "" {
+			hay = serverSearchText(s.cfg.Name, s.subName, s.cfg)
+		}
+		if query == "" || strings.Contains(hay, query) {
+			servers = append(servers, s)
+		}
+	}
+	groups := orderedGroups(servers)
+	var items []serverListItem
+	height := float32(8)
+	for i := range groups {
+		g := &groups[i]
+		items = append(items, serverListItem{group: g})
+		height += 22
+		for _, s := range g.servers {
+			items = append(items, serverListItem{srv: s})
+			height += 38
+		}
+	}
+	if len(items) == 0 {
+		label(c, "No matching servers.", sizeCaption, 16, 400, p.muted).Padding(12, 8)
+		return
+	}
+	height += float32(max(0, len(items)-1)) * 3
+	a.ruleDestinations.Key = func(i int) any { return serverItemKey(items[i]) }
+	a.ruleDestinations.Header = func(i int) bool { return items[i].group != nil }
+	a.ruleDestinations.Label = func(i int) string {
+		if items[i].group != nil {
+			return items[i].group.name
+		}
+		return items[i].srv.cfg.Name
+	}
+	containListScroll(ui.List(c, &a.ruleDestinations, len(items), func(i int) {
+		it := items[i]
+		if it.group != nil {
+			ui.Row(c).Label("Target server group "+it.group.name).Height(22).Padding(0, 6).AlignItems(ui.Center).Background(p.listHeader).Children(func() { label(c, strings.ToUpper(ltr(it.group.name)), sizeMicro, 14, 600, p.muted).SingleLine() })
+			return
+		}
+		a.ruleDestinationServer(c, p, it.srv)
+	})).Label("Target servers").Height(min(180, height)).Shrink(0).Padding(4, 6).Gap(3).ScrollbarInsets(0, 1, 0)
+}
+
+func (a *app) ruleDestinationServer(c *ui.Context, p palette, s server) {
+	target := "config:" + s.key.sub + "/" + s.key.cfg
+	selected := a.rulePage.target == target
+	row := ui.ButtonBase(c.Key(s.key)).Label("Pin "+s.subName+" "+s.cfg.Name).Disabled(a.rulePage.busy).Padding(3, 4, 3, 6).MinHeight(34).Radius(6).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).Border(1, ui.Transparent).Shrink(0)
+	if selected {
+		row.Background(p.pinnedSurface).Border(1, p.pinned)
+	} else if row.Hovered() {
+		row.Background(p.cardHover)
+	}
+	row.Children(func() {
+		serverIdentity(c, p, s)
+		if selected {
+			ui.Icon(c, iconCheck).FontSize(12).TextColor(p.pinned).Shrink(0)
+		} else if ms := a.latency[s.key]; ms > 0 {
+			label(c, formatMs(ms), sizeMicro, 14, 400, p.muted).Shrink(0)
+		}
+	})
+	if row.Clicked() {
+		a.rulePage.target = target
+	}
+}
