@@ -45,15 +45,15 @@ func TestRuleAppSelectionAcrossTabsSearchAndManual(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if a.rulePage.values["process"] != "/Applications/Browser.app/" {
-		t.Fatal("row did not select")
+	if a.rulePage.values["process"] != "/Applications/Browser.app/" || len(a.ruleApps.filtered) != 2 {
+		t.Fatal("selection changed the installed catalog")
 	}
-	if err := tt.Click("Selected"); err != nil {
+	if err := tt.Click("Apps"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
 	tt.Frame()
-	if len(a.ruleApps.filtered) != 1 || a.ruleApps.filtered[0].Name != "Browser" {
+	if len(a.ruleApps.chosen) != 1 || a.ruleApps.chosen[0].Name != "Browser" {
 		t.Fatal("selected filter failed")
 	}
 	if err := tt.Click("Select Browser"); err != nil {
@@ -61,7 +61,7 @@ func TestRuleAppSelectionAcrossTabsSearchAndManual(t *testing.T) {
 	}
 	tt.Frame()
 	tt.Frame()
-	if len(a.ruleApps.filtered) != 0 || a.rulePage.values["process"] != "" {
+	if len(a.ruleApps.chosen) != 0 || a.rulePage.values["process"] != "" {
 		t.Fatal("deselection failed")
 	}
 	if err := tt.Click("Manual"); err != nil {
@@ -74,12 +74,12 @@ func TestRuleAppSelectionAcrossTabsSearchAndManual(t *testing.T) {
 	}
 	tt.Type("/Applications/Notes.app/\nmy-worker")
 	tt.Frame()
-	if err := tt.Click("Selected"); err != nil {
+	if err := tt.Click("Apps"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
 	tt.Frame()
-	if len(a.ruleApps.filtered) != 2 {
+	if len(a.ruleApps.chosen) != 2 {
 		t.Fatalf("manual choices not retained: %+v", a.ruleApps.filtered)
 	}
 	if err := tt.Click("Apps"); err != nil {
@@ -107,14 +107,13 @@ func TestRuleAppSelectionAcrossTabsSearchAndManual(t *testing.T) {
 	if len(a.ruleApps.filtered) != 2 {
 		t.Fatal("clearing search failed")
 	}
-	if err := tt.Click("Running"); err != nil {
-		t.Fatal(err)
+	if _, ok := tt.Find("Application group Selected"); !ok {
+		t.Fatal("missing selected group")
 	}
-	tt.Frame()
-	tt.Frame()
-	if len(a.ruleApps.filtered) != 1 || a.ruleApps.filtered[0].Name != "Browser" {
-		t.Fatal("running filter failed")
+	if _, ok := tt.Find("Running"); ok {
+		t.Fatal("running filter still present")
 	}
+
 	if !strings.Contains(a.rulePage.values["process"], "my-worker") {
 		t.Fatal("filtering dropped a manual matcher")
 	}
@@ -125,7 +124,7 @@ func TestPickedRulePathsStayOutOfInstalledCatalog(t *testing.T) {
 	appPickerTestFixture(a)
 	a.addPickedRuleApps([]string{"/Tools/My Worker"}, true)
 	a.filterRuleApps()
-	if a.ruleApps.tab != ruleAppsSelected || a.rulePage.values["process"] != "/Tools/My Worker/" || len(a.ruleApps.filtered) != 1 {
+	if a.ruleApps.tab != ruleAppsAll || a.rulePage.values["process"] != "/Tools/My Worker/" || len(a.ruleApps.chosen) != 1 {
 		t.Fatal("picked folder not selected")
 	}
 	a.ruleApps.tab = ruleAppsAll
@@ -274,7 +273,7 @@ func TestRuleEditorPrefetchesAppsBeforeAccordionOpens(t *testing.T) {
 			} else {
 				a.newRule()
 			}
-			if !a.ruleApps.loading || len(work) != 2 || a.rulePage.expanded != "" {
+			if !a.ruleApps.loading || len(work) != 3 || a.rulePage.expanded != "" {
 				t.Fatal("opening the editor did not prefetch apps with the accordion closed")
 			}
 			if edit && !a.ruleApps.selected["/Applications/Spotify.app/"] {
@@ -286,7 +285,7 @@ func TestRuleEditorPrefetchesAppsBeforeAccordionOpens(t *testing.T) {
 			}
 			token := a.ruleApps.session
 			a.toggleRuleAccordion("process")
-			if len(work) != 2 {
+			if len(work) != 3 {
 				t.Fatal("opening Applications queued another discovery")
 			}
 			tt := tester(a)
@@ -321,7 +320,7 @@ func TestRuleAppDialogHasOwnerAndCancelPreservesDraft(t *testing.T) {
 }
 
 func TestRuleSegmentsShareTheFullContainerWidth(t *testing.T) {
-	for _, options := range [][]string{{"Apps", "Running", "Selected", "Manual"}, {"Domain", "Exact", "Category", "Regex"}, {"Any", "TCP", "UDP"}, {"Proxy", "Direct", "Block"}} {
+	for _, options := range [][]string{{"Apps", "Manual"}, {"Category", "Domain"}, {"Any", "TCP", "UDP"}, {"Proxy", "Direct", "Block"}} {
 		t.Run(options[0], func(t *testing.T) {
 			selected := 0
 			tt := ui.NewTester(func(c *ui.Context) {
@@ -398,7 +397,7 @@ func TestApplicationTabsFillTheirAccordion(t *testing.T) {
 		t.Fatalf("tabs did not fill their padded container: track=%+v panel=%+v", track, panel)
 	}
 	var width float32
-	for i, name := range []string{"Apps", "Running", "Selected", "Manual"} {
+	for i, name := range []string{"Apps", "Manual"} {
 		r, _ := tt.Find(name)
 		if i == 0 {
 			width = r.W

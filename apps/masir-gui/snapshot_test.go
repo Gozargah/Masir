@@ -112,6 +112,7 @@ func TestSnapshots(t *testing.T) {
 		{"rule-condition", true, func(a *app, tt *ui.Tester) {
 			a.newRule()
 			a.rulePage.expanded = "domain"
+			a.rulePage.domainMode = 1
 			a.rulePage.values["domain"] = "domain:example.com\nfull:work.example.org"
 		}},
 		{"rule-destination", true, func(a *app, tt *ui.Tester) { a.newRule(); a.rulePage.expanded = "destination" }},
@@ -259,9 +260,13 @@ func TestSnapshots(t *testing.T) {
 					a.rulePage.expanded = d.key
 					switch d.key {
 					case "domain":
-						a.rulePage.values[d.key] = "domain:example.com"
+						a.rulePage.domainMode = 1
+						a.rulePage.values[d.key] = "domain:example.com\nfull:www.example.org"
 					case "ip":
+						a.rulePage.ipMode = 1
 						a.rulePage.values[d.key] = "1.1.1.1\n10.0.0.0/8"
+					case "source":
+						a.rulePage.values[d.key] = "192.168.1.0/24"
 					case "port", "sourcePort":
 						a.rulePage.values[d.key] = "443"
 					case "network":
@@ -283,16 +288,32 @@ func TestSnapshots(t *testing.T) {
 				},
 			})
 		}
-		for _, view := range []string{"all", "search", "selected", "loading", "error"} {
+		shots = append(shots, struct {
+			name string
+			dark bool
+			do   func(*app, *ui.Tester)
+		}{
+			"geoip-picker-" + themeName, dark, func(a *app, tt *ui.Tester) {
+				a.newRule()
+				a.rulePage.expanded = "ip"
+				a.rulePage.values["ip"] = "geoip:ir\n1.1.1.1"
+				a.ruleGeoIP = ruleGeoState{loaded: true, dirty: true, known: map[string]bool{}}
+				for _, code := range []string{"ir", "cn", "de", "private", "telegram"} {
+					a.ruleGeoIP.all = append(a.ruleGeoIP.all, geoCatalogOption("ip", code, 240))
+					a.ruleGeoIP.known[code] = true
+				}
+			},
+		})
+		for _, view := range []string{"all", "search", "loading", "error"} {
 			shots = append(shots, struct {
 				name string
 				dark bool
 				do   func(*app, *ui.Tester)
 			}{"geo-picker-" + view + "-" + themeName, dark, func(a *app, tt *ui.Tester) {
 				a.newRule()
-				a.rulePage.expanded, a.rulePage.domainMode = "domain", 2
+				a.rulePage.expanded, a.rulePage.domainMode = "domain", 0
 				a.rulePage.values["domain"] = "geosite:category-ads-all\ngeosite:google"
-				a.ruleGeo = ruleGeoState{loaded: true, dirty: true, lastTab: -1, known: map[string]bool{}}
+				a.ruleGeo = ruleGeoState{loaded: true, dirty: true, known: map[string]bool{}}
 				for _, code := range []string{"category-ads-all", "category-ai-!cn", "apple", "google", "ir", "netflix", "youtube"} {
 					a.ruleGeo.all = append(a.ruleGeo.all, geoWebsiteOption(code, 1200))
 					a.ruleGeo.known[code] = true
@@ -300,15 +321,13 @@ func TestSnapshots(t *testing.T) {
 				switch view {
 				case "search":
 					a.ruleGeo.query = "iran"
-				case "selected":
-					a.ruleGeo.tab = 1
 				case "loading":
 					a.ruleGeo.all = nil
 					a.ruleGeo.loaded = false
 					a.ruleGeo.loading = true
 				case "error":
 					a.ruleGeo.all = nil
-					a.ruleGeo.err = "Couldn't load website lists. Retry, or enter a category in Manual."
+					a.ruleGeo.err = "Couldn't load website lists. Try refreshing the list."
 				}
 				tt.SetSize(panelWidth, 620)
 			}})
@@ -333,7 +352,7 @@ func TestSnapshots(t *testing.T) {
 		if dark {
 			themeName = "dark"
 		}
-		for _, mode := range []string{"apps", "running", "selected", "manual", "search-empty", "loading", "error", "long-name"} {
+		for _, mode := range []string{"apps", "selected", "manual", "search-empty", "loading", "error", "long-name"} {
 			shots = append(shots, struct {
 				name string
 				dark bool
@@ -345,8 +364,6 @@ func TestSnapshots(t *testing.T) {
 				a.rulePage.values["process"] = "/Applications/Browser.app/"
 				a.syncRuleAppSelection()
 				switch mode {
-				case "running":
-					a.ruleApps.tab = ruleAppsRunning
 				case "selected":
 					a.addPickedRuleApps([]string{"/Tools/Worker"}, true)
 				case "manual":

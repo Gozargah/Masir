@@ -18,7 +18,6 @@ type ruleGeoState struct {
 	known                            map[string]bool
 	selected                         map[string]bool
 	query, lastQuery, lastMatch, err string
-	tab, lastTab                     int
 	loading, loaded, dirty           bool
 	list                             ui.ListState
 }
@@ -46,16 +45,60 @@ func geoWebsiteOption(code string, count uint32) ruleGeoOption {
 	return v
 }
 
+// Website and IP catalogs share selection, search and list rendering, while
+// keeping independent queries and asynchronous cache state.
+type ruleGeoCatalog struct {
+	key, prefix, title, noun, search string
+	kind                             pb.GeoKind
+}
+
+func geoCatalog(key string) ruleGeoCatalog {
+	if key == "ip" {
+		return ruleGeoCatalog{"ip", "geoip:", "GeoIP list", "GeoIP lists", "Search country or GeoIP category…", pb.GeoKind_GEO_KIND_IP}
+	}
+	return ruleGeoCatalog{"domain", "geosite:", "Website list", "website lists", "Search category or website…", pb.GeoKind_GEO_KIND_SITE}
+}
+
+func (a *app) geoState(key string) *ruleGeoState {
+	if key == "ip" {
+		return &a.ruleGeoIP
+	}
+	return &a.ruleGeo
+}
+
+func geoCatalogOption(key, code string, count uint32) ruleGeoOption {
+	if key != "ip" {
+		return geoWebsiteOption(code, count)
+	}
+	title, flag, _, ok := humanizeGeoIP("geoip:" + code)
+	if !ok {
+		title = formatTopic(code)
+	}
+	v := ruleGeoOption{code: code, title: title, flag: flag, titleKey: strings.ToLower(title)}
+	v.search = strings.ToLower(title + " " + code + " geoip:" + code)
+	if count == 1 {
+		v.count = "1 range"
+	} else if count > 1 {
+		v.count = fmt.Sprintf("%d ranges", count)
+	}
+	return v
+}
+
 // Cache metadata across editors, but revalidate on opening: the daemon already
 // indexes installed files by modification time and size. No geo data enters a frame.
 func (a *app) prepareRuleGeo() {
-	st := &a.ruleGeo
-	st.query, st.tab, st.lastTab, st.dirty = "", 0, -1, true
-	a.loadRuleGeo()
+	for _, key := range []string{"domain", "ip"} {
+		st := a.geoState(key)
+		st.query, st.dirty = "", true
+		a.loadRuleGeoFor(key)
+	}
 }
 
-func (a *app) loadRuleGeo() {
-	st := &a.ruleGeo
+func (a *app) loadRuleGeo() { a.loadRuleGeoFor("domain") }
+
+func (a *app) loadRuleGeoFor(key string) {
+	catalog := geoCatalog(key)
+	st := a.geoState(key)
 	if st.loading {
 		return
 	}
@@ -64,7 +107,7 @@ func (a *app) loadRuleGeo() {
 	a.async(func() {
 		ctx, cancel := rpc()
 		defer cancel()
-		res, err := d.ListGeoCategories(ctx, &pb.ListGeoCategoriesRequest{Kind: pb.GeoKind_GEO_KIND_SITE})
+		res, err := d.ListGeoCategories(ctx, &pb.ListGeoCategoriesRequest{Kind: catalog.kind})
 		var all []ruleGeoOption
 		known := map[string]bool{}
 		if err == nil && res != nil {
@@ -74,7 +117,7 @@ func (a *app) loadRuleGeo() {
 					continue
 				}
 				known[code] = true
-				all = append(all, geoWebsiteOption(code, cat.Entries))
+				all = append(all, geoCatalogOption(key, code, cat.Entries))
 			}
 			slices.SortFunc(all, func(a, b ruleGeoOption) int {
 				if title := strings.Compare(a.titleKey, b.titleKey); title != 0 {
@@ -86,7 +129,7 @@ func (a *app) loadRuleGeo() {
 		a.post(func() {
 			st.loading = false
 			if err != nil {
-				st.err = "Couldn't load website lists. Retry, or enter a category in Manual."
+				st.err = "Couldn't load " + catalog.noun + ". Try refreshing the list."
 				return
 			}
 			st.all, st.known, st.loaded, st.dirty = all, known, true, true
@@ -95,25 +138,28 @@ func (a *app) loadRuleGeo() {
 }
 
 // Only recompute on a query, selection or catalog change, never on a paint frame.
-func (a *app) filterRuleGeo() {
-	st := &a.ruleGeo
-	match := a.rulePage.values["domain"]
-	if !st.dirty && st.query == st.lastQuery && st.tab == st.lastTab && st.lastMatch == match {
+func (a *app) filterRuleGeo() { a.filterRuleGeoFor("domain") }
+
+func (a *app) filterRuleGeoFor(key string) {
+	catalog := geoCatalog(key)
+	st := a.geoState(key)
+	match := a.rulePage.values[key]
+	if !st.dirty && st.query == st.lastQuery && st.lastMatch == match {
 		return
 	}
 	st.selected = map[string]bool{}
 	var selectedCodes []string
-	for _, entry := range ruleEntries("domain", match) {
-		if code, ok := strings.CutPrefix(entry, "geosite:"); ok {
+	for _, entry := range ruleEntries(key, match) {
+		if code, ok := strings.CutPrefix(entry, catalog.prefix); ok {
 			st.selected[code] = true
 			selectedCodes = append(selectedCodes, code)
 		}
 	}
 	q := strings.ToLower(strings.TrimSpace(st.query))
-	q = strings.TrimPrefix(q, "geosite:")
+	q = strings.TrimPrefix(q, catalog.prefix)
 	st.filtered = st.filtered[:0]
 	add := func(v ruleGeoOption) {
-		if (st.tab != 1 || st.selected[v.code]) && strings.Contains(v.search, q) {
+		if strings.Contains(v.search, q) {
 			st.filtered = append(st.filtered, v)
 		}
 	}
@@ -121,11 +167,9 @@ func (a *app) filterRuleGeo() {
 		add(v)
 	}
 	// Old or manually entered categories remain removable even after a geo update.
-	if st.tab == 1 {
-		for _, code := range selectedCodes {
-			if !st.known[code] {
-				add(geoWebsiteOption(code, 0))
-			}
+	for _, code := range selectedCodes {
+		if !st.known[code] {
+			add(geoCatalogOption(key, code, 0))
 		}
 	}
 	rank := func(v ruleGeoOption) int {
@@ -139,47 +183,38 @@ func (a *app) filterRuleGeo() {
 		return 2
 	}
 	slices.SortStableFunc(st.filtered, func(a, b ruleGeoOption) int { return rank(a) - rank(b) })
-	if st.query != st.lastQuery || st.tab != st.lastTab {
+	if st.query != st.lastQuery {
 		st.list.ScrollTo(0, ui.Start)
 	}
-	st.lastQuery, st.lastTab, st.lastMatch, st.dirty = st.query, st.tab, match, false
+	st.lastQuery, st.lastMatch, st.dirty = st.query, match, false
 	st.list.Key = func(i int) any { return st.filtered[i].code }
 	st.list.Label = func(i int) string { return st.filtered[i].title }
 }
 
 func (a *app) ruleGeoEditor(c *ui.Context, p palette, d ruleCondition) {
-	st := &a.ruleGeo
-	ui.Column(c).Padding(0, 10).Children(func() { ruleSegments(c, "geo-scope", &st.tab, p, "All lists", "Selected", "Manual") })
-	a.filterRuleGeo()
-	if st.tab == 2 {
-		ui.Column(c).Padding(0, 10, 10).Gap(8).Children(func() {
-			a.ruleEntryEditor(c, p, d, "Website category", "geosite:category-ads-all")
-		})
-		return
-	}
-	panelBar(c, p, func() { searchInput(c, "geo-search", &st.query, "Search category or website…", p) }, func() {
-		if iconButton(c, "retry-geosite", iconRefresh, "Refresh website lists", p, iconMD, variantSubtle, 12) && !st.loading {
-			a.loadRuleGeo()
+	catalog := geoCatalog(d.key)
+	st := a.geoState(d.key)
+	panelBar(c, p, func() { searchInput(c, "geo-search", &st.query, catalog.search, p) }, func() {
+		if iconButton(c, "retry-geo", iconRefresh, "Refresh "+catalog.noun, p, iconMD, variantSubtle, 12) && !st.loading {
+			a.loadRuleGeoFor(d.key)
 		}
 	})
-	a.filterRuleGeo()
-	ui.Column(c).Label("Website list results").Height(208).Shrink(0).Children(func() {
+	a.filterRuleGeoFor(d.key)
+	ui.Column(c).Label(catalog.title + " results").Height(208).Shrink(0).Children(func() {
 		if len(st.filtered) > 0 {
-			containListScroll(ui.List(c, &st.list, len(st.filtered), func(i int) { a.ruleGeoRow(c, p, st.filtered[i]) })).Label("Website list choices").Grow(1).Basis(0).MinHeight(0).Padding(4, 6).Gap(3).ScrollbarInsets(0, 1, 0)
+			containListScroll(ui.List(c, &st.list, len(st.filtered), func(i int) { a.ruleGeoRow(c, p, d.key, st.filtered[i]) })).Label(catalog.title+" choices").Grow(1).Basis(0).MinHeight(0).Padding(4, 6).Gap(3).ScrollbarInsets(0, 1, 0)
 			return
 		}
 		ui.Column(c).Grow(1).Padding(12).Gap(6).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
-			message := "No website lists installed. You can enter a category in Manual."
+			message := "No " + catalog.noun + " installed. Update geo data in Settings."
 			switch {
 			case st.loading && !st.loaded:
 				ui.Spinner(c).Size(14, 14)
-				message = "Loading website lists…"
+				message = "Loading " + catalog.noun + "…"
 			case st.err != "":
 				message = st.err
 			case st.query != "":
-				message = "No matching website lists."
-			case st.tab == 1:
-				message = "Choose website lists in All lists."
+				message = "No matching " + catalog.noun + "."
 			}
 			label(c, message, sizeCaption, 16, 400, p.muted).TextAlign(ui.Center)
 		})
@@ -193,9 +228,11 @@ func (a *app) ruleGeoEditor(c *ui.Context, p palette, d ruleCondition) {
 	}
 }
 
-func (a *app) ruleGeoRow(c *ui.Context, p palette, v ruleGeoOption) {
-	selected := a.ruleGeo.selected[v.code]
-	row := ui.ToggleBase(c.Key(v.code), &selected).Label("Select website list "+v.code).Disabled(a.rulePage.busy).Padding(6).Gap(8).Radius(6).AlignItems(ui.Center).Border(1, ui.Transparent).Cursor(ui.CursorPointer)
+func (a *app) ruleGeoRow(c *ui.Context, p palette, key string, v ruleGeoOption) {
+	catalog := geoCatalog(key)
+	st := a.geoState(key)
+	selected := st.selected[v.code]
+	row := ui.ToggleBase(c.Key(v.code), &selected).Label("Select "+strings.ToLower(catalog.title)+" "+v.code).Disabled(a.rulePage.busy).Padding(6).Gap(8).Radius(6).AlignItems(ui.Center).Border(1, ui.Transparent).Cursor(ui.CursorPointer)
 	if selected {
 		row.Background(p.accentSurface).Border(1, p.borderFocus)
 	} else if row.Hovered() {
@@ -206,16 +243,20 @@ func (a *app) ruleGeoRow(c *ui.Context, p palette, v ruleGeoOption) {
 			if v.flag != "" {
 				flagElement(c, v.flag, 18)
 			} else {
-				ui.Icon(c, iconGlobe).FontSize(14).TextColor(p.muted)
+				glyph := iconGlobe
+				if key == "ip" {
+					glyph = iconLayers
+				}
+				ui.Icon(c, glyph).FontSize(14).TextColor(p.muted)
 			}
 		})
 		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
 			ui.Row(c).Justify(ui.SpaceBetween).Children(func() {
-				label(c, v.title, sizeBody, 16, 500, p.text).SingleLine()
-				label(c, v.count, sizeMicro, 14, 400, p.muted).SingleLine()
+				label(c, v.title, sizeBody, 16, 500, p.text).Grow(1).Basis(0).MinWidth(0).SingleLine()
+				label(c, v.count, sizeMicro, 14, 400, p.muted).Shrink(0).SingleLine()
 			})
-			code := "geosite:" + v.code
-			if a.ruleGeo.loaded && !a.ruleGeo.known[v.code] {
+			code := catalog.prefix + v.code
+			if st.loaded && !st.known[v.code] {
 				code += " · Not installed"
 			}
 			label(c, code, sizeMicro, 14, 400, p.muted).SingleLine()
@@ -225,13 +266,13 @@ func (a *app) ruleGeoRow(c *ui.Context, p palette, v ruleGeoOption) {
 		}
 	})
 	if row.Changed() {
-		entries := ruleEntries("domain", a.rulePage.values["domain"])
-		value := "geosite:" + v.code
+		entries := ruleEntries(key, a.rulePage.values[key])
+		value := catalog.prefix + v.code
 		if selected {
 			entries = append(entries, value)
 		} else {
 			entries = slices.DeleteFunc(entries, func(s string) bool { return s == value })
 		}
-		a.rulePage.values["domain"] = strings.Join(entries, "\n")
+		a.rulePage.values[key] = strings.Join(entries, "\n")
 	}
 }
