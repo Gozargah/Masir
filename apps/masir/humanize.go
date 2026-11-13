@@ -24,7 +24,7 @@ var siteSpecial = map[string]string{
 	"win-spy":              "Windows telemetry",
 	"win-extra":            "Windows extras",
 	"category-ads":         "Ads",
-	"category-porn":        "Adult websites",
+	"category-porn":        "Porn websites",
 	"category-scholar-!cn": "Scholarly sites (outside China)",
 }
 

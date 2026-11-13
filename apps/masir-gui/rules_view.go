@@ -348,7 +348,6 @@ func (a *app) destinationBadge(c *ui.Context, p palette, target string) {
 			flag, name = a.pinnedServer(strings.TrimPrefix(target, "config:"))
 		}
 		ui.Row(c).Gap(tw(1)).Padding(tw(0.5), tw(1.5)).Radius(6).Background(p.pinnedSurface).Height(tw(7)).AlignItems(ui.Center).Shrink(0).Children(func() {
-			ui.Icon(c, iconPin).FontSize(10).TextColor(p.pinned)
 			flagElement(c, flag, 14)
 			label(c, ltr(name), sizeSubhead, 14, 500, p.pinned).SingleLine().MaxWidth(120)
 		})

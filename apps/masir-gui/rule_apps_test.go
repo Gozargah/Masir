@@ -274,7 +274,7 @@ func TestRuleEditorPrefetchesAppsBeforeAccordionOpens(t *testing.T) {
 			} else {
 				a.newRule()
 			}
-			if !a.ruleApps.loading || len(work) != 1 || a.rulePage.expanded != "" {
+			if !a.ruleApps.loading || len(work) != 2 || a.rulePage.expanded != "" {
 				t.Fatal("opening the editor did not prefetch apps with the accordion closed")
 			}
 			if edit && !a.ruleApps.selected["/Applications/Spotify.app/"] {
@@ -286,7 +286,7 @@ func TestRuleEditorPrefetchesAppsBeforeAccordionOpens(t *testing.T) {
 			}
 			token := a.ruleApps.session
 			a.toggleRuleAccordion("process")
-			if len(work) != 1 {
+			if len(work) != 2 {
 				t.Fatal("opening Applications queued another discovery")
 			}
 			tt := tester(a)

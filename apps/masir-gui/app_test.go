@@ -121,6 +121,10 @@ func (f *fakeDaemon) AddSubscription(_ context.Context, r *pb.AddSubscriptionReq
 func (f *fakeDaemon) ListRoutingRules(context.Context, *pb.ListRoutingRulesRequest, ...grpc.CallOption) (*pb.ListRoutingRulesResponse, error) {
 	return &pb.ListRoutingRulesResponse{Rules: f.rules}, nil
 }
+
+func (f *fakeDaemon) ListGeoCategories(context.Context, *pb.ListGeoCategoriesRequest, ...grpc.CallOption) (*pb.ListGeoCategoriesResponse, error) {
+	return &pb.ListGeoCategoriesResponse{}, nil
+}
 func (f *fakeDaemon) SetPower(_ context.Context, r *pb.SetPowerRequest, _ ...grpc.CallOption) (*pb.SetPowerResponse, error) {
 	if r.On {
 		f.log("power on")
