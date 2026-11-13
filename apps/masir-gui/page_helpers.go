@@ -186,7 +186,7 @@ func labeledInput(c *ui.Context, p palette, key, title string, value *string, pl
 	ui.Column(c.Key(key)).Gap(inputLabelGap).Shrink(0).Children(func() {
 		inputLabel(c, p, title)
 		in = textEntry(c, p, key, title, value, placeholder, icon, iconColor, height, trailing).Input
-		if key == "sub-name" || key == "edit-sub-name" || key == "rule-name" {
+		if key == "sub-name" || key == "edit-sub-name" {
 			in.AutoFocus()
 		}
 	})

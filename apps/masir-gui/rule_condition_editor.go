@@ -53,32 +53,36 @@ func (a *app) ruleConditionEditor(c *ui.Context, p palette, d ruleCondition) {
 		})
 	case "port", "sourcePort":
 		value := st.values[d.key]
-		field(c, p, "ports", "Ports or ranges", &value, "80, 443, 1000-2000", iconHash, p.muted, nil)
+		labeledInput(c, p, "ports", "Ports or ranges", &value, "80, 443, 1000-2000", iconHash, p.muted, inputHeight, nil).AutoFocus()
 		st.values[d.key] = value
+		label(c, "Separate ports and ranges with commas.", sizeMicro, 15, 400, p.muted)
 	case "process":
 		a.ruleAppsEditor(c, p)
 	case "domain":
 		ui.Column(c).Padding(10, 10, 0).Children(func() {
-			if ruleSegments(c, "domain-mode", &st.domainMode, p, "Domain", "Exact", "Category", "Regex") {
-				st.entry = ""
-			}
+			ruleSegments(c, "domain-mode", &st.domainMode, p, "Category", "Domain")
 		})
-		if st.domainMode == 2 {
+		if st.domainMode == 0 {
 			a.ruleGeoEditor(c, p, d)
 		} else {
 			ui.Column(c).Padding(0, 10, 10).Gap(8).Children(func() {
-				title := []string{"Domain and subdomains", "Exact hostname", "Website category", "Regular expression"}[st.domainMode]
-				placeholder := []string{"example.com", "www.example.com", "geosite:cn", "^.*\\.example\\.com$"}[st.domainMode]
-				a.ruleEntryEditor(c, p, d, title, placeholder)
+				label(c, "Domains include subdomains. Use full:example.com for an exact hostname, or regexp: for a regular expression.", sizeMicro, 15, 400, p.muted)
+				a.ruleEntryEditor(c, p, d, "Domain or pattern", "example.com, full:www.example.org")
 			})
 		}
-	case "ip", "source":
-		title, placeholder := "IP addresses or ranges", "1.1.1.1, 10.0.0.0/8"
-		if d.key == "ip" {
-			placeholder = "1.1.1.1, 10.0.0.0/8 or geoip:private"
+	case "ip":
+		ui.Column(c).Padding(10, 10, 0).Children(func() {
+			ruleSegments(c, "ip-mode", &st.ipMode, p, "GeoIP", "Manual")
+		})
+		if st.ipMode == 0 {
+			a.ruleGeoEditor(c, p, d)
+		} else {
+			ui.Column(c).Padding(0, 10, 10).Gap(8).Children(func() { a.ruleIPInput(c, p, d) })
 		}
-		a.ruleEntryEditor(c, p, d, title, placeholder)
+	case "source":
+		a.ruleIPInput(c, p, d)
 	}
+
 	if d.key != "process" && len(ruleEntries(d.key, st.values[d.key])) > 0 {
 		reset := func() {
 			if ui.Button(c.Key("any-"+d.key), "Reset to Any").Disabled(st.busy).Clicked() {
@@ -86,7 +90,7 @@ func (a *app) ruleConditionEditor(c *ui.Context, p palette, d ruleCondition) {
 				st.err = ""
 			}
 		}
-		if d.key == "domain" {
+		if d.key == "domain" || d.key == "ip" {
 			ui.Column(c).Padding(0, 10, 10).Children(reset)
 		} else {
 			reset()
@@ -94,9 +98,28 @@ func (a *app) ruleConditionEditor(c *ui.Context, p palette, d ruleCondition) {
 	}
 }
 
+// Editing manual IPs preserves independently selected GeoIP categories.
+func (a *app) ruleIPInput(c *ui.Context, p palette, d ruleCondition) {
+	var manual, categories []string
+	for _, v := range ruleEntries(d.key, a.rulePage.values[d.key]) {
+		if d.key == "ip" && strings.HasPrefix(v, "geoip:") {
+			categories = append(categories, v)
+		} else {
+			manual = append(manual, v)
+		}
+	}
+	value := strings.Join(manual, ", ")
+	before := value
+	labeledInput(c, p, d.key+"-ranges", "IP addresses or ranges", &value, "1.1.1.1, 10.0.0.0/8", d.icon, p.muted, inputHeight, nil).AutoFocus()
+	if value != before {
+		a.rulePage.values[d.key] = strings.Join(append(categories, value), "\n")
+	}
+	label(c, "Separate addresses and CIDR ranges with commas.", sizeMicro, 15, 400, p.muted)
+}
+
 func (a *app) ruleEntryEditor(c *ui.Context, p palette, d ruleCondition, title, placeholder string) {
 	st := &a.rulePage
-	submitted := field(c, p, "condition-entry", title, &st.entry, placeholder, d.icon, p.muted, nil)
+	submitted := labeledInput(c, p, "condition-entry", title, &st.entry, placeholder, d.icon, p.muted, inputHeight, nil).AutoFocus().Submitted()
 	if ui.Button(c.Key("add-entry"), "Add").Disabled(st.busy || strings.TrimSpace(st.entry) == "").Clicked() || submitted {
 		a.addRuleConditionEntry(d.key)
 	}
@@ -110,11 +133,13 @@ func (a *app) addRuleConditionEntry(key string) {
 		return
 	}
 	if key == "domain" {
-		prefix := []string{"domain:", "full:", "geosite:", "regexp:"}[st.domainMode]
-		// Explicit Xray matchers can also be pasted directly.
-		if !strings.HasPrefix(value, "domain:") && !strings.HasPrefix(value, "full:") && !strings.HasPrefix(value, "geosite:") && !strings.HasPrefix(value, "regexp:") {
-			value = prefix + value
+		entries := ruleEntries(key, value)
+		for i, entry := range entries {
+			if !strings.HasPrefix(entry, "domain:") && !strings.HasPrefix(entry, "full:") && !strings.HasPrefix(entry, "geosite:") && !strings.HasPrefix(entry, "regexp:") && !strings.HasPrefix(entry, "keyword:") && !strings.HasPrefix(entry, "dotless:") && !strings.HasPrefix(entry, "ext:") {
+				entries[i] = "domain:" + entry
+			}
 		}
+		value = strings.Join(entries, "\n")
 	}
 	if err := validateRuleCondition(key, value); err != nil {
 		st.err = err.Error()
@@ -128,6 +153,9 @@ func (a *app) addRuleConditionEntry(key string) {
 func (a *app) ruleConditionEntries(c *ui.Context, p palette, d ruleCondition) {
 	st := &a.rulePage
 	entries := ruleEntries(d.key, st.values[d.key])
+	if d.key == "domain" {
+		entries = slices.DeleteFunc(entries, func(v string) bool { return strings.HasPrefix(v, "geosite:") })
+	}
 	if len(entries) == 0 {
 		return
 	}
@@ -138,7 +166,7 @@ func (a *app) ruleConditionEntries(c *ui.Context, p palette, d ruleCondition) {
 			label(c, value, sizeCaption, 16, 400, p.text).Grow(1).Basis(0).MinWidth(0).SingleLine()
 			if ui.Button(c.Key("remove-entry"), "Remove").Label("Remove " + value).Clicked() {
 				var next []string
-				for _, v := range entries {
+				for _, v := range ruleEntries(d.key, st.values[d.key]) {
 					if v != value {
 						next = append(next, v)
 					}
@@ -186,6 +214,8 @@ func ruleSegments(c *ui.Context, key string, selected *int, p palette, options .
 	switch key {
 	case "app-scope":
 		groupName = "Application source"
+	case "ip-mode":
+		groupName = "IP address source"
 	case "domain-mode":
 		groupName = "Domain matching mode"
 	case "geo-scope":

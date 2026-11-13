@@ -75,18 +75,19 @@ func TestSourceIPsAcceptCommaSeparatedBatch(t *testing.T) {
 	tt.Type("1.1.1.1, 10.0.0.0/8, 2001:db8::/32, 1.1.1.1")
 	tt.KeyDown(ui.KeyEnter)
 	tt.Frame()
-	if got := a.rulePage.values["source"]; got != "1.1.1.1\n10.0.0.0/8\n2001:db8::/32" || a.rulePage.entry != "" {
+	if got := a.rulePage.values["source"]; got != "1.1.1.1, 10.0.0.0/8, 2001:db8::/32, 1.1.1.1" || a.rulePage.entry != "" {
 		t.Fatalf("batch was not added as separate unique IPs: %q (%s)", got, a.rulePage.err)
 	}
 	raw, err := a.rulePage.matchJSON()
 	if err != nil || !strings.Contains(raw, `"source":["1.1.1.1","10.0.0.0/8","2001:db8::/32"]`) {
 		t.Fatalf("source IP serialization: %s, %v", raw, err)
 	}
-	before := a.rulePage.values["source"]
-	a.rulePage.entry = "192.168.0.1, invalid-ip"
-	a.addRuleConditionEntry("source")
-	if a.rulePage.err == "" || a.rulePage.entry == "" || a.rulePage.values["source"] != before {
-		t.Fatal("invalid batch was partially added or discarded")
+	if _, ok := tt.Find("Add"); ok {
+		t.Fatal("IP input still needs an Add button")
+	}
+	a.rulePage.values["source"] = "192.168.0.1, invalid-ip"
+	if _, err := a.rulePage.matchJSON(); err == nil {
+		t.Fatal("saved an invalid IP batch")
 	}
 }
 
@@ -245,7 +246,8 @@ func TestRuleAccordionsEditInlineAndKeepOneOpen(t *testing.T) {
 	if _, ok := tt.Find("Websites and domains options"); !ok {
 		t.Fatal("missing inline domain editor")
 	}
-	if err := tt.Click("Domain and subdomains"); err != nil {
+	click("Domain")
+	if err := tt.Click("Domain or pattern"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Type("example.com")
@@ -274,6 +276,8 @@ func TestRuleAccordionsEditInlineAndKeepOneOpen(t *testing.T) {
 		t.Fatal("destination not applied inline")
 	}
 	// Opening a condition also closes the destination.
+	tt.Scroll(150, 200, 0, -1000)
+	tt.Frame()
 	click("Websites and domains")
 	if _, ok := tt.Find("Destination options"); ok {
 		t.Fatal("destination stayed expanded")
@@ -307,7 +311,7 @@ func TestRuleThenFollowsExplanationAndFooterFits(t *testing.T) {
 	if !ok {
 		t.Fatal("missing conditions accordion")
 	}
-	more, ok := tt.Find("More matching conditions")
+	more, ok := tt.Find("+ more conditions")
 	if !ok || more.Y < conditions.Y+conditions.H {
 		t.Fatal("more matching conditions is inside the accordion")
 	}
@@ -413,6 +417,7 @@ func TestRuleNativeControlsHaveDistinctSurfaceDepths(t *testing.T) {
 			a := newTestApp(ukServers())
 			a.newRule()
 			a.rulePage.expanded = "domain"
+			a.rulePage.domainMode = 1
 			tt := tester(a)
 			tt.SetDark(dark)
 			tt.SetPreferences(ui.Preferences{ReduceMotion: true})
@@ -423,7 +428,7 @@ func TestRuleNativeControlsHaveDistinctSurfaceDepths(t *testing.T) {
 			if !ok {
 				t.Fatal("missing native accordion panel")
 			}
-			input, ok := tt.Find("Domain and subdomains")
+			input, ok := tt.Find("Domain or pattern")
 			if !ok {
 				t.Fatal("missing input")
 			}
@@ -437,14 +442,14 @@ func TestRuleNativeControlsHaveDistinctSurfaceDepths(t *testing.T) {
 			}
 			cardColor := sample(card.X+3, card.Y+20)
 			panelColor := sample(panel.X+3, panel.Y+panel.H/2)
-			inputColor := sample(input.X+input.W-10, input.Y+input.H/2)
+			inputColor := sample(input.X+input.W-3, input.Y+2)
 			if cardColor == panelColor || panelColor == inputColor {
 				t.Fatalf("surfaces merged: card=%v panel=%v field=%v", cardColor, panelColor, inputColor)
 			}
 			if dark && !(inputColor[0] < panelColor[0] && panelColor[0] < cardColor[0]) {
 				t.Fatalf("incorrect dark depth order: card=%v panel=%v field=%v", cardColor, panelColor, inputColor)
 			}
-			regex, ok := tt.Find("Regex")
+			regex, ok := tt.Find("Domain")
 			if !ok || regex.X+regex.W > panel.X+panel.W {
 				t.Fatalf("native segmented control overflows: segment=%+v panel=%+v", regex, panel)
 			}
@@ -463,9 +468,19 @@ func TestRuleNativeAccordionKeyboardNavigation(t *testing.T) {
 	if err := tt.Click("Applications"); err != nil {
 		t.Fatal(err)
 	}
+	tt.Frame()
+	if !tt.Focused("Search applications…") {
+		t.Fatal("app search did not autofocus")
+	}
+	// Close the input-bearing panel before navigating between headers.
+	if err := tt.Click("Applications"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
 	tt.KeyDown(ui.KeyDown)
 	tt.Frame()
 	if !tt.Focused("Websites and domains") {
+
 		t.Fatal("native accordion arrow navigation did not move focus")
 	}
 	tt.KeyDown(ui.KeyEnter)
@@ -545,5 +560,101 @@ func TestSelectedApplicationSummaryStacksIcons(t *testing.T) {
 	header, _ := tt.Find("Applications")
 	if stack.Y < header.Y || stack.Y+stack.H > header.Y+header.H {
 		t.Fatal("icon stack escaped header")
+	}
+}
+
+func TestDomainMatchersPreservePrefixesAndRegexCommas(t *testing.T) {
+	a := newTestApp(ukServers())
+	a.rulePage = decodeRule(nil)
+	a.rulePage.entry = `regexp:^[a-z]{1,3}\.example\.com$`
+	a.addRuleConditionEntry("domain")
+	want := a.rulePage.values["domain"]
+	if want != `regexp:^[a-z]{1,3}\.example\.com$` {
+		t.Fatalf("changed regex: %q", want)
+	}
+	a.rulePage.entry = "example.com, full:www.example.org, keyword:news"
+	a.addRuleConditionEntry("domain")
+	if got := a.rulePage.values["domain"]; got != want+"\ndomain:example.com\nfull:www.example.org\nkeyword:news" {
+		t.Fatalf("changed matcher semantics: %q", got)
+	}
+	if _, err := a.rulePage.matchJSON(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuleConditionInputsAutofocusOnEveryOpen(t *testing.T) {
+	for _, tc := range []struct {
+		key, input string
+		mode       int
+	}{
+		{"process", "Search applications…", 0},
+		{"process", "Application paths", 1},
+		{"domain", "Search category or website…", 0},
+		{"domain", "Domain or pattern", 1},
+		{"ip", "Search country or GeoIP category…", 0},
+		{"ip", "IP addresses or ranges", 1},
+		{"source", "IP addresses or ranges", 0},
+		{"port", "Ports or ranges", 0},
+		{"sourcePort", "Ports or ranges", 0},
+		{"destination", "Search servers…", 0},
+	} {
+		t.Run(tc.key+tc.input, func(t *testing.T) {
+			a := newTestApp(ukServers())
+			a.newRule()
+			a.rulePage.more = true
+			a.rulePage.domainMode, a.rulePage.ipMode = tc.mode, tc.mode
+			a.ruleApps.tab = tc.mode
+			tt := tester(a)
+			tt.SetSize(panelWidth, 620)
+			tt.Frame()
+			if tt.Focused("Rule name") {
+				t.Fatal("rule name took initial focus")
+			}
+			for i := 0; i < 2; i++ {
+				a.toggleRuleAccordion(tc.key)
+				tt.Frame()
+				tt.Frame()
+				if !tt.Focused(tc.input) {
+					t.Fatalf("input not focused on open %d", i)
+				}
+				if err := tt.Click("Rule name"); err != nil {
+					t.Fatal(err)
+				}
+				tt.Frame()
+				if !tt.Focused("Rule name") {
+					t.Fatal("input repeatedly stole focus")
+				}
+				a.toggleRuleAccordion(tc.key)
+				tt.Frame()
+				tt.Frame()
+			}
+		})
+	}
+}
+
+func TestRuleNameFollowsConditionsAndTarget(t *testing.T) {
+	a := newTestApp(ukServers())
+	a.newRule()
+	tt := tester(a)
+	tt.SetSize(panelWidth, 620)
+	tt.Frame()
+	tt.Frame()
+	name, _ := tt.Find("Rule name input")
+	target, _ := tt.Find("Rule destination")
+	save, _ := tt.Find("Save rule")
+	more, ok := tt.Find("+ more conditions")
+	card, _ := tt.Find("Rule conditions")
+	if name.Y < target.Y+target.H || name.Y+name.H > save.Y {
+		t.Fatalf("name is not between target and actions: %v %v %v", target, name, save)
+	}
+	if !ok || abs32(more.X-card.X) > 1 || more.W >= card.W {
+		t.Fatal("more conditions is not a left-aligned text control")
+	}
+	if err := tt.Click("+ more conditions"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if _, ok := tt.Find("- less conditions"); !ok {
+		t.Fatal("missing less conditions control")
 	}
 }

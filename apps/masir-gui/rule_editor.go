@@ -22,7 +22,7 @@ type ruleCondition struct {
 var ruleConditions = []ruleCondition{
 	{"process", "Applications", "One executable name or full path per line. A trailing / includes everything inside a directory.", iconApp},
 	{"domain", "Websites and domains", "One entry per line: domain:example.com (with subdomains), full:example.com, regexp:… or geosite:category.", iconGlobe},
-	{"ip", "IP addresses and ranges", "One IP, CIDR range or geoip:category per line.", iconLayers},
+	{"ip", "IP addresses and ranges", "IP addresses, CIDR ranges or geoip:category separated by commas.", iconLayers},
 	{"port", "Target ports", "Ports or ranges separated by commas, such as 80,443,1000-2000.", iconHash},
 	{"network", "Network type", "Restrict the rule to TCP or UDP traffic.", iconShuffle},
 	{"protocol", "Application protocols", "One protocol per line: http, tls, quic or bittorrent. Requires protocol sniffing.", iconLayers},
@@ -40,7 +40,7 @@ type rulePageState struct {
 	values                              map[string]string
 	extra                               map[string]json.RawMessage
 	expanded, entry, err                string
-	domainMode                          int
+	domainMode, ipMode                  int
 	revealTarget                        bool
 	entryList                           ui.ListState
 	editHeight                          float32
@@ -106,7 +106,21 @@ func ruleEntries(key, value string) []string {
 	split := func(r rune) bool { return r == '\n' || r == '\r' || (key != "process" && r == ',') }
 	var out []string
 	seen := map[string]bool{}
-	for _, v := range strings.FieldsFunc(value, split) {
+	var parts []string
+	if key == "domain" {
+		// A regex may contain commas, including repetition counts such as {1,3}.
+		// Keep a regexp: matcher intact; batches of hostnames can still use commas.
+		for _, line := range strings.Split(value, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "regexp:") {
+				parts = append(parts, line)
+			} else {
+				parts = append(parts, strings.FieldsFunc(line, split)...)
+			}
+		}
+	} else {
+		parts = strings.FieldsFunc(value, split)
+	}
+	for _, v := range parts {
 		v = strings.TrimSpace(v)
 		if v != "" && !seen[v] {
 			out = append(out, v)
@@ -385,7 +399,7 @@ func (a *app) ruleConditionsCard(c *ui.Context, p palette, editing bool, st *rul
 				item.Panel(func() {
 					panelTheme := ruleFormTheme(c, p, true)
 					ui.Themed(c, &panelTheme).Label(d.title + " options").Gap(8).Shrink(0).Children(func() {
-						if d.key == "process" || d.key == "domain" {
+						if d.key == "process" || d.key == "domain" || d.key == "ip" {
 							a.ruleConditionEditor(c, p, d)
 						} else {
 							ui.Column(c).Padding(10).Gap(8).Children(func() { a.ruleConditionEditor(c, p, d) })
@@ -425,13 +439,14 @@ func (a *app) ruleEditView(c *ui.Context, p palette) {
 		ui.Column(c).Bind(&st.editHeader).Padding(pageInset, pageInset, 0).Shrink(0).Children(func() { a.pageHeader(c, p, title) })
 		formScroll := ui.Scroll(c).Label("Rule form").TrackScroll(&st.formScroll).Grow(1).Basis(0).MinHeight(0).Padding(0, pageInset, 8).Children(func() {
 			ui.Column(c).Bind(&st.editContent).Gap(10).Shrink(0).Children(func() {
-				field(c, p, "rule-name", "Rule name", &st.name, "e.g. Work apps", iconTag, p.muted, nil)
 				titled(c, p, "MATCH WHEN", nil, func() { a.ruleConditionsCard(c, p, true, st) })
-				moreTitle := "More matching conditions"
+				moreTitle := "+ more conditions"
 				if st.more {
-					moreTitle = "Fewer matching conditions"
+					moreTitle = "- less conditions"
 				}
-				if ui.Button(c.Key("more-conditions"), moreTitle).Border(0, ui.Transparent).Disabled(st.busy).Clicked() {
+				more := ui.ButtonBase(c.Key("more-conditions")).Label(moreTitle).AlignSelf(ui.Start).Padding(3, 0).Cursor(ui.CursorPointer).Disabled(st.busy)
+				more.Children(func() { label(c, moreTitle, sizeCaption, 16, 400, p.muted) })
+				if more.Clicked() {
 					st.more = !st.more
 					if !st.more && (st.expanded == "protocol" || st.expanded == "source" || st.expanded == "sourcePort") {
 						st.expanded = ""
@@ -455,6 +470,7 @@ func (a *app) ruleEditView(c *ui.Context, p palette) {
 		}
 
 		ui.Column(c).Bind(&st.editFooter).Padding(8, pageInset, pageInset).Gap(8).Shrink(0).Children(func() {
+			field(c, p, "rule-name", "Rule name", &st.name, "e.g. Work apps", iconTag, p.muted, nil)
 			if st.err != "" {
 				label(c, st.err, sizeCaption, 15, 400, p.errorC).MaxLines(3)
 			}

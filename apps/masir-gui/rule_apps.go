@@ -23,15 +23,20 @@ type ruleApp struct {
 
 const (
 	ruleAppsAll = iota
-	ruleAppsRunning
-	ruleAppsSelected
 	ruleAppsManual
 )
+
+type ruleAppItem struct {
+	group         string
+	app           ruleApp
+	selectedGroup bool
+}
 
 type ruleAppState struct {
 	dirty                            bool
 	count                            int
-	all, filtered                    []ruleApp
+	all, filtered, chosen            []ruleApp
+	items                            []ruleAppItem
 	query, lastQuery, err, lastMatch string
 	tab, lastTab                     int
 	loading, picking                 bool
@@ -87,37 +92,62 @@ func (a *app) filterRuleApps() {
 			st.filtered = append(st.filtered, v)
 		}
 	}
+	st.chosen = nil
 	for _, v := range st.all {
 		known[v.Path] = true
-		if st.tab == ruleAppsRunning && !v.Running {
-			continue
-		}
-		if st.tab == ruleAppsSelected && !st.selected[v.Path] {
-			continue
-		}
 		add(v)
-	}
-	// Explicit paths belong in Selected, never in the installed-app catalog.
-	if st.tab == ruleAppsSelected {
-		for path, on := range st.selected {
-			if !on || known[path] {
-				continue
-			}
-			v, ok := st.custom[path]
-			if !ok {
-				v = ruleApp{Name: fallbackName(path), Path: path, Icon: strings.TrimSuffix(path, "/")}
-			}
-			add(v)
+		if st.selected[v.Path] {
+			st.chosen = append(st.chosen, v)
 		}
 	}
-	slices.SortFunc(st.filtered, func(a, b ruleApp) int { return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)) })
+	for path, on := range st.selected {
+		if !on || known[path] {
+			continue
+		}
+		v, ok := st.custom[path]
+		if !ok {
+			v = ruleApp{Name: fallbackName(path), Path: path, Icon: strings.TrimSuffix(path, "/")}
+		}
+		st.chosen = append(st.chosen, v)
+	}
+	sortApps := func(a, b ruleApp) int {
+		if n := strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)); n != 0 {
+			return n
+		}
+		return strings.Compare(a.Path, b.Path)
+	}
+	slices.SortFunc(st.filtered, sortApps)
+	slices.SortFunc(st.chosen, sortApps)
+	st.items = nil
+	if len(st.chosen) > 0 {
+		st.items = append(st.items, ruleAppItem{group: "Selected"})
+		for _, v := range st.chosen {
+			st.items = append(st.items, ruleAppItem{app: v, selectedGroup: true})
+		}
+	}
+	if len(st.filtered) > 0 {
+		st.items = append(st.items, ruleAppItem{group: "Apps"})
+		for _, v := range st.filtered {
+			st.items = append(st.items, ruleAppItem{app: v})
+		}
+	}
 	st.lastQuery, st.lastTab = st.query, st.tab
 	st.dirty = false
 	if resetScroll {
 		st.list.ScrollTo(0, ui.Start)
 	}
-	st.list.Key = func(i int) any { return st.filtered[i].Path }
-	st.list.Label = func(i int) string { return st.filtered[i].Name }
+	st.list.Key = func(i int) any {
+		v := st.items[i]
+		return fmt.Sprintf("%s/%t/%s", v.group, v.selectedGroup, v.app.Path)
+	}
+	st.list.Header = func(i int) bool { return st.items[i].group != "" }
+	st.list.Label = func(i int) string {
+		v := st.items[i]
+		if v.group != "" {
+			return v.group
+		}
+		return v.app.Name
+	}
 }
 
 func (a *app) addPickedRuleApps(paths []string, directory bool) {
@@ -133,7 +163,7 @@ func (a *app) addPickedRuleApps(paths []string, directory bool) {
 		st.custom[path] = ruleApp{Name: fallbackName(path), Path: path, Icon: strings.TrimSuffix(path, "/")}
 	}
 	if len(paths) > 0 {
-		st.tab = ruleAppsSelected
+		st.tab = ruleAppsAll
 		st.query = ""
 		a.applyRuleApps()
 	}
@@ -179,7 +209,7 @@ func (a *app) ruleAppsEditor(c *ui.Context, p palette) {
 	a.syncRuleAppSelection()
 	ui.Column(c).Shrink(0).Children(func() {
 		ui.Row(c).Padding(6, 8).Shrink(0).Children(func() {
-			ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() { ruleSegments(c, "app-scope", &st.tab, p, "Apps", "Running", "Selected", "Manual") })
+			ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() { ruleSegments(c, "app-scope", &st.tab, p, "Apps", "Manual") })
 		})
 		panelBar(c, p, func() {
 			if st.tab == ruleAppsManual {
@@ -201,7 +231,7 @@ func (a *app) ruleAppsEditor(c *ui.Context, p palette) {
 			ui.Column(c).Padding(8).Gap(6).Children(func() {
 				label(c, "One executable name or full path per line. End a folder path with / to include its applications.", sizeMicro, 15, 400, p.muted)
 				value := a.rulePage.values["process"]
-				labeledInput(c, p, "process-paths", "Application paths", &value, "Any application", iconTerminal, p.muted, 116, nil)
+				labeledInput(c, p, "process-paths", "Application paths", &value, "Any application", iconTerminal, p.muted, 116, nil).AutoFocus()
 				if value != a.rulePage.values["process"] {
 					a.rulePage.values["process"] = value
 					a.syncRuleAppSelection()
@@ -222,14 +252,25 @@ func (a *app) ruleAppsEditor(c *ui.Context, p palette) {
 				switch {
 				case st.query != "":
 					message = "No matching applications."
-				case st.tab == ruleAppsRunning:
-					message = "No installed applications are running."
-				case st.tab == ruleAppsSelected:
-					message = "Select applications in Apps, or choose an app or folder."
 				}
 				label(c, message, sizeCaption, 16, 400, p.muted).Padding(12, 10)
 			}
-			containListScroll(ui.List(c, &st.list, len(st.filtered), func(i int) { a.ruleAppRow(c, p, st.filtered[i]) })).Label("Application choices").Height(min(208, float32(len(st.filtered))*48+8)).Shrink(0).Padding(4, 6).Gap(3).ScrollbarInsets(0, 1, 0)
+			height := float32(8)
+			for _, item := range st.items {
+				if item.group != "" {
+					height += 25
+				} else {
+					height += 48
+				}
+			}
+			containListScroll(ui.List(c, &st.list, len(st.items), func(i int) {
+				item := st.items[i]
+				if item.group != "" {
+					ui.Row(c).Label("Application group "+item.group).Height(22).Padding(0, 6).AlignItems(ui.Center).Background(p.listHeader).Children(func() { label(c, strings.ToUpper(item.group), sizeMicro, 14, 600, p.muted).SingleLine() })
+					return
+				}
+				a.ruleAppRow(c, p, item.app)
+			})).Label("Application choices").Height(min(208, height)).Shrink(0).Padding(4, 6).Gap(3).ScrollbarInsets(0, 1, 0)
 		}
 		if st.err != "" {
 			label(c, st.err, sizeCaption, 16, 400, p.errorC).Padding(6, 10)
@@ -241,7 +282,7 @@ func (a *app) ruleAppsEditor(c *ui.Context, p palette) {
 				title = fmt.Sprintf("%d selected", count)
 			}
 			label(c, title, sizeMicro, 15, 400, p.muted)
-			if count > 0 && iconButton(c, "clear-apps", iconX, "Clear application selection", p, iconXS, variantGhost, 11) {
+			if count > 0 && ui.Button(c.Key("clear-apps"), "Reset to Any").Label("Clear application selection").Disabled(a.rulePage.busy).Clicked() {
 				a.rulePage.values["process"] = ""
 				a.syncRuleAppSelection()
 			}

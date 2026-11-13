@@ -68,6 +68,7 @@ type app struct {
 	rulePage             rulePageState
 	ruleApps             ruleAppState
 	ruleGeo              ruleGeoState
+	ruleGeoIP            ruleGeoState
 	rules                ruleStore
 	updates              updateStore
 
