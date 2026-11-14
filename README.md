@@ -28,7 +28,7 @@
 </p>
 
 <p>
-  <img src="docs/assets/banner.png" width="100%" alt="Masir's native desktop app with its server picker open, alongside real CLI status output">
+  <img src="docs/assets/banner.png" width="100%" alt="Masir's native desktop app with its server picker open, alongside demo CLI status output">
 </p>
 
 </div>
@@ -175,7 +175,7 @@ masir rules add --domain geosite:category-ir --ip geoip:ir -o direct
 masir rules add --app /Applications/Telegram.app/ -o proxy
 
 # Google always through one specific server, whatever the active one is
-masir rules add --domain geosite:google --via 737e3ea15f56
+masir rules add --domain geosite:google --via <server-id>
 
 # Block ads and trackers
 masir rules add --domain geosite:category-ads-all -o block
