@@ -181,6 +181,14 @@ func (a *app) ruleConditionEntries(c *ui.Context, p palette, d ruleCondition) {
 // the main panel and subscription details, including over native material.
 func ruleFormTheme(c *ui.Context, p palette, panel bool) ui.Theme {
 	t := *c.Theme()
+	// Tooltips fall back to Text/Background. Resolve those colors before
+	// making the form background transparent, or their text disappears.
+	if t.Inverse == ui.Transparent {
+		t.Inverse = t.Text
+	}
+	if t.InverseText == ui.Transparent {
+		t.InverseText = t.Background
+	}
 	t.FontSize = sizeSubhead
 	t.Spacing = 3
 	t.Radius = 6

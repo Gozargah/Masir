@@ -10,9 +10,10 @@ import (
 
 // ruleMenu is the menu a right-click opens on a rule: which rule, and where in the window.
 type ruleMenu struct {
-	open bool
-	tag  string
-	x, y float32
+	open          bool
+	confirmRemove bool
+	tag           string
+	x, y          float32
 }
 
 const menuWidth = 124
@@ -64,9 +65,17 @@ func (a *app) contextMenu(c *ui.Context, p palette) {
 				a.setRuleEnabled(rule.RuleTag, rule.Disabled)
 			}
 			ui.Box(c).Height(0.5).Background(p.borderSubtle).Margin(tw(0.5), tw(1))
-			if a.menuItem(c, p, "remove", "Remove Rule", iconTrash, true) {
-				a.menu.open = false
-				a.removeRule(rule.RuleTag)
+			removeTitle := "Remove Rule"
+			if a.menu.confirmRemove {
+				removeTitle = "Remove"
+			}
+			if a.menuItem(c, p, "remove", removeTitle, iconTrash, true) {
+				if a.menu.confirmRemove {
+					a.menu.open = false
+					a.removeRule(rule.RuleTag)
+				} else {
+					a.menu.confirmRemove = true
+				}
 			}
 		})
 	})

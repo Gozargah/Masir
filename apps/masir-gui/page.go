@@ -167,6 +167,9 @@ func (a *app) goBack() {
 		}
 		a.subscriptionPage.err = ""
 	}
+	if a.path == ruleEditPath {
+		a.rulePage.removing = false
+	}
 	a.router.Back()
 	a.syncPage()
 	a.requestHeight()

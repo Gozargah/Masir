@@ -292,6 +292,13 @@ func (a *app) swipeButtons(c *ui.Context, p palette, r *pb.RoutingRule, sw *swip
 	bar := ui.Row(c.Key("swipe-buttons")).Absolute().Top(0).Bottom(0).Right(0).Padding(0, tw(1.5), 0, 0).
 		Gap(tw(1.5)).AlignItems(ui.Center).Translate(sw.buttonsX(), 0).Opacity(sw.buttonsOpacity())
 	bar.Children(func() {
+		if sw.confirmRemove {
+			if ruleRemoveButton(c, p, "confirm-swipe-remove", tw(7), false) {
+				sw.close(now)
+				a.removeRule(r.RuleTag)
+			}
+			return
+		}
 		title := "Disable Rule"
 		if r.Disabled {
 			title = "Enable Rule"
@@ -305,8 +312,7 @@ func (a *app) swipeButtons(c *ui.Context, p palette, r *pb.RoutingRule, sw *swip
 			a.editRule(r)
 		}
 		if a.swipeButton(c, p, "delete", "Remove Rule", iconTrash, true, true) {
-			sw.close(now)
-			a.removeRule(r.RuleTag)
+			sw.confirmRemove = true
 		}
 	})
 }

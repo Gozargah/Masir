@@ -692,6 +692,12 @@ func TestSwipingARowLeftShowsItsButtons(t *testing.T) {
 	if err := tt.Click("Remove Rule"); err != nil {
 		t.Fatalf("the buttons didn't come in: %v", err)
 	}
+	if f.called("remove r1") {
+		t.Fatal("rule removed before confirmation")
+	}
+	if err := tt.Click("Remove"); err != nil {
+		t.Fatal(err)
+	}
 	if !f.called("remove r1") {
 		t.Fatalf("calls = %v", f.calls)
 	}
@@ -709,6 +715,12 @@ func TestRightClickOpensTheRuleMenu(t *testing.T) {
 		}
 	}
 	if err := tt.Click("Remove Rule"); err != nil {
+		t.Fatal(err)
+	}
+	if f.called("remove r2") {
+		t.Fatal("rule removed before confirmation")
+	}
+	if err := tt.Click("Remove"); err != nil {
 		t.Fatal(err)
 	}
 	if !f.called("remove r2") || a.menu.open {
@@ -845,11 +857,13 @@ func TestRemovedRuleLeavesAtOnceAndReturnsIfRefused(t *testing.T) {
 	_ = tt.RightClick(ltr("bank.test"))
 	tt.Advance(time.Second)
 	_ = tt.Click("Remove Rule")
+	_ = tt.Click("Remove")
 	tt.Advance(time.Second)
 	if tt.HasText(ltr("bank.test")) || !tt.HasText("rules") {
 		t.Fatalf("the rule is still listed: %q", tt.Texts())
 	}
 	release()
+	tt.Frame()
 	tt.Advance(time.Second)
 	if !tt.HasText(ltr("bank.test")) {
 		t.Fatalf("the rule didn't come back: %q", tt.Texts())

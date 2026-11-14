@@ -108,6 +108,19 @@ func TestSnapshots(t *testing.T) {
 		{"rule-pinned-light", false, func(a *app, tt *ui.Tester) { a.newRule(); a.rulePage.target = "config:s1/c2" }},
 		{"rule-new-dark", true, func(a *app, tt *ui.Tester) { a.newRule() }},
 		{"rule-new-light", false, func(a *app, tt *ui.Tester) { a.newRule() }},
+		{"rule-edit-dark", true, func(a *app, tt *ui.Tester) { a.editRule(a.rules.rules[0]) }},
+		{"rule-edit-light", false, func(a *app, tt *ui.Tester) { a.editRule(a.rules.rules[0]) }},
+		{"rule-delete-confirmation", true, func(a *app, tt *ui.Tester) {
+			a.editRule(a.rules.rules[0])
+			a.rulePage.removing = true
+		}},
+		{"rule-swipe-confirmation", true, func(a *app, tt *ui.Tester) {
+			_ = tt.Click("RULES")
+			sw := a.swipeFor("r1")
+			sw.x, sw.open, sw.confirmRemove = -swipeWidth, true, true
+		}},
+		{"rule-tooltip-dark", true, func(a *app, tt *ui.Tester) { a.editRule(a.rules.rules[0]) }},
+		{"rule-tooltip-light", false, func(a *app, tt *ui.Tester) { a.editRule(a.rules.rules[0]) }},
 		{"rule-details", true, func(a *app, tt *ui.Tester) { a.openRule(a.rules.rules[0]) }},
 		{"rule-condition", true, func(a *app, tt *ui.Tester) {
 			a.newRule()
@@ -407,6 +420,12 @@ func TestSnapshots(t *testing.T) {
 			tt.Advance(time.Second)
 		} else {
 			tt.Frame()
+		}
+		if s.name == "rule-tooltip-dark" || s.name == "rule-tooltip-light" {
+			if b, ok := tt.Find("Delete rule"); ok {
+				tt.Move(b.X+b.W/2, b.Y+b.H/2)
+				tt.Advance(time.Second)
+			}
 		}
 		tt.Frame()
 		f, err := os.Create(filepath.Join(dir, s.name+".png"))
