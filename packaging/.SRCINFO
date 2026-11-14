@@ -1,6 +1,6 @@
 pkgbase = masir-bin
 	pkgdesc = A fast client for Xray: subscriptions, routing rules and a system-wide tunnel
-	pkgver = 0.1.0
+	pkgver = 0.1.2
 	pkgrel = 1
 	url = https://github.com/Gozargah/Masir
 	arch = x86_64
@@ -18,9 +18,9 @@ pkgbase = masir-bin
 	conflicts = masir-desktop
 	options = !strip
 	options = !debug
-	source_x86_64 = masir-bin-0.1.0-amd64.deb::https://github.com/Gozargah/Masir/releases/download/v0.1.0/masir-desktop-linux-0.1.0-amd64.deb
-	sha256sums_x86_64 = d14262982d8a0c83ed232207c7ad9c745a7aff5a204e884eebca54416a4bd9b9
-	source_aarch64 = masir-bin-0.1.0-arm64.deb::https://github.com/Gozargah/Masir/releases/download/v0.1.0/masir-desktop-linux-0.1.0-arm64.deb
-	sha256sums_aarch64 = fcc3555f9c7ae815ee394cadded640067757325aaf33d4bff81331121ccab0eb
+	source_x86_64 = masir-bin-0.1.2-amd64.deb::https://github.com/Gozargah/Masir/releases/download/v0.1.2/masir-desktop-linux-0.1.2-amd64.deb
+	sha256sums_x86_64 = 3f7d33140038978b9137dd302a746f0d8df02e2480240190a367177c46c59a1f
+	source_aarch64 = masir-bin-0.1.2-arm64.deb::https://github.com/Gozargah/Masir/releases/download/v0.1.2/masir-desktop-linux-0.1.2-arm64.deb
+	sha256sums_aarch64 = 53dfe70a4a5c471aa89423a4a159d51c9295f51a730320e3c8413af8b25bca09
 
 pkgname = masir-bin
