@@ -313,7 +313,13 @@ func (a *app) deleteSelectedRule() {
 					break
 				}
 			}
+			a.indexRules()
+			delete(a.swipes, tag)
 			a.goBack()
+			// Editing may have been opened from this rule's details.
+			if a.path == ruleDetailsPath {
+				a.goBack()
+			}
 		})
 	})
 }
@@ -436,7 +442,9 @@ func (a *app) ruleEditView(c *ui.Context, p palette) {
 	}
 	formTheme := ruleFormTheme(c, p, false)
 	ui.Themed(c, &formTheme).Background(ui.Transparent).Fill().Children(func() {
-		ui.Column(c).Bind(&st.editHeader).Padding(pageInset, pageInset, 0).Shrink(0).Children(func() { a.pageHeader(c, p, title) })
+		ui.Column(c).Bind(&st.editHeader).Padding(pageInset, pageInset, 0).Shrink(0).Children(func() {
+			a.pageHeader(c, p, title)
+		})
 		formScroll := ui.Scroll(c).Label("Rule form").TrackScroll(&st.formScroll).Grow(1).Basis(0).MinHeight(0).Padding(0, pageInset, 8).Children(func() {
 			ui.Column(c).Bind(&st.editContent).Gap(10).Shrink(0).Children(func() {
 				titled(c, p, "MATCH WHEN", nil, func() { a.ruleConditionsCard(c, p, true, st) })
@@ -475,13 +483,30 @@ func (a *app) ruleEditView(c *ui.Context, p palette) {
 				label(c, st.err, sizeCaption, 15, 400, p.errorC).MaxLines(3)
 			}
 			ui.Row(c).Gap(8).Children(func() {
-				ui.Column(c).Grow(1).Basis(0).Children(func() {
-					if ui.Button(c.Key("cancel-rule"), "Cancel").Disabled(st.busy).Clicked() {
+				ui.Row(c).Grow(1).Basis(0).Gap(8).Children(func() {
+					if st.removing {
+						remove := ui.Button(c.Key("confirm-editor-remove"), "Remove").Label("Confirm remove rule").Height(28).Grow(1).Basis(0).
+							Disabled(st.busy).Background(p.errorSurface).Border(1, p.errorBorder).TextColor(p.errorC)
+						if remove.Clicked() {
+							st.removing = false
+							a.deleteSelectedRule()
+						}
+						return
+					}
+					if st.original != "" {
+						trash := ui.Button(c.Key("delete-rule"), "").Label("Delete rule").Tooltip("Delete rule").
+							Size(28, 28).Padding(0).Shrink(0).Disabled(st.busy)
+						trash.Children(func() { ui.Icon(c, iconTrash).FontSize(15).TextColor(p.muted) })
+						if trash.Clicked() {
+							st.removing = true
+						}
+					}
+					if ui.Button(c.Key("cancel-rule"), "Cancel").Label("Cancel rule editing").Height(28).Grow(1).Basis(0).Disabled(st.busy).Clicked() {
 						a.goBack()
 					}
 				})
 				ui.Column(c).Grow(1).Basis(0).Children(func() {
-					if ui.PrimaryButton(c.Key("save-rule"), "Save rule").Disabled(st.busy).Clicked() {
+					if ui.PrimaryButton(c.Key("save-rule"), "Save rule").Label("Save rule changes").Height(28).Disabled(st.busy).Clicked() {
 						a.saveRule()
 					}
 				})

@@ -44,12 +44,13 @@ type swipeSample struct {
 
 // swipe is one row's gesture state.
 type swipe struct {
-	mode   swipeMode
-	x      float32 // where the row shows: 0 closed, -swipeWidth open
-	raw    float32 // where the fingers say it is, before the rubber band
-	target float32 // where it is settling to
-	vel    float32 // px/s while settling
-	open   bool    // it is open, or settling open
+	confirmRemove bool
+	mode          swipeMode
+	x             float32 // where the row shows: 0 closed, -swipeWidth open
+	raw           float32 // where the fingers say it is, before the rubber band
+	target        float32 // where it is settling to
+	vel           float32 // px/s while settling
+	open          bool    // it is open, or settling open
 
 	endAt time.Time // the fingers are up when this passes
 	quiet time.Time // trailing inertia is absorbed until then
@@ -165,6 +166,9 @@ func (s *swipe) end(now time.Time) {
 func (s *swipe) settle(open bool, vel float32, now time.Time) {
 	s.mode = swipeSettling
 	s.open = open
+	if !open {
+		s.confirmRemove = false
+	}
 	s.target = 0
 	if open {
 		s.target = -swipeWidth
@@ -210,6 +214,7 @@ func (s *swipe) advance(now time.Time) bool {
 
 // close sends the row back; open sends it out.
 func (s *swipe) close(now time.Time) {
+	s.confirmRemove = false
 	if s.x != 0 || s.open {
 		s.settle(false, 0, now)
 	}
