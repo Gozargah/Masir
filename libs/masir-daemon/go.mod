@@ -6,6 +6,7 @@ require (
 	aead.dev/minisign v0.3.0
 	github.com/Gozargah/Masir/libs/masir-core v0.0.0
 	github.com/Gozargah/Masir/libs/masir-proto v0.0.0
+	github.com/ebitengine/purego v0.11.1
 	github.com/posthog/posthog-go v1.37.0
 	github.com/xtls/libxray v1.261029.0
 	github.com/xtls/xray-core v1.260327.1-0.20261109052709-676eaf66f8f0

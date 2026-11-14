@@ -42,6 +42,13 @@ type Core struct {
 	stats      stats.Manager
 	cur        *Profile
 	generation uint64
+	systemDNS  systemDNS
+}
+
+type systemDNS interface {
+	before(*Profile) error
+	after(context.Context, *Profile) error
+	close() error
 }
 
 // New takes the directory holding geoip.dat/geosite.dat (e.g. the bundle's Resources/).
@@ -71,10 +78,30 @@ func (c *Core) Apply(ctx context.Context, p *Profile) error {
 		return err
 	}
 	prev := c.cur
+	if c.systemDNS != nil {
+		if err := c.systemDNS.before(p); err != nil {
+			return err
+		}
+	}
 	err := c.applyLocked(ctx, p)
+	if err != nil && c.inst != nil && c.systemDNS != nil {
+		// A live apply can fail before removing the old inbound, after before()
+		// suspended DNS. Reinstate DNS for the profile that still runs.
+		err = errors.Join(err, c.systemDNS.after(context.WithoutCancel(ctx), c.cur))
+	}
+	if err == nil && c.systemDNS != nil {
+		if dnsErr := c.systemDNS.after(ctx, p); dnsErr != nil {
+			err = errors.Join(dnsErr, c.stopLocked())
+		}
+	}
 	if err != nil && c.inst == nil && prev != nil {
 		if rerr := c.restartLocked(context.WithoutCancel(ctx), prev); rerr != nil {
 			return errors.Join(err, rerr)
+		}
+		if c.systemDNS != nil {
+			if rerr := c.systemDNS.after(context.WithoutCancel(ctx), prev); rerr != nil {
+				return errors.Join(err, rerr, c.stopLocked())
+			}
 		}
 	}
 	return err
@@ -121,12 +148,13 @@ func (c *Core) Dial(ctx context.Context, network, addr string) (net.Conn, error)
 func (c *Core) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.stopLocked()
-	return nil
+	return c.stopLocked()
 }
 
 func (c *Core) restartLocked(ctx context.Context, p *Profile) error {
-	c.stopLocked()
+	if err := c.stopLocked(); err != nil {
+		return err
+	}
 
 	raw, err := p.bootstrap()
 	if err != nil {
@@ -158,7 +186,11 @@ func (c *Core) restartLocked(ctx context.Context, p *Profile) error {
 	return nil
 }
 
-func (c *Core) stopLocked() {
+func (c *Core) stopLocked() error {
+	var err error
+	if c.systemDNS != nil {
+		err = c.systemDNS.close()
+	}
 	setMainInstance(nil)
 	c.generation++
 	if c.inst != nil {
@@ -166,6 +198,7 @@ func (c *Core) stopLocked() {
 	}
 	c.inst, c.cur = nil, nil
 	c.inbounds, c.outbounds, c.routing, c.balancer, c.stats = nil, nil, nil, nil, nil
+	return err
 }
 
 // bindFeatures validates all dependencies before publishing any of them. Called under mu.

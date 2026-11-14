@@ -156,6 +156,12 @@ func run(parent context.Context, userFlag string, idle bool) (restart, stillIdle
 	}
 	xc := xray.New(assets)
 	defer xc.Close() // tears down the TUN and the proxy on every exit path
+	if id.Privileged {
+		if err := xc.EnableSystemDNS(); err != nil {
+			lis.Close()
+			return false, false, fmt.Errorf("recover system DNS: %w", err)
+		}
+	}
 	daemon := server.New(xc, id)
 	if idle {
 		daemon.StartIdle()
