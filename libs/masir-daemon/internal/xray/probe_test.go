@@ -162,3 +162,38 @@ func TestProbeDoesNotOpenConfiguredLogFiles(t *testing.T) {
 		t.Fatalf("probe touched log file: %v", err)
 	}
 }
+
+func TestNullProbeDoesNotFailValidNeighbor(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer srv.Close()
+	seen := map[string]bool{}
+	MeasureEach(context.Background(), []Probe{
+		{Tag: "invalid", Outbound: json.RawMessage("null")},
+		{Tag: "valid", Outbound: json.RawMessage(`{"protocol":"freedom"}`)},
+	}, LatencyOptions{URL: srv.URL, Attempts: 1}, 1, func(tag string, _ time.Duration, err error) {
+		seen[tag] = true
+		if (tag == "invalid") != (err != nil) {
+			t.Errorf("%s: %v", tag, err)
+		}
+	})
+	if len(seen) != 2 {
+		t.Fatalf("missing results: %v", seen)
+	}
+}
+
+func TestProbeBatchFitsWorkerLifetime(t *testing.T) {
+	for _, workers := range []int{1, 2, 8, 32} {
+		for _, timeout := range []time.Duration{time.Second, 12 * time.Second, 30 * time.Second} {
+			opt := LatencyOptions{Timeout: timeout, Attempts: 2}
+			size := probeBatchSize(opt, workers)
+			concurrency := min(max(workers, 1), 8)
+			waves := (size + concurrency - 1) / concurrency
+			if budget := time.Duration(waves) * timeout * 2; budget > probeLifetime-probeStartupAllowance {
+				t.Errorf("workers=%d timeout=%v: batch %d needs %v", workers, timeout, size, budget)
+			}
+		}
+	}
+	if _, err := MeasureDelay(context.Background(), nil, LatencyOptions{Timeout: probeLifetime, Attempts: 2}); err == nil {
+		t.Fatal("unserviceable request budget accepted")
+	}
+}
