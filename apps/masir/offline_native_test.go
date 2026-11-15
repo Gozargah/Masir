@@ -167,11 +167,7 @@ func TestOfflineNativeServiceLifecycle(t *testing.T) {
 	if err := os.MkdirAll(config, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if runtime.GOOS == "darwin" {
-		nativeInstallLegacyFixture(t, oldDir, u.Uid)
-	} else {
-		privileged(old, "daemon", "enable", "--user", u.Uid)
-	}
+	privileged(old, "daemon", "enable", "--user", u.Uid)
 	nativeWaitVersion(t, nativeOldVersion)
 	oldBytes, err := os.ReadFile(old)
 	if err != nil {
@@ -186,7 +182,7 @@ func TestOfflineNativeServiceLifecycle(t *testing.T) {
 		{"lock-reacquired-after-crash", "stop-and-resume-errors"},
 	}
 	if runtime.GOOS == "darwin" {
-		cases = append([]struct{ name, fault string }{{"legacy-custom-data", "legacy-custom-data"}, {"legacy-unauthenticated", "legacy-unauthenticated"}}, cases...)
+		cases = append([]struct{ name, fault string }{{"legacy-unsupported", "legacy-unsupported"}}, cases...)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -212,9 +208,6 @@ func TestOfflineNativeServiceLifecycle(t *testing.T) {
 				t.Fatalf("native fault probe: %v\n%s", e, out)
 			}
 			installedPath := service.BinaryPath()
-			if which == "legacy-unauthenticated" || which == "legacy-custom-data" {
-				installedPath = service.LegacyDarwinBinary
-			}
 			now, e := os.ReadFile(installedPath)
 			if e != nil || !bytes.Equal(now, oldBytes) {
 				t.Fatalf("failed update changed installed bytes: %v", e)
@@ -225,7 +218,7 @@ func TestOfflineNativeServiceLifecycle(t *testing.T) {
 	// The final successful import exercises this OS's actual supervisor, not a mock.
 	privileged(helper, "daemon", "import-desktop", "--from", payload, "--user", u.Uid)
 	nativeWaitVersion(t, nativeNewVersion)
-	nativeAssertProtectedMigration(t, oldBytes)
+	nativeAssertProtectedInstallation(t)
 	previous, err := os.ReadFile(service.BinaryPath() + ".previous")
 	if err != nil || sha256.Sum256(previous) != sha256.Sum256(oldBytes) {
 		t.Fatalf("rollback binary not preserved: %v", err)
@@ -275,12 +268,8 @@ func TestOfflineNativeChild(t *testing.T) {
 		t.Fatal("fault probe needs an elevated disposable runner")
 	}
 	payload, who := os.Getenv("MASIR_NATIVE_PAYLOAD"), os.Getenv("MASIR_NATIVE_USER")
-	if which == "legacy-custom-data" {
-		nativePrepareLegacyCustomData(t)
-		return
-	}
-	if which == "legacy-unauthenticated" {
-		nativeRejectAlteredLegacy(t, payload, who)
+	if which == "legacy-unsupported" {
+		nativeRejectUnsupportedLegacy(t, payload, who)
 		return
 	}
 	u, err := user.LookupId(who)
