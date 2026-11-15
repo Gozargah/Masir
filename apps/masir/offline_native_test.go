@@ -167,16 +167,12 @@ func TestOfflineNativeServiceLifecycle(t *testing.T) {
 	if err := os.MkdirAll(config, 0700); err != nil {
 		t.Fatal(err)
 	}
-	privileged(old, "daemon", "enable", "--user", u.Uid)
-	nativeWaitVersion(t, nativeOldVersion)
 	if runtime.GOOS == "darwin" {
-		failedHelper := filepath.Join(root, "published-"+nativeOldVersion)
-		if e := os.Mkdir(failedHelper, 0700); e != nil {
-			t.Fatal(e)
-		}
-		nativeReleaseFixture(t, failedHelper, nativeOldVersion)
-		nativeReproduceReleasedGuard(t, filepath.Join(failedHelper, name), payload, u.Uid)
+		nativeInstallLegacyFixture(t, oldDir, u.Uid)
+	} else {
+		privileged(old, "daemon", "enable", "--user", u.Uid)
 	}
+	nativeWaitVersion(t, nativeOldVersion)
 	oldBytes, err := os.ReadFile(old)
 	if err != nil {
 		t.Fatal(err)

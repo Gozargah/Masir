@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -100,33 +101,53 @@ func nativePrepareLegacyCustomData(t *testing.T) {
 	}
 }
 
-func nativeReproduceReleasedGuard(t *testing.T, helper, payload, who string) {
+// Install authenticated historical bytes into an explicit legacy layout. The
+// historical installer's destination may already be the protected location;
+// migration coverage must not depend on its default installation policy.
+func nativeInstallLegacyFixture(t *testing.T, source, who string) {
 	t.Helper()
-	for _, path := range []string{service.LegacyDarwinDir, service.LegacyDarwinBinary} {
-		info, e := os.Lstat(path)
-		if e != nil {
-			t.Fatal(e)
-		}
-		st := info.Sys().(*syscall.Stat_t)
-		if st.Uid != 0 || info.Mode().Perm()&0022 != 0 {
-			t.Fatalf("legacy fixture is not root-owned: %s", path)
+	uid, err := strconv.Atoi(who)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "sudo", append([]string{"-n"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("legacy fixture command failed: %v %s", err, out)
 		}
 	}
-	parent, e := os.Stat(filepath.Dir(service.LegacyDarwinDir))
-	if e != nil {
-		t.Fatal(e)
+	run("install", "-d", "-o", "root", "-g", "wheel", "-m", "0755", service.LegacyDarwinDir)
+	run("install", "-o", "root", "-g", "wheel", "-m", "0755", filepath.Join(source, "masir"), service.LegacyDarwinBinary)
+	for _, name := range []string{"geoip.dat", "geosite.dat"} {
+		run("install", "-o", "root", "-g", "wheel", "-m", "0644", filepath.Join(source, name), filepath.Join(service.LegacyDarwinDir, name))
+	}
+	plist := filepath.Join(t.TempDir(), "legacy.plist")
+	if err := os.WriteFile(plist, []byte(servicePlist(service.LegacyDarwinBinary, uid)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("install", "-o", "root", "-g", "wheel", "-m", "0644", plist, service.DefinitionPath())
+	run("xattr", "-c", service.DefinitionPath())
+	for _, path := range []string{service.LegacyDarwinDir, service.LegacyDarwinBinary} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Sys().(*syscall.Stat_t).Uid != 0 || info.Mode().Perm()&0022 != 0 {
+			t.Fatalf("legacy fixture is not root-controlled: %s", path)
+		}
+	}
+	parent, err := os.Stat(filepath.Dir(service.LegacyDarwinDir))
+	if err != nil {
+		t.Fatal(err)
 	}
 	if parent.Sys().(*syscall.Stat_t).Uid != uint32(os.Getuid()) {
 		t.Fatal("legacy fixture parent must belong to the user")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	out, e := exec.CommandContext(ctx, "sudo", "-n", helper, "daemon", "import-desktop", "--from", payload, "--user", who).CombinedOutput()
-	if e == nil || !strings.Contains(string(out), "installed service is not root-controlled") {
-		t.Fatalf("old service did not reproduce the reported rejection: %v %s", e, out)
-	}
-	t.Log("Installed service rejection reproduced: installed service is not root-controlled")
+	run("launchctl", "bootstrap", "system", service.DefinitionPath())
 	if !service.LegacyLocation() {
-		t.Fatal("failed old helper changed the launchd target")
+		t.Fatal("fixture did not install the legacy launchd target")
 	}
 }
