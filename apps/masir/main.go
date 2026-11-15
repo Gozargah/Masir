@@ -230,7 +230,14 @@ func rootCmd() *cobra.Command {
 		"masir sub add https://example.com/sub\n" +
 		"# Name it, and refresh it every 6 hours\n" +
 		"masir sub add https://example.com/sub --name Work --interval 360"
-	sub := group("sub", "List and manage subscriptions", subAdd, subList, subUpdate, subRemove, subUse)
+	subTest := leaf("test [name]", "Test a subscription's servers (or all) without selecting one", cmdSubTest, cobra.MaximumNArgs(1),
+		flagSpec{names: []string{"json"}, bool: true, help: "one JSON array instead of the table"})
+	subTest.ValidArgsFunction = completeSubs
+	subTest.Example = "# Test every server of one subscription\n" +
+		"masir sub test Sweden\n" +
+		"# Machine-readable, for scripts and the widget\n" +
+		"masir sub test --json"
+	sub := group("sub", "List and manage subscriptions", subAdd, subList, subUpdate, subRemove, subUse, subTest)
 	listByDefault(sub, cmdSubList, flagSpec{names: []string{"nodes"}, bool: true, help: "also list each config with its id"})
 	sub.Aliases = []string{"subscription", "subs"}
 
