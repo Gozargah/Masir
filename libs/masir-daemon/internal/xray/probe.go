@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	probeWorkerArg = "--masir-internal-xray-probe-v1"
-	maxProbeInput  = 16 << 20
-	maxProbeOutput = 1 << 20
-	probeLifetime  = 2 * time.Minute
+	probeWorkerArg        = "--masir-internal-xray-probe-v1"
+	maxProbeInput         = 16 << 20
+	maxProbeOutput        = 1 << 20
+	probeLifetime         = 2 * time.Minute
+	probeStartupAllowance = 10 * time.Second
 )
 
 // One helper at a time bounds memory and network load across all callers.
@@ -76,8 +77,9 @@ func MeasureDelay(ctx context.Context, cfgJSON []byte, opt LatencyOptions) (time
 // MeasureEach streams one result per outbound, serially, including cancellation
 // and worker failures. A new process per batch contains all Xray global state.
 func MeasureEach(ctx context.Context, probes []Probe, opt LatencyOptions, workers int, report func(string, time.Duration, error)) {
-	for i := 0; i < len(probes); i += maxProbeBatch {
-		batch := probes[i:min(i+maxProbeBatch, len(probes))]
+	size := probeBatchSize(opt, workers)
+	for i := 0; i < len(probes); i += size {
+		batch := probes[i:min(i+size, len(probes))]
 		seen := make([]bool, len(batch))
 		raw := make([][]byte, len(batch))
 		for j, p := range batch {
@@ -99,9 +101,22 @@ func MeasureEach(ctx context.Context, probes []Probe, opt LatencyOptions, worker
 	}
 }
 
+// Fit all scheduled attempts inside the worker lifetime, leaving time for
+// process startup, Xray initialization, and shutdown. Divide before multiplying
+// to avoid duration overflow with malformed options.
+func probeBatchSize(opt LatencyOptions, workers int) int {
+	opt = opt.withDefaults()
+	waves := (probeLifetime - probeStartupAllowance) / opt.Timeout / time.Duration(opt.Attempts)
+	return min(maxProbeBatch, max(1, int(min(waves, maxProbeBatch)))*min(max(workers, 1), 8))
+}
+
 // runProbe owns the complete helper lifecycle; no caller can fall back to an
 // in-process instance. Results are bounded and validated before reaching callers.
 func runProbe(ctx context.Context, req probeRequest, count int, report func(probeResult)) error {
+	req.Options = req.Options.withDefaults()
+	if req.Options.Timeout > (probeLifetime-probeStartupAllowance)/time.Duration(req.Options.Attempts) {
+		return errors.New("probe request budget exceeds helper lifetime")
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

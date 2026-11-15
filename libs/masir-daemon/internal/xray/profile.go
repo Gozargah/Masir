@@ -253,6 +253,9 @@ func newItem(raw []byte, tagKey, tag string) (item, error) {
 	if err := json.Unmarshal(raw, &o); err != nil {
 		return item{}, fmt.Errorf("not a JSON object: %w", err)
 	}
+	if o == nil {
+		return item{}, fmt.Errorf("not a JSON object: null")
+	}
 	if tag == "" {
 		if t, ok := o[tagKey]; ok {
 			_ = json.Unmarshal(t, &tag)
