@@ -198,10 +198,11 @@ func Build(in Input) (Output, error) {
 	if !doh.isIP && !slices.Contains(domains, "full:"+doh.host) {
 		domains = append(domains, "full:"+doh.host)
 	}
-	dnsServers := []any{obj{"address": st.Settings.DoHDNS, "queryStrategy": "UseIPv4"}}
+	dnsServers := []any{obj{"address": st.Settings.DoHDNS}}
 	if len(domains) > 0 {
 		for _, s := range st.Settings.DNSServers {
-			dnsServers = append(dnsServers, obj{"address": s, "domains": domains, "finalQuery": true, "tag": "dns-bootstrap"})
+			// Bootstrap is only for these names, never a direct fallback for DoH.
+			dnsServers = append(dnsServers, obj{"address": s, "domains": domains, "skipFallback": true, "finalQuery": true, "tag": "dns-bootstrap"})
 		}
 	}
 
@@ -258,8 +259,9 @@ func Build(in Input) (Output, error) {
 		log["error"] = filepath.Join(in.LogDir, "xray-error.log")
 	}
 	cfg, err := json.Marshal(obj{
-		"log":       log,
-		"dns":       obj{"servers": dnsServers},
+		"log": log,
+		// Apply the IPv4 policy to every resolver, including bootstrap servers.
+		"dns":       obj{"servers": dnsServers, "queryStrategy": "UseIPv4"},
 		"inbounds":  orEmpty(inbounds),
 		"outbounds": outbounds,
 		"routing": obj{
