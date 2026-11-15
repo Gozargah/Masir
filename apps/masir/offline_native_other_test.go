@@ -4,13 +4,8 @@ package main
 
 import "testing"
 
-func nativeAssertProtectedMigration(*testing.T, []byte) {}
-func nativeRejectAlteredLegacy(t *testing.T, _, _ string) {
+func nativeAssertProtectedInstallation(*testing.T) {}
+
+func nativeRejectUnsupportedLegacy(t *testing.T, _, _ string) {
 	t.Fatal("legacy layout probe is macOS-only")
-}
-
-func nativePrepareLegacyCustomData(t *testing.T) { t.Fatal("legacy layout probe is macOS-only") }
-
-func nativeInstallLegacyFixture(t *testing.T, _, _ string) {
-	t.Fatal("legacy fixture is macOS-only")
 }
