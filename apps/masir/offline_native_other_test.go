@@ -11,6 +11,6 @@ func nativeRejectAlteredLegacy(t *testing.T, _, _ string) {
 
 func nativePrepareLegacyCustomData(t *testing.T) { t.Fatal("legacy layout probe is macOS-only") }
 
-func nativeReproduceReleasedGuard(t *testing.T, _, _, _ string) {
-	t.Fatal("released guard probe is macOS-only")
+func nativeInstallLegacyFixture(t *testing.T, _, _ string) {
+	t.Fatal("legacy fixture is macOS-only")
 }
