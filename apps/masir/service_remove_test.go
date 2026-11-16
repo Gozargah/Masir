@@ -136,6 +136,72 @@ func TestRemovingTheServiceCanSkipTheSocketStop(t *testing.T) {
 	}
 }
 
+// A removal that ran through sudo must still name the user the service serves. sudo sets
+// the real uid to 0 as well, so os.Getuid() is root here; the daemon serves SUDO_UID.
+// Naming root made the port wait refuse ("the daemon serves a regular user, not root")
+// after the service was already gone, which is how CI caught it.
+func TestRemovingTheServiceServesTheUserBehindSudo(t *testing.T) {
+	oldElevated, oldStop, oldUninstall, oldWait, oldRemove := elevated, stopTheDaemon, removeServiceFn, waitPortsFree, removeInstallDir
+	t.Cleanup(func() {
+		elevated, stopTheDaemon, removeServiceFn, waitPortsFree, removeInstallDir = oldElevated, oldStop, oldUninstall, oldWait, oldRemove
+	})
+
+	elevated = func() bool { return true }
+	stopTheDaemon = func(string) error { return nil }
+	removeServiceFn = func() error { return nil }
+	removeInstallDir = func() error { return nil }
+	var waitedFor string
+	waitPortsFree = func(user string, _ time.Duration) error {
+		waitedFor = user
+		return nil
+	}
+
+	// No --user, as the app's permission prompt and a bare `sudo masir daemon disable`
+	// both arrive. SUDO_UID is what sudo left behind.
+	t.Setenv("SUDO_UID", "501")
+	if err := daemonDisable(args{}); err != nil {
+		t.Fatal(err)
+	}
+	if waitedFor != "501" {
+		t.Fatalf("waited for user %q, want the user sudo served (501)", waitedFor)
+	}
+}
+
+// Without --user and without sudo there is no user to name, and the removal says so
+// instead of waiting on root's ports.
+func TestRemovingTheServiceWithoutAUserSaysWhichOne(t *testing.T) {
+	oldElevated, oldStop, oldUninstall, oldWait, oldRemove := elevated, stopTheDaemon, removeServiceFn, waitPortsFree, removeInstallDir
+	t.Cleanup(func() {
+		elevated, stopTheDaemon, removeServiceFn, waitPortsFree, removeInstallDir = oldElevated, oldStop, oldUninstall, oldWait, oldRemove
+	})
+
+	elevated = func() bool { return true }
+	stopTheDaemon = func(string) error { return nil }
+	removeServiceFn = func() error { return nil }
+	removeInstallDir = func() error { return nil }
+	waited := false
+	waitPortsFree = func(string, time.Duration) error {
+		waited = true
+		return nil
+	}
+
+	t.Setenv("SUDO_UID", "")
+	err := daemonDisable(args{})
+	if err == nil {
+		t.Fatal("a removal with no user to serve succeeded")
+	}
+	if waited {
+		t.Fatal("the port wait ran for a user nobody named")
+	}
+	var ue *userError
+	if !errors.As(err, &ue) {
+		t.Fatalf("err = %T, want the usual failure format", err)
+	}
+	if len(ue.advice.cmds) != 1 || ue.advice.cmds[0] != "masir daemon disable" {
+		t.Fatalf("advice = %v, want the command to run without sudo", ue.advice.cmds)
+	}
+}
+
 func containsText(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {

@@ -46,8 +46,12 @@ func installService(bin string) error {
 
 // uninstallService removes the daemon's service; the daemon then runs in the background
 // when masir needs it.
+//
+// It names the user the service serves, as installService does: the removal waits for
+// that user's ports, and a permission prompt (osascript here) records no SUDO_UID for
+// masir to fall back on.
 func uninstallService(bin string) error {
-	return runAdmin(bin, "daemon", "disable")
+	return runAdmin(bin, "daemon", "disable", "--user", strconv.Itoa(os.Getuid()))
 }
 
 // startService starts the installed service again through launchd. The app never starts
