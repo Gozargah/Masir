@@ -1,12 +1,21 @@
 package server
 
 import (
+	"context"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Gozargah/Masir/libs/masir-core/paths"
+	"github.com/Gozargah/Masir/libs/masir-daemon/internal/identity"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/store"
+	"github.com/Gozargah/Masir/libs/masir-daemon/internal/xray"
+	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
 )
 
 // A daemon that boots while the one it replaces is still closing Xray must wait for the
@@ -140,5 +149,119 @@ func TestAHandoverThatNeverFinishesNamesThePort(t *testing.T) {
 func TestTheHandoverWaitIsBounded(t *testing.T) {
 	if handoverWait > 30*time.Second {
 		t.Fatalf("handoverWait = %s; a boot must not wait that long", handoverWait)
+	}
+}
+
+// Boot is the handover, and it ends when this daemon holds the ports. A later start —
+// Power off, then on again with something else on the port — reports the conflict at
+// once instead of waiting out the patience a second time.
+func TestBootEndsTheHandoverOnceItHoldsThePorts(t *testing.T) {
+	old := handoverWait
+	handoverWait = 5 * time.Second // long enough that a second wait would show
+	t.Cleanup(func() { handoverWait = old })
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	dir, err := paths.ConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.State{Settings: store.DefaultSettings()}
+	st.Settings.Power = true
+	st.Settings.AlwaysOnProxy = false
+	st.Settings.AllowLAN = false
+	st.Settings.ProxyPort = freePort(t)
+	if err := store.Save(dir, st); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := New(xray.New(""), identity.Identity{UID: os.Getuid(), GID: os.Getgid(), Name: "tester"})
+	t.Cleanup(func() { _ = s.xray.Close() })
+	if err := s.Boot(ctx, dir); err != nil {
+		t.Fatal(err)
+	}
+	if !s.xray.Running() {
+		t.Fatal("setup: boot didn't start xray")
+	}
+	if s.heldPorts.Load() {
+		t.Fatal("the handover stayed open after boot's own apply finished")
+	}
+
+	// Power off, then something else takes the port, then Power on: no handover is due.
+	if _, err := s.SetPower(ctx, &pb.SetPowerRequest{On: false}); err != nil {
+		t.Fatal(err)
+	}
+	busy, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", st.Settings.ProxyPort))
+	if err != nil {
+		t.Fatalf("hold the proxy port: %v", err)
+	}
+	defer busy.Close()
+
+	start := time.Now()
+	_, err = s.SetPower(ctx, &pb.SetPowerRequest{On: true})
+	if err == nil {
+		t.Fatal("a port another program holds was accepted")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("a later start waited %s for the port, want an immediate report", elapsed)
+	}
+}
+
+// Shutdown can begin while an apply is waiting for a port. That apply must not bring
+// Xray back up: it would bind the proxy port after shutdown said it was down, which is
+// the conflict the handover wait exists to avoid.
+func TestAnApplyDoesNotRestartXrayAfterShutdownBegins(t *testing.T) {
+	old := handoverWait
+	handoverWait = 3 * time.Second
+	t.Cleanup(func() { handoverWait = old })
+
+	s := newTestServer(t)
+	s.heldPorts.Store(true)
+	port := s.state.Settings.ProxyPort
+
+	// Something holds the proxy port, so the apply sits in the handover wait.
+	busy, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+
+	s.mu.Lock()
+	s.state.Settings.Power = true
+	applied := make(chan error, 1)
+	go func() {
+		s.mu.Lock()
+		err := s.applyLocked(context.Background(), s.state, false)
+		s.mu.Unlock()
+		applied <- err
+	}()
+	s.mu.Unlock()
+
+	// Shutdown begins while that apply waits, then the port frees up as the old Xray
+	// closes its listener. The waiting apply must notice and stop, not start Xray again.
+	time.Sleep(150 * time.Millisecond)
+	shutdownDone := make(chan struct{})
+	go func() {
+		s.BeginShutdown()
+		close(shutdownDone)
+	}()
+	time.Sleep(150 * time.Millisecond)
+	busy.Close()
+
+	select {
+	case err := <-applied:
+		if err == nil {
+			t.Fatal("an apply after shutdown began started xray anyway")
+		}
+	case <-time.After(handoverWait + 5*time.Second):
+		t.Fatal("the apply never returned")
+	}
+	<-shutdownDone
+	if s.xray.Running() {
+		t.Fatal("xray runs after shutdown closed it")
 	}
 }

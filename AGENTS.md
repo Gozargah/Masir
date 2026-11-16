@@ -107,7 +107,10 @@ subscriptions while smoke-testing unless that is the change under test.
   `masir daemon disable` stops the daemon over the socket *before* unloading it and then
   waits for the ports, the app waits again (an older CLI may not), and a daemon at boot
   treats a busy port as the daemon it replaced only while `heldPorts` says it holds the
-  proxy — a port conflict from a later settings change is still reported at once.
+  proxy — set at boot, cleared when boot's own apply finishes, in `BeginShutdown`, and
+  after the one wait, so a port conflict from a later settings change is still reported at
+  once. A pending apply must not restart Xray after `BeginShutdown` closed it (`shuttingDown`),
+  or it would bind the proxy port the shutdown had just released.
   `libs/masir-daemon/ports` is the one place that knows which ports Xray binds. The
   removal must name the uid the service serves (`--user`, or sudo's `SUDO_UID` as the
   daemon's own fallback): sudo sets the real uid to 0, so `os.Getuid()` names root, which
