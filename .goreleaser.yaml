@@ -53,7 +53,9 @@ snapshot:
   version_template: "{{ incpatch .Version }}-dev"
 
 changelog:
+  use: github
   sort: asc
+  format: '{{ .SHA }} {{ .Message }} {{ with .AuthorUsername }}<img src="https://github.com/{{ . }}.png?size=40" width="20" height="20" alt="{{ . }}"> [@{{ . }}](https://github.com/{{ . }}){{ else }}{{ .AuthorName }}{{ end }}'
   filters:
     exclude: ["^Merge ", "^chore"]
 
