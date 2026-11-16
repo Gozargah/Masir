@@ -43,7 +43,8 @@ type Server struct {
 	testMu sync.Mutex
 	tests  map[string]context.CancelFunc // test ID -> its cancel function
 
-	analytics *analytics.Client
+	analytics    *analytics.Client
+	connectivity connectivityMetrics
 
 	logs    *hub
 	changes *signal
@@ -142,6 +143,8 @@ func (s *Server) Boot(ctx context.Context, dir string) error {
 		"idle":       s.idle.Load(),
 		"privileged": s.id.Privileged,
 	})
+
+	s.analytics.VerifyUpdateRestart(Version)
 
 	go m.Run(ctx)
 	go s.retryFailed(ctx)

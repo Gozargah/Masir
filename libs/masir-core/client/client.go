@@ -16,6 +16,7 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/Gozargah/Masir/libs/masir-core/paths"
@@ -74,7 +75,11 @@ func DialSocket(sock string) (*grpc.ClientConn, pb.DaemonServiceClient, error) {
 // Dial connects to whichever daemon answers. The socket is looked up again on every
 // (re)connect: a root daemon taking over from this user's daemon listens somewhere else.
 // Close the returned connection when done with it.
-func Dial() (*grpc.ClientConn, pb.DaemonServiceClient, error) {
+func Dial() (*grpc.ClientConn, pb.DaemonServiceClient, error) { return DialWithSource("") }
+
+// DialWithSource labels user-facing calls with a bounded client kind. It does not
+// carry identity or change peer authorization.
+func DialWithSource(source string) (*grpc.ClientConn, pb.DaemonServiceClient, error) {
 	userSock, err := userSocket()
 	if err != nil {
 		return nil, nil, err
@@ -87,7 +92,13 @@ func Dial() (*grpc.ClientConn, pb.DaemonServiceClient, error) {
 			}
 			return transport.DialContext(ctx, sock)
 		}),
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoke grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			if source == "gui" || source == "cli" {
+				ctx = metadata.AppendToOutgoingContext(ctx, "masir-client", source)
+			}
+			return invoke(ctx, method, req, reply, cc, opts...)
+		}))
 	if err != nil {
 		return nil, nil, err
 	}

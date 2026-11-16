@@ -21,6 +21,7 @@ const (
 
 // Event is one spooled client event.
 type Event struct {
+	ID         string         `json:"id,omitempty"`
 	Event      string         `json:"event"`
 	Properties map[string]any `json:"properties"`
 	CreatedAt  time.Time      `json:"created_at"`
@@ -32,6 +33,13 @@ func SpoolDir(configDir string) string { return filepath.Join(configDir, "analyt
 // WriteSpool stores one event for the daemon to drain later. It is safe to call from
 // several CLI processes: each event is a separate atomically-written file.
 func WriteSpool(configDir string, e Event) error {
+	if e.ID == "" {
+		e.ID = EventID()
+	}
+	if e.Properties == nil {
+		e.Properties = map[string]any{}
+	}
+	e.Properties["event_id"] = e.ID
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now()
 	}
@@ -45,7 +53,11 @@ func WriteSpool(configDir string, e Event) error {
 		return err
 	}
 	name := fmt.Sprintf("%020d-%d-%s.json", e.CreatedAt.UnixNano(), os.Getpid(), randSuffix())
-	return writeAtomic(filepath.Join(dir, name), raw)
+	if err := writeAtomic(filepath.Join(dir, name), raw); err != nil {
+		return err
+	}
+	pruneSpool(dir)
+	return nil
 }
 
 func pruneSpool(dir string) {
