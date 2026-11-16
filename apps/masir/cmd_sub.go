@@ -13,6 +13,7 @@ import (
 
 	"github.com/Gozargah/Masir/apps/masir/internal/ui"
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func cmdSubAdd(a args) error {
@@ -105,6 +106,14 @@ func cmdSubList(a args) error {
 	if err != nil {
 		return err
 	}
+	if a.boolean("json", false) {
+		b, err := marshalSubList(all, activeKey())
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
 	if len(all) == 0 {
 		ui.Info("No subscriptions yet. Add one with `masir sub add <url>`.")
 		return nil
@@ -161,6 +170,43 @@ func cmdSubList(a args) error {
 	}
 	fmt.Println(b.String())
 	return nil
+}
+
+// marshalSubList renders `sub list --json`: one object with every subscription
+// (configs included) and the active selection. Protojson keeps the output
+// forward-compatible with new fields — int64 values arrive as strings, as in
+// `status --json`, and absent fields are at their zero value. The outbound blob
+// is dropped: it carries the server's credentials, and this output is meant for
+// scripts and logs.
+func marshalSubList(all []subNodes, active string) ([]byte, error) {
+	subs := make([]json.RawMessage, 0, len(all))
+	for _, s := range all {
+		raw, err := protojson.Marshal(s.sub)
+		if err != nil {
+			return nil, err
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+		if cfgs, ok := m["configs"].([]any); ok {
+			for _, c := range cfgs {
+				if cm, ok := c.(map[string]any); ok {
+					delete(cm, "outboundJson")
+				}
+			}
+		}
+		out, err := json.Marshal(m)
+		if err != nil {
+			return nil, err
+		}
+		subs = append(subs, out)
+	}
+	subID, cfgID := splitKey(active)
+	return json.MarshalIndent(map[string]any{
+		"subscriptions": subs,
+		"active":        map[string]string{"subscriptionId": subID, "configId": cfgID},
+	}, "", "  ")
 }
 
 func cmdSubUpdate(a args) error {

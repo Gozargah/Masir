@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -39,18 +40,55 @@ func cmdUse(a args) error {
 	if err != nil {
 		return err
 	}
+	if a.boolean("json", false) {
+		name, err := switchConfig(all, key, reason)
+		if err != nil {
+			return err
+		}
+		b, err := marshalUse(key, name, reason)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
 	return selectNode(all, key, "Active outbound switched to", reason)
 }
 
-func selectNode(all []subNodes, key, verb, reason string) error {
+// marshalUse renders `use --json`: the selection just made, in the same
+// active shape as `sub list --json`.
+func marshalUse(key, name, reason string) ([]byte, error) {
+	subID, cfgID := splitKey(key)
+	return json.MarshalIndent(map[string]any{
+		"active": map[string]string{"subscriptionId": subID, "configId": cfgID},
+		"name":   name,
+		"reason": reason,
+	}, "", "  ")
+}
+
+// switchConfig runs the SelectConfig RPC and returns the chosen config's
+// display name — the shared step behind `use`'s human and JSON output.
+func switchConfig(all []subNodes, key, reason string) (string, error) {
 	subID, cfgID := splitKey(key)
 	if _, err := call(func(ctx context.Context, c pb.DaemonServiceClient) (*pb.SelectConfigResponse, error) {
 		return c.SelectConfig(ctx, &pb.SelectConfigRequest{SubscriptionId: subID, ConfigId: cfgID, Reason: reason})
 	}); err != nil {
-		return err
+		return "", err
 	}
 	_, cfg, _ := findNode(all, key)
-	ui.Success(fmt.Sprintf("%s %q [%s].", verb, ui.Visual(cfg.Name), cfg.Id))
+	if cfg == nil {
+		return "", nil
+	}
+	return cfg.Name, nil
+}
+
+func selectNode(all []subNodes, key, verb, reason string) error {
+	name, err := switchConfig(all, key, reason)
+	if err != nil {
+		return err
+	}
+	_, cfgID := splitKey(key)
+	ui.Success(fmt.Sprintf("%s %q [%s].", verb, ui.Visual(name), cfgID))
 
 	st, err := currentStatus()
 	if err != nil {

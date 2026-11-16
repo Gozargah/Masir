@@ -195,15 +195,20 @@ func rootCmd() *cobra.Command {
 	disconnect := leaf("disconnect", "Turn masir off; the daemon keeps running", cmdDisconnect, cobra.NoArgs)
 	disconnect.Aliases = []string{"stop"}
 
-	useFlags := flagSpec{names: []string{"fastest"}, bool: true, help: "test every proxy and use the fastest"}
-	use := leaf("use [id]", "Switch the active proxy", cmdUse, cobra.MaximumNArgs(1), useFlags)
+	useFlags := []flagSpec{
+		{names: []string{"fastest"}, bool: true, help: "test every proxy and use the fastest"},
+		{names: []string{"json"}, bool: true, help: "one JSON object instead of the confirmation line"},
+	}
+	use := leaf("use [id]", "Switch the active proxy", cmdUse, cobra.MaximumNArgs(1), useFlags...)
 	use.ValidArgsFunction = completeNodes
 	use.Example = "# Pick from a list, with live latency\n" +
 		"masir use\n" +
 		"# Test every proxy, use the quickest\n" +
 		"masir use --fastest\n" +
 		"# Use a proxy by its id (from `masir sub list --nodes`)\n" +
-		"masir use 737e3ea15f56"
+		"masir use 737e3ea15f56\n" +
+		"# Machine-readable result, for scripts\n" +
+		"masir use 737e3ea15f56 --json"
 
 	mode := leaf("mode [proxy|direct]", "Where traffic no rule matches goes", cmdMode, cobra.MatchAll(cobra.MaximumNArgs(1), cobra.OnlyValidArgs))
 	mode.ValidArgs = []string{"proxy\tunmatched traffic goes through the active proxy", "direct\tunmatched traffic skips the proxy"}
@@ -212,7 +217,7 @@ func rootCmd() *cobra.Command {
 		"# Print the current mode\n" +
 		"masir mode"
 
-	subUse := leaf("use [id]", "Same as `masir use`", cmdUse, cobra.MaximumNArgs(1), useFlags)
+	subUse := leaf("use [id]", "Same as `masir use`", cmdUse, cobra.MaximumNArgs(1), useFlags...)
 	subUse.ValidArgsFunction = completeNodes
 	subUpdate := leaf("update [name]", "Refresh one subscription, or all", cmdSubUpdate, cobra.MaximumNArgs(1),
 		flagSpec{names: []string{"name"}, help: "only this subscription"})
@@ -221,7 +226,8 @@ func rootCmd() *cobra.Command {
 	subRemove.Aliases = []string{"rm"}
 	subRemove.ValidArgsFunction = completeSubs
 	subList := leaf("list", "List subscriptions with traffic and expiry", cmdSubList, cobra.NoArgs,
-		flagSpec{names: []string{"nodes"}, bool: true, help: "also list each config with its id"})
+		flagSpec{names: []string{"nodes"}, bool: true, help: "also list each config with its id"},
+		flagSpec{names: []string{"json"}, bool: true, help: "one JSON object instead of the tree"})
 	subList.Aliases = []string{"ls"}
 	subAdd := leaf("add [url]", "Add a subscription", cmdSubAdd, cobra.MaximumNArgs(1),
 		flagSpec{names: []string{"name"}, help: "a name; default: the provider's title"},
@@ -238,7 +244,9 @@ func rootCmd() *cobra.Command {
 		"# Machine-readable, for scripts and the widget\n" +
 		"masir sub test --json"
 	sub := group("sub", "List and manage subscriptions", subAdd, subList, subUpdate, subRemove, subUse, subTest)
-	listByDefault(sub, cmdSubList, flagSpec{names: []string{"nodes"}, bool: true, help: "also list each config with its id"})
+	listByDefault(sub, cmdSubList,
+		flagSpec{names: []string{"nodes"}, bool: true, help: "also list each config with its id"},
+		flagSpec{names: []string{"json"}, bool: true, help: "one JSON object instead of the tree"})
 	sub.Aliases = []string{"subscription", "subs"}
 
 	targetFlags := []flagSpec{
