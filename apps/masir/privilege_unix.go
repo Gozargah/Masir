@@ -101,8 +101,9 @@ func startElevatedDaemon(user string, log *os.File) error {
 	return nil
 }
 
-// elevate re-runs masir with args as root, through sudo.
-func elevate(args ...string) error { return asRoot(args...) }
+// elevate re-runs masir with args as root, through sudo. It is a variable so a test can
+// see what the elevated copy is asked to do without becoming root.
+var elevate = func(args ...string) error { return asRoot(args...) }
 
 // currentUser is who the service should serve: this user's uid.
 func currentUser() string { return strconv.Itoa(os.Getuid()) }

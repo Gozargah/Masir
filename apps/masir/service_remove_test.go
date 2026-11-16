@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,6 +200,59 @@ func TestRemovingTheServiceWithoutAUserSaysWhichOne(t *testing.T) {
 	}
 	if len(ue.advice.cmds) != 1 || ue.advice.cmds[0] != "masir daemon disable" {
 		t.Fatalf("advice = %v, want the command to run without sudo", ue.advice.cmds)
+	}
+}
+
+// The elevated copy is a new process, so the skip options have to be forwarded with it:
+// a `--ports=false` typed at the prompt must not become a port wait after sudo.
+func TestRemovingTheServiceForwardsTheSkipOptionsWhenElevating(t *testing.T) {
+	oldElevated, oldElevate := elevated, elevate
+	t.Cleanup(func() { elevated, elevate = oldElevated, oldElevate })
+
+	elevated = func() bool { return false }
+	var argv []string
+	elevate = func(args ...string) error {
+		argv = args
+		return nil
+	}
+
+	if err := daemonDisable(args{flags: map[string][]string{"ports": {"false"}, "stopped": {"true"}}}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--ports=false") {
+		t.Fatalf("argv = %v, want --ports=false forwarded", argv)
+	}
+	if !strings.Contains(joined, "--stopped") {
+		t.Fatalf("argv = %v, want --stopped forwarded", argv)
+	}
+	if !strings.Contains(joined, "--user") {
+		t.Fatalf("argv = %v, want --user forwarded", argv)
+	}
+}
+
+// The defaults are not forwarded: the elevated copy waits for ports and stops the daemon,
+// which is what an unqualified removal means.
+func TestRemovingTheServiceDoesNotForwardDefaults(t *testing.T) {
+	oldElevated, oldElevate := elevated, elevate
+	t.Cleanup(func() { elevated, elevate = oldElevated, oldElevate })
+
+	elevated = func() bool { return false }
+	var argv []string
+	elevate = func(args ...string) error {
+		argv = args
+		return nil
+	}
+
+	if err := daemonDisable(args{}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if strings.Contains(joined, "--ports") {
+		t.Fatalf("argv = %v, want no --ports for the default", argv)
+	}
+	if strings.Contains(joined, "--stopped") {
+		t.Fatalf("argv = %v, want no --stopped for the default", argv)
 	}
 }
 

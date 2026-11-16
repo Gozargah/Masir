@@ -113,6 +113,13 @@ func (s *Server) applyLockedWithCollection(ctx context.Context, st store.State, 
 		}
 	}
 	if runs {
+		// Shutdown can begin at any point above: it closes Xray, and starting it again
+		// here would bind the proxy port after shutdown said it was down — the very
+		// conflict this daemon waits to avoid. Checked as late as possible, since the
+		// handover wait and the config build both take time.
+		if s.shuttingDown.Load() {
+			return status.Error(codes.Unavailable, "the daemon is shutting down")
+		}
 		if err := s.xray.Apply(ctx, p); err != nil {
 			mode := "proxy"
 			if tun {

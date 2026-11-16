@@ -171,7 +171,16 @@ func daemonDisable(a args) error {
 		if user == "" {
 			user = currentUser()
 		}
-		return elevate("daemon", "disable", "--user", user)
+		// The elevated copy is a new process: forward the options the caller chose, or a
+		// `--ports=false` here would still wait for ports there.
+		argv := []string{"daemon", "disable", "--user", user}
+		if !a.boolean("ports", true) {
+			argv = append(argv, "--ports=false")
+		}
+		if a.boolean("stopped", false) {
+			argv = append(argv, "--stopped")
+		}
+		return elevate(argv...)
 	}
 	// Root can't be the user the service serves: its socket and settings belong to a
 	// regular account. sudo records that account in SUDO_UID, which is where the daemon
