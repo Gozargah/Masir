@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -14,7 +15,9 @@ import (
 
 	"github.com/egoist/mygo"
 
+	coreanalytics "github.com/Gozargah/Masir/libs/masir-core/analytics"
 	"github.com/Gozargah/Masir/libs/masir-core/client"
+	"github.com/Gozargah/Masir/libs/masir-core/paths"
 	"github.com/Gozargah/Masir/libs/masir-core/service"
 )
 
@@ -258,6 +261,15 @@ func round32(f float32) float32 {
 }
 
 func main() {
+	defer func() {
+		if r := recover(); r != nil {
+			if dir, err := paths.ConfigDir(); err == nil && coreanalytics.Allowed(dir, version) {
+				_ = coreanalytics.WriteSpool(dir, coreanalytics.Event{Event: "gui_panic", Properties: map[string]any{"message": coreanalytics.SanitizeMessage(fmt.Sprint(r)), "component": "gui", "app_version": version}, CreatedAt: time.Now().UTC()})
+			}
+			panic(r)
+		}
+	}()
+
 	name := "Masir"
 	if n := os.Getenv("MASIR_APP_NAME"); n != "" {
 		// A second copy for development: its own tray, single-instance lock and data.
@@ -276,7 +288,7 @@ func main() {
 		return
 	}
 
-	conn, d, err := client.Dial()
+	conn, d, err := client.DialWithSource("gui")
 	if err != nil {
 		log.Fatal(err)
 	}

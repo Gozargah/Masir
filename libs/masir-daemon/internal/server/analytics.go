@@ -10,6 +10,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	coreanalytics "github.com/Gozargah/Masir/libs/masir-core/analytics"
@@ -29,6 +30,17 @@ var ignoredRPCs = map[string]bool{
 	"GetStatus": true, "WatchStatus": true, "StreamLogs": true, "CaptureEvent": true,
 	"TestLatency": true, "CancelLatencyTest": true, "TestSubscriptionLatency": true,
 	"WatchUpdate": true,
+}
+
+// Only explicit user actions get attempt/outcome pairs. Successful status reads,
+// list refreshes, streams, and latency batches must stay quiet.
+var measuredRPCs = map[string]bool{
+	"SetPower": true, "SetFallback": true, "SetTunEnabled": true, "UpdateSettings": true,
+	"AddRouting": true, "RemoveRouting": true, "AlterRouting": true, "MoveRouting": true, "SetRuleEnabled": true,
+	"AddInbound": true, "RemoveInbound": true, "AlterInbound": true,
+	"AddOutbound": true, "RemoveOutbound": true, "AlterOutbound": true,
+	"UpdateSubscription": true, "AddSubscription": true, "RemoveSubscription": true, "AlterSubscription": true, "SelectConfig": true,
+	"CheckUpdate": true, "StartUpdate": true, "PauseUpdate": true, "ResumeUpdate": true, "StopUpdate": true,
 }
 
 // trackLocked records an event while s.mu is held. It only reads st and immutable
@@ -144,14 +156,23 @@ func (s *Server) analyticsLoop(ctx context.Context) {
 	if s.analytics == nil {
 		return
 	}
+	s.analytics.DrainOutbox(ctx)
 	s.analytics.DrainSpool(ctx)
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
+	var lastFailures, lastDrops uint64
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			s.flushConnectivity()
+			failures, drops := s.analytics.DeliveryStats()
+			if failures != lastFailures || drops != lastDrops {
+				s.Log("warning", fmt.Sprintf("analytics delivery: %d failed sends, %d dropped queued events", failures, drops))
+				lastFailures, lastDrops = failures, drops
+			}
+			s.analytics.DrainOutbox(ctx)
 			s.analytics.DrainSpool(ctx)
 		}
 	}
@@ -160,6 +181,7 @@ func (s *Server) analyticsLoop(ctx context.Context) {
 // CloseAnalytics flushes queued events. Safe to call more than once.
 func (s *Server) CloseAnalytics() {
 	if s.analytics != nil {
+		s.flushConnectivity()
 		s.analytics.FlushAndClose()
 	}
 }
@@ -204,28 +226,59 @@ func (s *Server) CaptureEvent(_ context.Context, req *pb.CaptureEventRequest) (*
 	if req.TimestampMs > 0 {
 		ts = time.UnixMilli(req.TimestampMs)
 	}
+	if time.Since(ts) > 7*24*time.Hour || time.Until(ts) > time.Minute {
+		return &pb.CaptureEventResponse{}, nil
+	}
 	s.trackAt(req.Event, props, ts)
+	s.analytics.TrackClientException(req.Event, props, ts)
 	return &pb.CaptureEventResponse{}, nil
 }
 
 // UnaryInterceptor reports failures of user-facing RPCs. Reads and streams are skipped.
 func (s *Server) UnaryInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		start := time.Now()
-		resp, err := handler(ctx, req)
-		if err == nil {
-			return resp, nil
-		}
 		method := strings.TrimPrefix(info.FullMethod, rpcMethodPrefix)
-		if ignoredRPCs[method] || status.Code(err) == codes.Canceled || status.Code(err) == codes.OK {
+		if ignoredRPCs[method] {
+			return handler(ctx, req)
+		}
+		if !measuredRPCs[method] {
+			resp, err := handler(ctx, req)
+			if err != nil && status.Code(err) != codes.Canceled {
+				s.trackError("rpc_failed", err, map[string]any{"method": method}, false)
+			}
 			return resp, err
 		}
-		s.trackError("rpc_failed", err, map[string]any{
-			"method":      method,
-			"duration_ms": time.Since(start).Milliseconds(),
-		}, false)
+		source := "rpc"
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			switch v := md.Get("masir-client"); {
+			case len(v) == 1 && (v[0] == "gui" || v[0] == "cli"):
+				source = v[0]
+			}
+		}
+		op := coreanalytics.NewOperation(method, source)
+		ctx = context.WithValue(ctx, operationKey{}, op)
+		s.track("operation_started", op.Props(""))
+		resp, err := handler(ctx, req)
+		outcome := "success"
+		if err != nil {
+			outcome = "failure"
+		}
+		if status.Code(err) == codes.Canceled {
+			outcome = "cancelled"
+		}
+		props := op.Props(outcome)
+		props["method"] = method
+		if err != nil && outcome != "cancelled" {
+			s.trackError("operation_finished", err, props, false)
+			s.trackError("rpc_failed", err, props, false)
+		} else {
+			s.track("operation_finished", props)
+		}
+		// Count operation_finished for outcomes; legacy rpc_failed and subsystem
+		// diagnostics share its ID and must not be counted as additional failures.
 		return resp, err
 	}
+
 }
 
 func matcherKinds(raw string) []string {
@@ -269,4 +322,18 @@ func (s *Server) refreshSubscriptionCounts() {
 	}
 	s.subCount.Store(int64(len(all)))
 	s.totalConfigs.Store(int64(configs))
+}
+
+type operationKey struct{}
+
+func operationProps(ctx context.Context, props map[string]any) map[string]any {
+	if props == nil {
+		props = map[string]any{}
+	}
+	if op, ok := ctx.Value(operationKey{}).(coreanalytics.Operation); ok {
+		for k, v := range op.Props("") {
+			props[k] = v
+		}
+	}
+	return props
 }

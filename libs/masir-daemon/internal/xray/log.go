@@ -12,8 +12,8 @@ import (
 )
 
 // LogSink receives Xray's own warnings and errors, so `masir logs` can show them.
-// The main Xray instance writes its error log to a file; temporary latency-test
-// instances keep the console logger, so they don't flood the daemon's log.
+// The main Xray instance writes its error log to a file. Latency probes run
+// in separate processes with logging disabled.
 var (
 	logSinkMu sync.RWMutex
 	logSink   func(level, msg string)
