@@ -101,6 +101,14 @@ subscriptions while smoke-testing unless that is the change under test.
 - **Never start a daemon during an update or restart, and never beside a service.** The
   watch waits while `upd.busyUpdate()`/`restarting`, and when a service is installed it
   asks the service manager instead of spawning an unsupervised daemon.
+- **A handover waits for the ports, not for the job.** `launchctl bootout` and systemd's
+  stop answer once the job is gone, while the daemon they stopped still holds the proxy
+  port and the TUN; the app starts the bundle daemon the moment a removal returns. So
+  `masir daemon disable` stops the daemon over the socket *before* unloading it and then
+  waits for the ports, the app waits again (an older CLI may not), and a daemon at boot
+  treats a busy port as the daemon it replaced only while `heldPorts` says it holds the
+  proxy — a port conflict from a later settings change is still reported at once.
+  `libs/masir-daemon/ports` is the one place that knows which ports Xray binds.
 - **On Unix the CLI is a client, not a supervisor, and never runs as root.** A root
   `masir` reads root's config directory and looks for root's socket, while the daemon it
   starts serves `SUDO_UID`: they never meet, and the command waits out a timeout it
