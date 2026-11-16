@@ -311,6 +311,9 @@ func cmdSubTest(a args) error {
 	rows := []verdict{}
 	failed := 0
 	for _, s := range targets {
+		if appCtx.Err() != nil {
+			break
+		}
 		byID := map[string]*pb.SubscriptionConfig{}
 		w := 0
 		for _, cfg := range s.configs {
@@ -342,6 +345,9 @@ func cmdSubTest(a args) error {
 			fmt.Println(line)
 		})
 		cancel()
+		if appCtx.Err() != nil {
+			break
+		}
 		if err != nil {
 			failed++
 			if !asJSON {
@@ -349,15 +355,15 @@ func cmdSubTest(a args) error {
 			}
 		}
 	}
+	if appCtx.Err() != nil {
+		return appCtx.Err()
+	}
 	if asJSON {
 		b, err := json.Marshal(rows)
 		if err != nil {
 			return err
 		}
 		fmt.Println(string(b))
-	}
-	if appCtx.Err() != nil {
-		return appCtx.Err()
 	}
 	if failed > 0 {
 		return errReported
