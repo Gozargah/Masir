@@ -83,11 +83,15 @@ func LatestConditional(ctx context.Context, c Clients, repo, etag string) (rel *
 			return nil
 		case resp.StatusCode == http.StatusNotModified:
 			// Nothing was sent to compare with: comparing again would answer the same.
-			return errors.New("GitHub answered 304 to a check that sent no tag")
+			return &diagnosticError{errors.New("GitHub answered 304 to a check that sent no tag"), "release_invalid_response", 304}
 		case resp.StatusCode == http.StatusNotFound:
-			return fmt.Errorf("%s has no releases yet", repo)
+			return &diagnosticError{fmt.Errorf("%s has no releases yet", repo), "release_not_found", 404}
 		case resp.StatusCode != http.StatusOK:
-			return fmt.Errorf("GitHub answered %s", resp.Status)
+			reason := "release_http_status"
+			if resp.StatusCode == 429 || resp.StatusCode == 403 && resp.Header.Get("X-RateLimit-Remaining") == "0" {
+				reason = "release_rate_limited"
+			}
+			return &diagnosticError{fmt.Errorf("GitHub answered %s", resp.Status), reason, resp.StatusCode}
 		}
 		newETag = resp.Header.Get("ETag")
 		body, err = io.ReadAll(io.LimitReader(resp.Body, 4<<20))
@@ -101,10 +105,10 @@ func LatestConditional(ctx context.Context, c Clients, repo, etag string) (rel *
 	}
 	var r Release
 	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, "", false, err
+		return nil, "", false, &diagnosticError{err, "release_invalid_response", 0}
 	}
 	if r.Tag == "" {
-		return nil, "", false, errors.New("GitHub returned a release without a tag")
+		return nil, "", false, &diagnosticError{errors.New("GitHub returned a release without a tag"), "release_invalid_response", 0}
 	}
 	return &r, newETag, false, nil
 }

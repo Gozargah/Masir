@@ -41,6 +41,11 @@ func captureEvent(name string, props map[string]any) {
 	if !analyticsAllowedCLI() {
 		return
 	}
+	if props == nil {
+		props = map[string]any{}
+	}
+	props["event_id"] = analytics.EventID()
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
 	raw, err := json.Marshal(props)
 	if err != nil {
 		return
@@ -50,7 +55,7 @@ func captureEvent(name string, props map[string]any) {
 		_, callErr := c.CaptureEvent(ctx, &pb.CaptureEventRequest{
 			Event:          name,
 			PropertiesJson: string(raw),
-			TimestampMs:    time.Now().UnixMilli(),
+			TimestampMs:    createdAt.UnixMilli(),
 		})
 		cancel()
 		if callErr == nil {
@@ -62,9 +67,10 @@ func captureEvent(name string, props map[string]any) {
 		return
 	}
 	_ = analytics.WriteSpool(dir, analytics.Event{
+		ID:         props["event_id"].(string),
 		Event:      name,
 		Properties: props,
-		CreatedAt:  time.Now(),
+		CreatedAt:  createdAt,
 	})
 }
 
@@ -81,48 +87,10 @@ func errorProps(err error) map[string]any {
 }
 
 func errorKind(err error) string {
-	if err == nil {
-		return ""
-	}
 	if err == errReported {
 		return "reported"
 	}
-	switch status.Code(err) {
-	case codes.InvalidArgument:
-		return "invalid"
-	case codes.NotFound:
-		return "not_found"
-	case codes.AlreadyExists:
-		return "already_exists"
-	case codes.PermissionDenied:
-		return "permission_denied"
-	case codes.FailedPrecondition:
-		return "precondition"
-	case codes.Unavailable:
-		return "unavailable"
-	case codes.DeadlineExceeded:
-		return "timeout"
-	case codes.Canceled:
-		return "cancelled"
-	case codes.Internal:
-		return "internal"
-	}
-	msg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(msg, "permission denied") || strings.Contains(msg, "operation not permitted"):
-		return "permission_denied"
-	case strings.Contains(msg, "address already in use"):
-		return "port_in_use"
-	case strings.Contains(msg, "no such host"):
-		return "dns"
-	case strings.Contains(msg, "timeout") || strings.Contains(msg, "timed out"):
-		return "timeout"
-	case strings.Contains(msg, "connection refused"):
-		return "connection_refused"
-	case strings.Contains(msg, "tls") || strings.Contains(msg, "certificate"):
-		return "tls"
-	}
-	return "other"
+	return analytics.ErrorKind(err)
 }
 
 // analyticsAllowedCLI is a local gate for spooling: analytics is on and the user has been

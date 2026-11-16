@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"time"
 
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/xray"
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
@@ -27,11 +28,13 @@ func (s *Server) TestLatency(ctx context.Context, req *pb.TestLatencyRequest) (*
 		}()
 	}
 
+	started := time.Now()
 	d, err := xray.MeasureDelay(ctx, []byte(req.XrayConfigJson), xray.LatencyOptions{URL: req.ProbeUrl})
 
 	if ctx.Err() != nil { // cancelled or timed out: this is an RPC-level outcome
 		return nil, status.FromContextError(ctx.Err()).Err()
 	}
+	s.recordConnectivity(time.Since(started), err)
 	if err != nil { // the proxy just doesn't work: a normal answer, not an RPC failure
 		return &pb.TestLatencyResponse{Error: err.Error()}, nil
 	}

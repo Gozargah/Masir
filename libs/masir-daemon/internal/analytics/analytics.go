@@ -35,14 +35,19 @@ type enqueuer interface {
 
 // Client wraps PostHog. A nil or disabled client is safe to use: every method is a no-op.
 type Client struct {
-	mu        sync.Mutex
-	dir       string
-	version   string
-	installID string
-	proxy     Proxy
-	desired   bool // the user's setting: on, once the notice has been shown
-	enabled   bool // the PostHog client is open
-	api       enqueuer
+	deliveryMu       sync.Mutex
+	deliveries       map[string]bool // false=in flight, true=acknowledged
+	deliveryFailures uint64
+	queueDrops       uint64
+	mu               sync.Mutex
+	dir              string
+	version          string
+	installID        string
+	runID            string
+	proxy            Proxy
+	desired          bool // the user's setting: on, once the notice has been shown
+	enabled          bool // the PostHog client is open
+	api              enqueuer
 }
 
 // newPostHog is a variable so tests can substitute a fake without a network.
@@ -53,7 +58,7 @@ var newPostHog = func(key string, cfg posthog.Config) (enqueuer, error) {
 // New loads the install ID and opens the PostHog client when analytics is enabled.
 // A missing key, DO_NOT_TRACK, MASIR_ANALYTICS=off, or a development build disables it.
 func New(opts Options) *Client {
-	c := &Client{dir: opts.Dir, version: opts.Version, proxy: opts.Proxy, desired: opts.Enabled}
+	c := &Client{dir: opts.Dir, version: opts.Version, proxy: opts.Proxy, runID: coreanalytics.EventID(), desired: opts.Enabled}
 	if id, err := installID(opts.Dir); err == nil {
 		c.installID = id
 	}
@@ -90,7 +95,10 @@ func (c *Client) canEnable() bool {
 	if key := projectKey(); key == "" {
 		return false
 	}
-	if c.installID == "" {
+	c.mu.Lock()
+	id := c.installID
+	c.mu.Unlock()
+	if id == "" {
 		return false
 	}
 	return coreanalytics.NoticeShown(c.dir)
@@ -99,6 +107,7 @@ func (c *Client) canEnable() bool {
 func (c *Client) open() error {
 	client, err := newPostHog(projectKey(), posthog.Config{
 		Endpoint:        endpoint(),
+		Callback:        c,
 		Interval:        15 * time.Second,
 		BatchSize:       20,
 		MaxQueueSize:    500,
@@ -115,7 +124,7 @@ func (c *Client) open() error {
 		return err
 	}
 	c.mu.Lock()
-	if c.enabled { // another caller opened it first
+	if c.enabled || !c.desired { // another caller opened it first, or opt-out won
 		c.mu.Unlock()
 		_ = client.Close()
 		return nil
@@ -153,6 +162,8 @@ func (c *Client) SetEnabled(on bool) {
 	}
 	c.FlushAndClose()
 	c.clearSpool()
+	_ = userfs.RemoveAll(filepath.Join(c.dir, outboxDir))
+	_ = userfs.Remove(filepath.Join(c.dir, pendingUpdateFile))
 	_ = userfs.Remove(filepath.Join(c.dir, identityFile)) // opting out forgets the install ID
 }
 
@@ -166,24 +177,39 @@ func (c *Client) TrackAt(event string, props map[string]any, ts time.Time) {
 	c.trackAt(event, props, ts)
 }
 
-func (c *Client) trackAt(event string, props map[string]any, ts time.Time) {
+func (c *Client) trackAt(event string, props map[string]any, ts time.Time) bool {
 	if event == "" {
-		return
+		return false
 	}
 	c.sync()
 	c.mu.Lock()
-	client, enabled := c.api, c.enabled
+	client, enabled, id := c.api, c.enabled, c.installID
 	c.mu.Unlock()
 	if !enabled || client == nil {
-		return
+		return false
+	}
+	if ts.IsZero() {
+		ts = time.Now().UTC()
 	}
 	p := posthog.NewProperties()
-	for k, v := range props {
+	for k, v := range coreanalytics.Properties(props) {
 		p.Set(k, v)
 	}
+	p.Set("schema_version", coreanalytics.SchemaVersion)
+	p.Set("component", "daemon")
+	if _, ok := p["source"]; !ok {
+		p.Set("source", "daemon")
+	}
+	p.Set("app_version", c.version)
+	p.Set("process_run_id", c.runID)
 	p.Set("$process_person_profile", false)
-	_ = client.Enqueue(posthog.Capture{
-		DistinctId: c.installID,
+	uuid, _ := props["event_id"].(string)
+	if !validEventID(uuid) {
+		uuid = coreanalytics.EventID()
+	}
+	return c.enqueue(posthog.Capture{
+		Uuid:       uuid,
+		DistinctId: id,
 		Event:      event,
 		Timestamp:  ts,
 		Properties: p,
@@ -199,6 +225,8 @@ func (c *Client) TrackError(event string, err error, props map[string]any, unexp
 	if props == nil {
 		props = map[string]any{}
 	}
+	props["success"] = false
+	props["outcome"] = "failure"
 	props["error_kind"] = ErrorKind(err)
 	props["error_fingerprint"] = coreanalytics.Fingerprint(err.Error())
 	if code := GRPCCode(err); code != "" {
@@ -207,10 +235,19 @@ func (c *Client) TrackError(event string, err error, props map[string]any, unexp
 	if reason := ErrorReason(err); reason != "" {
 		props["error_reason"] = reason
 	}
+	if props["error_reason"] == nil {
+		props["error_reason"] = ErrorKind(err)
+	}
+	if code := HTTPStatus(err); code != 0 {
+		props["http_status"] = code
+	}
 	if unexpected {
 		props["error_message"] = coreanalytics.SanitizeMessage(err.Error())
 	}
 	c.Track(event, props)
+	if unexpected && (strings.Contains(event, "panic") || ErrorKind(err) == "other" || ErrorKind(err) == "internal") {
+		c.trackException(event, err, props)
+	}
 }
 
 // FlushAndClose sends what is queued and stops the client. Safe to call repeatedly.

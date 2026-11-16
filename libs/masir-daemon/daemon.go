@@ -27,6 +27,7 @@ import (
 	"github.com/Gozargah/Masir/libs/masir-core/paths"
 	"github.com/Gozargah/Masir/libs/masir-core/service"
 	"github.com/Gozargah/Masir/libs/masir-core/transport"
+	"github.com/Gozargah/Masir/libs/masir-daemon/internal/analytics"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/identity"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/server"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/userfs"
@@ -117,6 +118,13 @@ func run(parent context.Context, userFlag string, idle bool) (restart, stillIdle
 	if err != nil {
 		return false, false, err
 	}
+	ready := false
+	stage := "socket"
+	defer func() {
+		if err != nil && !ready {
+			analytics.SpoolStartup(dir, server.Version, stage, err)
+		}
+	}()
 	// A root daemon keeps its socket where only root can write; a daemon running as the
 	// user keeps it in the user's directory. A running daemon of either kind is in the way.
 	userSock := paths.SocketPathIn(dir)
@@ -144,6 +152,7 @@ func run(parent context.Context, userFlag string, idle bool) (restart, stillIdle
 		return false, false, err
 	}
 
+	stage = "assets"
 	assets, err := prepareAssets(assetDir(), dir, id.Privileged)
 	if err != nil {
 		lis.Close()
@@ -157,6 +166,7 @@ func run(parent context.Context, userFlag string, idle bool) (restart, stillIdle
 	xc := xray.New(assets)
 	defer xc.Close() // tears down the TUN and the proxy on every exit path
 	if id.Privileged {
+		stage = "system_dns"
 		if err := xc.EnableSystemDNS(); err != nil {
 			lis.Close()
 			return false, false, fmt.Errorf("recover system DNS: %w", err)
@@ -173,10 +183,12 @@ func run(parent context.Context, userFlag string, idle bool) (restart, stillIdle
 			panic(r)
 		}
 	}()
+	stage = "boot"
 	if err := daemon.Boot(ctx, dir); err != nil {
 		lis.Close()
 		return false, false, err
 	}
+	ready = true
 
 	srv := grpc.NewServer(grpc.UnaryInterceptor(daemon.UnaryInterceptor()))
 	pb.RegisterDaemonServiceServer(srv, daemon)
