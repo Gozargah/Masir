@@ -19,9 +19,11 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	coreanalytics "github.com/Gozargah/Masir/libs/masir-core/analytics"
 	"github.com/Gozargah/Masir/libs/masir-core/geopack"
 	"github.com/Gozargah/Masir/libs/masir-core/paths"
 	"github.com/Gozargah/Masir/libs/masir-core/service"
+	"github.com/Gozargah/Masir/libs/masir-daemon/internal/analytics"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/rulecheck"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/store"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/update"
@@ -44,11 +46,12 @@ var latestRelease = update.LatestConditional
 
 // updates holds the daemon's update jobs and what the last release check found.
 type updates struct {
-	masir, geo *update.Runner
-	release    *pb.ReleaseInfo // guarded by Server.mu
-	etag       string          // the release GitHub last served, for a conditional check
-	installMu  sync.Mutex      // serialize CLI and geo jobs, including background refreshes
-	checkMu    sync.Mutex      // one GitHub check at a time
+	masir, geo  *update.Runner
+	release     *pb.ReleaseInfo         // guarded by Server.mu
+	etag        string                  // the release GitHub last served, for a conditional check
+	installMu   sync.Mutex              // serialize CLI and geo jobs, including background refreshes
+	telemetryOp coreanalytics.Operation // guarded by Server.mu
+	checkMu     sync.Mutex              // one GitHub check at a time
 }
 
 func (s *Server) initUpdates(dir string) {
@@ -235,16 +238,23 @@ func (s *Server) wrapUpdate(target string, force bool, trigger string, task upda
 			return errors.New("another CLI or geo update is running; retry when it finishes")
 		}
 		defer s.upd.installMu.Unlock()
-		start := time.Now()
-		s.track("update_started", map[string]any{
+		op := coreanalytics.NewOperation("update", trigger)
+		ctx = context.WithValue(ctx, operationKey{}, op)
+		s.mu.Lock()
+		s.upd.telemetryOp = op
+		s.mu.Unlock()
+		start := op.Started
+		s.track("update_started", operationProps(ctx, map[string]any{
 			"target":  target,
 			"force":   force,
 			"trigger": trigger,
-		})
+		}))
 		err := task(ctx, r)
 		if ctx.Err() != nil {
 			// Paused or stopped: the control RPC records that outcome; this isn't a
 			// finished update and shouldn't look like a failure.
+			props := operationProps(ctx, map[string]any{"target": target, "outcome": "interrupted", "success": false, "duration_ms": time.Since(start).Milliseconds()})
+			s.track("update_attempt_finished", props)
 			return err
 		}
 		job := r.Snapshot()
@@ -258,10 +268,17 @@ func (s *Server) wrapUpdate(target string, force bool, trigger string, task upda
 			"version":     job.Version,
 			"trigger":     trigger,
 		}
+		props = operationProps(ctx, props)
 		if err != nil {
+			props["success"] = false
+			props["outcome"] = "failure"
 			s.trackError("update_finished", err, props, false)
+		} else if job.State == pb.UpdateState_UPDATE_STATE_RESTARTING {
+			props["outcome"] = "pending_restart"
+			s.track("update_applied", props)
 		} else {
 			props["success"] = true
+			props["outcome"] = "success"
 			s.track("update_finished", props)
 		}
 		return err
@@ -270,6 +287,12 @@ func (s *Server) wrapUpdate(target string, force bool, trigger string, task upda
 
 // restartForUpdate ends the daemon so that main starts the newly installed binary.
 func (s *Server) restartForUpdate() {
+	if s.analytics != nil && s.upd != nil {
+		s.mu.Lock()
+		op := s.upd.telemetryOp
+		s.mu.Unlock()
+		s.analytics.AwaitUpdateRestart(op.ID, Version, s.upd.masir.Snapshot().Version)
+	}
 	s.Log("info", "restarting into the new version")
 	s.TrackDaemonStopped("update")
 	s.restart.Store(true)
@@ -286,7 +309,7 @@ func (s *Server) CheckUpdate(ctx context.Context, req *pb.CheckUpdateRequest) (*
 			return nil, status.FromContextError(ctx.Err()).Err()
 		}
 		// The daemon was reached; a release lookup failure is not a transport failure.
-		return nil, status.Error(codes.Unknown, err.Error())
+		return nil, analytics.RPCError(err)
 	}
 	// Only a check that GitHub answered is worth recording: an answer from the cache, or
 	// a conditional request that found nothing new, is not news. A UI asking every ten
@@ -339,6 +362,36 @@ func (s *Server) checkRelease(ctx context.Context, force bool, maxAge time.Durat
 	s.mu.Lock()
 	etag := s.upd.etag
 	s.mu.Unlock()
+	op := coreanalytics.NewOperation("release_check", "background")
+	parentID := ""
+	if parent, ok := ctx.Value(operationKey{}).(coreanalytics.Operation); ok {
+		op.Source = parent.Source
+		parentID = parent.ID
+	}
+	s.track("release_check_started", op.Props(""))
+	notModified := false
+	defer func() {
+		outcome := "success"
+		if err != nil {
+			outcome = "failure"
+		}
+		if ctx.Err() != nil {
+			outcome = "cancelled"
+		}
+		props := op.Props(outcome)
+		props["parent_operation_id"] = parentID
+		props["conditional"] = etag != ""
+		if err != nil && outcome != "cancelled" {
+			s.trackError("release_check_finished", err, props, false)
+		} else {
+			if notModified {
+				props["http_status"] = 304
+			} else if err == nil {
+				props["http_status"] = 200
+			}
+			s.track("release_check_finished", props)
+		}
+	}()
 	rel, freshETag, notModified, err := latestRelease(ctx, s.clients(), update.ReleaseRepo, etag)
 	if err != nil {
 		return nil, false, err

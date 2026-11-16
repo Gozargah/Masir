@@ -47,7 +47,7 @@ func runningDaemon() (pb.DaemonServiceClient, bool) {
 
 // dial connects to whichever daemon answers; see client.Dial.
 func dial() (pb.DaemonServiceClient, error) {
-	_, c, err := client.Dial() // the process ends soon after; nothing to close
+	_, c, err := client.DialWithSource("cli") // the process ends soon after; nothing to close
 	if err != nil {
 		return nil, err
 	}

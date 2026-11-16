@@ -323,8 +323,16 @@ func TestBackgroundRefreshIsParallelWithATimeoutEach(t *testing.T) {
 	// One healthy provider and three that hang once added.
 	good := newProvider(t, links())
 	var hang atomic.Bool
+	var active, peak atomic.Int32
 	stuck := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if hang.Load() {
+			n := active.Add(1)
+			defer active.Add(-1)
+			for old := peak.Load(); n > old; old = peak.Load() {
+				if peak.CompareAndSwap(old, n) {
+					break
+				}
+			}
 			<-r.Context().Done()
 			return
 		}
@@ -343,15 +351,17 @@ func TestBackgroundRefreshIsParallelWithATimeoutEach(t *testing.T) {
 	}
 	hang.Store(true)
 
-	refreshTimeout = 400 * time.Millisecond
-	t.Cleanup(func() { refreshTimeout = 2 * time.Minute })
+	previousTimeout := refreshTimeout
+	refreshTimeout = 2 * time.Second
+	t.Cleanup(func() { refreshTimeout = previousTimeout })
 	later := time.Now().Add(13 * time.Hour) // everything is due
 	m.now = func() time.Time { return later }
 
-	start := time.Now()
 	m.refreshDue(ctx)
-	if took := time.Since(start); took > 1100*time.Millisecond {
-		t.Fatalf("refresh took %v: subscriptions must refresh in parallel, each with its own timeout", took)
+	// Assert request overlap directly. Disk writes and GC after requests finish
+	// can exceed a wall-clock threshold on shared CI runners.
+	if got := peak.Load(); got != 3 {
+		t.Fatalf("peak concurrent refreshes = %d, want 3", got)
 	}
 	all, _ := m.List()
 	for _, s := range all {

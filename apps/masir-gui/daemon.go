@@ -6,7 +6,9 @@ import (
 	"sync"
 	"time"
 
+	coreanalytics "github.com/Gozargah/Masir/libs/masir-core/analytics"
 	"github.com/Gozargah/Masir/libs/masir-core/client"
+	"github.com/Gozargah/Masir/libs/masir-core/paths"
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
 	"github.com/egoist/mygo"
 	"google.golang.org/grpc"
@@ -213,6 +215,9 @@ func (a *app) watch(ctx context.Context) {
 			// Normal mode, not idle: the daemon honors the saved power and tunnel
 			// settings, so an app restart doesn't silently turn masir off.
 			if err := client.Start(ctx, bin, false); err != nil {
+				if dir, e := paths.ConfigDir(); e == nil {
+					coreanalytics.StartupFailure(dir, version, "gui", "daemon_start", err)
+				}
 				warn("Couldn't start the masir daemon: " + err.Error())
 				// Start fails as soon as the daemon does, so back off rather than spawn
 				// a broken daemon every three seconds.

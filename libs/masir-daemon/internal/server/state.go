@@ -108,7 +108,7 @@ func (s *Server) applyLockedWithCollection(ctx context.Context, st store.State, 
 			if tun {
 				mode = "tun"
 			}
-			s.trackErrorLocked(st, "xray_apply_failed", err, map[string]any{"mode": mode}, true)
+			s.trackErrorLocked(st, "xray_apply_failed", err, operationProps(ctx, map[string]any{"mode": mode}), true)
 			return status.Error(codes.Internal, err.Error())
 		}
 	}
@@ -118,11 +118,11 @@ func (s *Server) applyLockedWithCollection(ctx context.Context, st store.State, 
 			if tun {
 				mode = "tun"
 			}
-			s.trackErrorLocked(st, "xray_apply_failed", err, map[string]any{"mode": mode}, true)
+			s.trackErrorLocked(st, "xray_apply_failed", err, operationProps(ctx, map[string]any{"mode": mode}), true)
 			return status.Error(codes.Internal, err.Error())
 		}
 	} else if err := s.xray.Close(); err != nil {
-		s.trackErrorLocked(st, "xray_apply_failed", err, map[string]any{"mode": "off"}, true)
+		s.trackErrorLocked(st, "xray_apply_failed", err, operationProps(ctx, map[string]any{"mode": "off"}), true)
 		return status.Error(codes.Internal, err.Error())
 	}
 	s.resolved = out.Rules
