@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -245,6 +246,124 @@ func cmdSubUpdate(a args) error {
 // subUpdateTimeout bounds each subscription's refresh, as the daemon's background
 // refresh does: a direct fetch, a retry through the proxy, and parsing.
 const subUpdateTimeout = 2 * time.Minute
+
+// subTestTimeout bounds one subscription's probe run. Configs are probed in batches
+// of 16 with an 8s cap and 8 workers. A fully dead 300-node subscription needs about
+// 304s before instance startup, so the budget leaves margin above that.
+const subTestTimeout = 10 * time.Minute
+
+// testAge renders how old a verdict is, only when old enough to matter; a fresh
+// result carries no suffix.
+func testAge(testedAtMs int64) string {
+	if testedAtMs <= 0 {
+		return ""
+	}
+	d := time.Since(time.UnixMilli(testedAtMs)).Round(time.Second)
+	if d < 5*time.Second {
+		return ""
+	}
+	return ui.Dim(fmt.Sprintf("(%s ago)", d))
+}
+
+// cmdSubTest probes one subscription's servers — or every subscription's — and
+// prints each verdict as it lands. Nothing is selected or activated: this is the
+// test button. --json emits one array for scripts and the plugin.
+func cmdSubTest(a args) error {
+	all, err := loadNodes()
+	if err != nil {
+		return err
+	}
+	asJSON := a.boolean("json", false)
+	targets := all
+	if name := a.arg(0); name != "" {
+		s, ok := findSub(all, name)
+		if !ok {
+			if len(all) == 0 {
+				return fail("no subscription named %q — there are none yet; add one with `masir sub add <url>`", name)
+			}
+			return fail("no subscription named %q", name)
+		}
+		targets = []subNodes{s}
+	}
+	if len(targets) == 0 {
+		if asJSON {
+			fmt.Println("[]") // scripts get an array even when there is nothing to test
+			return nil
+		}
+		ui.Info("No subscriptions yet. Add one with `masir sub add <url>`.")
+		return nil
+	}
+
+	c, err := daemon()
+	if err != nil {
+		return err
+	}
+
+	type verdict struct {
+		SubID      string `json:"subId"`
+		SubName    string `json:"subName"`
+		ConfigID   string `json:"configId"`
+		Name       string `json:"name"`
+		Ms         int64  `json:"ms"`
+		Error      string `json:"error,omitempty"`
+		TestedAtMs int64  `json:"testedAtMs"`
+	}
+	rows := []verdict{}
+	failed := 0
+	for _, s := range targets {
+		byID := map[string]*pb.SubscriptionConfig{}
+		w := 0
+		for _, cfg := range s.configs {
+			byID[cfg.Id] = cfg
+			w = max(w, ui.Width(ui.Visual(cfg.Name)))
+		}
+		if !asJSON {
+			fmt.Printf("\n%s %s %s\n", ui.Green("●"), ui.Bold(ui.Visual(s.sub.Name)),
+				ui.Dim(fmt.Sprintf("%d node%s", len(s.configs), plural(len(s.configs)))))
+		}
+		ctx, cancel := context.WithTimeout(appCtx, subTestTimeout)
+		err := probe(ctx, c, s.sub.Id, nil, func(cfgID string, l *pb.LatencyResult) {
+			rawName, proto := cfgID, ""
+			if cfg := byID[cfgID]; cfg != nil {
+				rawName, proto = cfg.Name, cfg.Protocol
+			}
+			if asJSON {
+				rows = append(rows, verdict{
+					SubID: s.sub.Id, SubName: s.sub.Name, ConfigID: cfgID,
+					Name: rawName, Ms: l.LatencyMs, Error: l.Error, TestedAtMs: l.TestedAtMs,
+				})
+				return
+			}
+			line := fmt.Sprintf("    %s %s  %s  %s", ui.Dim(cfgID), ui.Pad(ui.Visual(rawName), w),
+				ui.Dim(proto), latencyText(l))
+			if age := testAge(l.TestedAtMs); age != "" {
+				line += " " + age
+			}
+			fmt.Println(line)
+		})
+		cancel()
+		if err != nil {
+			failed++
+			if !asJSON {
+				ui.Error(fmt.Sprintf("%s: %v", s.sub.Name, err))
+			}
+		}
+	}
+	if asJSON {
+		b, err := json.Marshal(rows)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+	}
+	if appCtx.Err() != nil {
+		return appCtx.Err()
+	}
+	if failed > 0 {
+		return errReported
+	}
+	return nil
+}
 
 func cmdSubRemove(a args) error {
 	all, err := loadNodes()
