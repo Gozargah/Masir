@@ -173,8 +173,17 @@ func daemonDisable(a args) error {
 		}
 		return elevate("daemon", "disable", "--user", user)
 	}
+	// Root can't be the user the service serves: its socket and settings belong to a
+	// regular account. sudo records that account in SUDO_UID, which is where the daemon
+	// itself looks when it is given no --user, so a bare `sudo masir daemon disable`
+	// names the same user it serves. A permission prompt that isn't sudo (the app's
+	// osascript or pkexec) records nothing, and names the uid with --user instead.
 	if user == "" {
-		user = currentUser()
+		user = sudoUser()
+	}
+	if user == "" || user == "0" {
+		return advised("This needs your normal user, not root: masir asks for permission itself.",
+			"Run it again without sudo:", "masir daemon disable")
 	}
 	waitPorts := a.boolean("ports", true)
 	// Stop it over the socket while it still answers: the reply waits for Xray's TUN and

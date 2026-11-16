@@ -108,7 +108,10 @@ subscriptions while smoke-testing unless that is the change under test.
   waits for the ports, the app waits again (an older CLI may not), and a daemon at boot
   treats a busy port as the daemon it replaced only while `heldPorts` says it holds the
   proxy — a port conflict from a later settings change is still reported at once.
-  `libs/masir-daemon/ports` is the one place that knows which ports Xray binds.
+  `libs/masir-daemon/ports` is the one place that knows which ports Xray binds. The
+  removal must name the uid the service serves (`--user`, or sudo's `SUDO_UID` as the
+  daemon's own fallback): sudo sets the real uid to 0, so `os.Getuid()` names root, which
+  no daemon serves, and the port wait would refuse after the service was already gone.
 - **On Unix the CLI is a client, not a supervisor, and never runs as root.** A root
   `masir` reads root's config directory and looks for root's socket, while the daemon it
   starts serves `SUDO_UID`: they never meet, and the command waits out a timeout it

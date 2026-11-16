@@ -121,6 +121,10 @@ func currentUser() string {
 	return ""
 }
 
+// sudoUser has no equivalent on Windows: UAC elevation keeps the same account, so the
+// caller's own SID is already the served one (see identity.Resolve).
+func sudoUser() string { return currentUser() }
+
 // asRootExe is unused on Windows: there is no service definition file to rewrite. It
 // exists so the shared update code compiles.
 func asRootExe(string, ...string) error {
