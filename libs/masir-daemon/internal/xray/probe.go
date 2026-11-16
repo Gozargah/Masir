@@ -1,6 +1,7 @@
 package xray
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -45,12 +46,19 @@ type probeResult struct {
 // never through command arguments, environment variables, or temporary files.
 func init() {
 	if len(os.Args) == 2 && os.Args[1] == probeWorkerArg {
+		// Results own stdout. Xray prints to it on its own: a deprecation warning while
+		// the config parses (before the probe's quiet log config exists), REALITY's
+		// `show` traces, congestion debug output. Any of those ahead of a result made
+		// the parent read a warning as JSON. Send every other writer to stderr, which
+		// the parent discards, and keep the real stdout for results alone.
+		results := os.Stdout
+		os.Stdout = os.Stderr
 		// Bound orphan lifetime too, even if the parent exits or core.New hangs.
 		time.AfterFunc(probeLifetime, func() { os.Exit(1) })
 		if os.Getenv("GOMEMLIMIT") == "" {
 			debug.SetMemoryLimit(100 * 1024 * 1024)
 		}
-		if err := serveProbe(os.Stdin, os.Stdout); err != nil {
+		if err := serveProbe(os.Stdin, results); err != nil {
 			os.Exit(1)
 		}
 		// Process exit also releases resources leaked by an unsuccessful core.New.
@@ -156,28 +164,8 @@ func runProbe(ctx context.Context, req probeRequest, count int, report func(prob
 			_ = cmd.Wait()
 		}
 	}()
-	decoder := json.NewDecoder(io.LimitReader(stdout, maxProbeOutput))
-	seen := make([]bool, count)
-	received := 0
-	var protocolErr error
-	for {
-		var r probeResult
-		err := decoder.Decode(&r)
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			protocolErr = fmt.Errorf("decode probe result: %w", err)
-			break
-		}
-		if r.Index < 0 || r.Index >= count || seen[r.Index] {
-			protocolErr = errors.New("invalid or duplicate probe result")
-			break
-		}
-		seen[r.Index] = true
-		received++
-		report(r)
-	}
+	results := bufio.NewReader(io.LimitReader(stdout, maxProbeOutput))
+	received, protocolErr := readProbeResults(results, count, report)
 	if protocolErr != nil {
 		cancel()
 	}
@@ -196,6 +184,37 @@ func runProbe(ctx context.Context, req probeRequest, count int, report func(prob
 		return errors.New("probe worker exited before completing results")
 	}
 	return nil
+}
+
+// readProbeResults decodes one JSON object per line until the stream ends. Every result
+// is one line of our own encoding, so anything else on stdout belongs to Xray: a
+// deprecation warning logged while the config parses (before the probe's quiet log
+// config exists), REALITY's `show` trace, or congestion debug output. Those lines are
+// skipped, not treated as an error, so noise never costs a whole batch its verdict.
+func readProbeResults(results *bufio.Reader, count int, report func(probeResult)) (int, error) {
+	seen := make([]bool, count)
+	received := 0
+	for {
+		line, readErr := results.ReadBytes('\n')
+		if line = bytes.TrimSpace(line); len(line) > 0 && line[0] == '{' {
+			var r probeResult
+			if err := json.Unmarshal(line, &r); err != nil {
+				return received, fmt.Errorf("decode probe result: %w", err)
+			}
+			if r.Index < 0 || r.Index >= count || seen[r.Index] {
+				return received, errors.New("invalid or duplicate probe result")
+			}
+			seen[r.Index] = true
+			received++
+			report(r)
+		}
+		if readErr == io.EOF {
+			return received, nil
+		}
+		if readErr != nil {
+			return received, fmt.Errorf("read probe result: %w", readErr)
+		}
+	}
 }
 
 func serveProbe(input io.Reader, output io.Writer) error {
