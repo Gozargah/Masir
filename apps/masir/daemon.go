@@ -154,18 +154,80 @@ func daemonRollback(args) error {
 	return nil
 }
 
-func daemonDisable(args) error {
+// daemonDisable removes the service in the order that leaves nothing holding the ports.
+//
+// The service's daemon has to stop before anything else: a supervisor's own stop
+// (launchd's bootout, systemd's disable --now, the SCM's Delete) answers as soon as the
+// job is gone, while the daemon it stopped still holds the proxy port and the TUN. The
+// app starts the bundled daemon the moment this returns, so a return that didn't wait for
+// the ports is what showed "proxy: listen tcp 0.0.0.0:7890: bind: address already in
+// use" on a machine whose only proxy was the one being removed.
+//
+// --user names the user the service serves, so root finds that user's settings; --ports
+// waits for the ports those settings ask for.
+func daemonDisable(a args) error {
+	user := a.str("user")
 	if !elevated() {
-		return elevate("daemon", "disable")
+		if user == "" {
+			user = currentUser()
+		}
+		return elevate("daemon", "disable", "--user", user)
 	}
-	if err := uninstallService(); err != nil {
+	if user == "" {
+		user = currentUser()
+	}
+	waitPorts := a.boolean("ports", true)
+	// Stop it over the socket while it still answers: the reply waits for Xray's TUN and
+	// proxy to be down, which is the half a supervisor's stop never waits for.
+	if !a.boolean("stopped", false) {
+		stopBeforeRemove(user)
+	}
+	if err := removeServiceFn(); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(service.InstallDir()); err != nil {
+	if err := removeInstallDir(); err != nil {
 		return err
+	}
+	if waitPorts {
+		if err := waitPortsFree(user, removePortTimeout); err != nil {
+			// The detail is the bind error itself, which names the port and host: that is
+			// what the person needs to find whatever still holds it.
+			return &userError{
+				headline: "The masir service is removed, but the ports it used are still taken, so the next daemon would start without the proxy.",
+				details:  err.Error(),
+				advice:   advice{text: "Quit whatever still holds the port, then start masir again:", cmds: []string{"masir connect"}},
+			}
+		}
 	}
 	ui.Success("The masir service is removed. The daemon runs in the background again when masir needs it.")
 	return nil
+}
+
+// The machine calls removing the service makes, replaceable in tests so they never touch
+// the machine they run on.
+var (
+	waitPortsFree    = masird.WaitPortsFree
+	removeServiceFn  = uninstallService
+	removeInstallDir = func() error { return os.RemoveAll(service.InstallDir()) }
+)
+
+// removePortTimeout bounds the wait for the removed service's ports. Xray closes its
+// listeners in BeginShutdown, before it answers; the rest is the time a process needs to
+// be reaped, and past this the failure is worth reporting rather than hiding.
+const removePortTimeout = 15 * time.Second
+
+// stopBeforeRemove asks the service's daemon to exit and waits for its socket. It runs as
+// root, so it must name the socket by the uid the service serves: root's own sockets are
+// somewhere else (see rootRefusal). Nothing answering is not a failure — a service that
+// was already stopped has nothing left to stop.
+func stopBeforeRemove(user string) {
+	uid, err := strconv.Atoi(user)
+	if err != nil {
+		return // not a uid: this OS names its sockets another way
+	}
+	if err := stopTheDaemon(paths.PrivilegedSocketPath(uid)); err != nil {
+		ui.Note("The service's daemon didn't answer the stop; removing the service anyway.", ui.Yellow("▲ Service"))
+	}
 }
 
 // daemonCheck answers a running daemon that is about to install this version: stdin

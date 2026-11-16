@@ -2,14 +2,13 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"path/filepath"
 	"strconv"
-	"strings"
+	"time"
 
 	"github.com/Gozargah/Masir/libs/masir-core/paths"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/compose"
@@ -17,6 +16,7 @@ import (
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/subs"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/userfs"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/xray"
+	"github.com/Gozargah/Masir/libs/masir-daemon/ports"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -103,7 +103,7 @@ func (s *Server) applyLockedWithCollection(ctx context.Context, st store.State, 
 		// Xray reports a taken port only after its API feature has started, and a Close
 		// right then races xray-core's commander. Checking ports first turns that crash
 		// into the error the person would have seen.
-		if err := probePorts(st); err != nil {
+		if err := s.handoverPatience(st, probePorts(st)); err != nil {
 			mode := "proxy"
 			if tun {
 				mode = "tun"
@@ -240,81 +240,46 @@ func (s *Server) logDir() string {
 	return dir
 }
 
+// handoverWait bounds how long a boot gives the daemon it replaced to close its
+// listeners. Xray is closed in BeginShutdown before that daemon answers, and a process
+// that has been signalled needs a moment more to be reaped; past this the port belongs to
+// somebody else and the failure is real.
+//
+// It is a variable so the tests that must see a real timeout can shorten it.
+var handoverWait = 5 * time.Second
+
+// handoverPatience waits out a port the daemon this one replaced is still letting go of.
+//
+// A supervisor's stop answers before the old daemon has closed Xray's listeners: launchd
+// returns once the job is gone, systemd once the unit is dead, and the app starts the
+// bundle daemon the moment the removal returns. So the new daemon can probe the proxy port
+// a beat too early and report "address already in use" about masir's own proxy — the
+// failure a person saw while removing the service, which no other program had caused.
+//
+// It only waits when this daemon holds the proxy, i.e. it starts it: a config change made
+// later (a new port typed into Settings, an inbound added) reports a busy port at once,
+// because then there is no previous daemon to blame and a wait would only hide it.
+func (s *Server) handoverPatience(st store.State, err error) error {
+	if err == nil || !s.heldPorts.Load() {
+		return err
+	}
+	// One wait per daemon. A port that stays taken is another program's, and every later
+	// apply (a retry, a settings change) must report it instead of sitting through five
+	// more seconds of it.
+	s.heldPorts.Store(false)
+	if waitErr := ports.WaitFree(st, handoverWait); waitErr != nil {
+		return errors.Join(err, fmt.Errorf("still taken after %s: %w", handoverWait, waitErr))
+	}
+	s.Log("info", "the daemon this one replaced let go of its ports")
+	return nil
+}
+
 // probePorts fails when a port Xray will bind is already taken, before it starts. A bind
 // failure after Xray's API feature has started makes xray-core's commander race its own
 // Close (it reads its gRPC server from a goroutine while Close nils it), which is a
 // nil-pointer crash in a goroutine the daemon can't recover. See the call in
 // applyLockedWithCollection.
 //
-// Every TCP probe listener stays open until the end, so conflicting TCP inbounds (or an
-// inbound on the proxy's port) are caught here too.
-func probePorts(st store.State) error {
-	var listeners []net.Listener
-	defer func() {
-		for _, l := range listeners {
-			_ = l.Close()
-		}
-	}()
-	probe := func(what, host string, port int) error {
-		l, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
-		if err != nil {
-			return fmt.Errorf("%s: %w", what, err)
-		}
-		listeners = append(listeners, l)
-		return nil
-	}
-
-	if port := st.Settings.ProxyPort; port != 0 {
-		host := "127.0.0.1"
-		if st.Settings.AllowLAN {
-			host = "0.0.0.0"
-		}
-		if err := probe("proxy", host, port); err != nil {
-			return err
-		}
-	}
-
-	for _, inbound := range st.Inbounds {
-		var config struct {
-			Protocol string          `json:"protocol"`
-			Listen   string          `json:"listen"`
-			Port     json.RawMessage `json:"port"`
-		}
-		if err := json.Unmarshal(inbound.Config, &config); err != nil {
-			continue // Xray accepted the config; a shape we don't parse must not block it
-		}
-		if config.Protocol == "wireguard" {
-			continue // WireGuard opens UDP itself; it has no TCP listener to probe.
-		}
-		port, ok := singlePort(config.Port)
-		if !ok {
-			continue // no single TCP port: a range, a list, a unix socket or port 0
-		}
-		if strings.HasPrefix(config.Listen, "/") || strings.HasPrefix(config.Listen, "@") {
-			continue // a unix socket, not a TCP address
-		}
-		host := config.Listen
-		if host == "" {
-			host = "0.0.0.0"
-		}
-		if err := probe("inbound "+inbound.Tag, host, port); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// singlePort reads Xray's port field, which may be a number or a quoted number. Ranges
-// and lists are left to Xray: probing every port in them is not what a startup check is
-// for.
-func singlePort(raw json.RawMessage) (int, bool) {
-	text := strings.Trim(strings.TrimSpace(string(raw)), `"`)
-	if text == "" || text == "null" || strings.ContainsAny(text, "-,") {
-		return 0, false
-	}
-	port, err := strconv.Atoi(text)
-	if err != nil || port <= 0 || port > 65535 {
-		return 0, false
-	}
-	return port, true
-}
+// The addresses live in ports.Busy, which the CLI also asks while a service hands over: a
+// port this daemon will bind is a port the previous one has to have let go of.
+func probePorts(st store.State) error { return ports.Busy(st) }

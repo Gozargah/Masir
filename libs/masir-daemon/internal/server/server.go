@@ -55,6 +55,10 @@ type Server struct {
 	stopTracked  sync.Once   // daemon_stopped is recorded once
 	subCount     atomic.Int64
 	totalConfigs atomic.Int64
+	// heldPorts is true from Boot until BeginShutdown closes Xray. It is what makes a port
+	// that is still taken at boot the daemon this one replaced, on its way out (a service
+	// being removed, a root daemon taking over), instead of a failure to report.
+	heldPorts atomic.Bool
 	// idle keeps Xray down, power and always-on proxy alike, until a client turns
 	// masir on: a daemon the CLI started for other work (subscriptions, rules,
 	// updates) shouldn't start proxying.
@@ -129,6 +133,7 @@ func (s *Server) Boot(ctx context.Context, dir string) error {
 	s.initUpdates(dir)
 	s.mu.Lock()
 	s.dir, s.state = dir, st
+	s.heldPorts.Store(true)
 	s.analytics = analytics.New(analytics.Options{
 		Dir:     dir,
 		Version: Version,
@@ -198,6 +203,7 @@ func (s *Server) BeginShutdown() {
 	// Tear the TUN and proxy down before answering. A new daemon waits for the reply
 	// before taking the socket, so returning first would let it start while the old TUN
 	// still held its address.
+	s.heldPorts.Store(false)
 	_ = s.xray.Close()
 	// A latency test is a call with nothing to watch `stopped`: cancel it, or the
 	// graceful stop waits for a probe that can take a while.
