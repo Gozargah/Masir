@@ -29,7 +29,7 @@ from a development build, and `MASIR_NO_CLI_INSTALL=1` turns it off.
 ```sh
 make gui-local                             # this machine only: the fast build while developing
 sh scripts/build-rpm.sh                    # the .rpm from an existing `make gui GUI_OS=linux`
-# packaging/PKGBUILD                       # Arch Linux package (makepkg -si)
+# Arch: extract masir-desktop-arch-<version>.tar.gz from the release, then makepkg -si
 # MASIR_GEO_SKIP=1 skips the geo checksum check for an offline build with good files
 make gui                                   # darwin, linux and windows; amd64 and arm64
 make gui GUI_OS=darwin                     # one system, both architectures

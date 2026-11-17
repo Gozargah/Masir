@@ -1,6 +1,6 @@
 # Maintainer: Gozargah <https://github.com/Gozargah>
 pkgname=masir-bin
-pkgver=0.1.2
+pkgver=@VERSION@
 pkgrel=1
 pkgdesc="A fast client for Xray: subscriptions, routing rules and a system-wide tunnel"
 arch=('x86_64' 'aarch64')
@@ -22,8 +22,8 @@ options=('!strip' '!debug')
 
 source_x86_64=("${pkgname}-${pkgver}-amd64.deb::https://github.com/Gozargah/Masir/releases/download/v${pkgver}/masir-desktop-linux-${pkgver}-amd64.deb")
 source_aarch64=("${pkgname}-${pkgver}-arm64.deb::https://github.com/Gozargah/Masir/releases/download/v${pkgver}/masir-desktop-linux-${pkgver}-arm64.deb")
-sha256sums_x86_64=('3f7d33140038978b9137dd302a746f0d8df02e2480240190a367177c46c59a1f')
-sha256sums_aarch64=('53dfe70a4a5c471aa89423a4a159d51c9295f51a730320e3c8413af8b25bca09')
+sha256sums_x86_64=('@AMD64_SHA256@')
+sha256sums_aarch64=('@ARM64_SHA256@')
 
 package() {
     bsdtar -xf data.tar.gz -C "${pkgdir}"
