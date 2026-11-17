@@ -58,7 +58,7 @@ func main() {
 	ui.OnInterrupt = stop // a spinner catching Ctrl-C also ends the app's work
 	// fang parses arguments and renders help; errors that reach it are cobra's usage
 	// errors (unknown command, bad flag), which handleError prints in masir's style.
-	err := fang.Execute(ctx, rootCmd(), fang.WithVersion(version), fang.WithErrorHandler(handleError))
+	err := executeCLI(ctx, os.Args[1:])
 	stop()
 	if elevatedResult != "" {
 		writeElevatedResult(err == nil && exitStatus == 0)
@@ -130,6 +130,26 @@ func writeElevatedResult(ok bool) {
 	}
 }
 
+// jsonOutput distinguishes the boolean output flag from rules' JSON input data.
+func jsonOutput(cmd *cobra.Command) bool {
+	enabled, _ := cmd.Flags().GetBool("json")
+	return enabled
+}
+
+// executeCLI shares Fang's usage-error path with command-level regression tests.
+func executeCLI(ctx context.Context, argv []string) error {
+	root := rootCmd()
+	root.SetArgs(argv)
+	return fang.Execute(ctx, root, fang.WithVersion(version), fang.WithErrorHandler(func(w io.Writer, styles fang.Styles, err error) {
+		cmd, _, _ := root.Find(argv)
+		if cmd != nil && jsonOutput(cmd) {
+			exitStatus = reportJSON(advised(capitalize(err.Error()), "See the usage:", "masir --help"))
+			return
+		}
+		handleError(w, styles, err)
+	}))
+}
+
 func handleError(_ io.Writer, _ fang.Styles, err error) {
 	lastErr = err.Error()
 	printFailure(capitalize(err.Error()), "", advice{"See the usage:", []string{"masir --help"}}, "")
@@ -150,6 +170,21 @@ func report(err error) int {
 		showError(err)
 		return 1
 	}
+}
+
+// reportJSON keeps every diagnostic on stderr, including advice and cancellation.
+// It deliberately avoids the terminal UI, whose styled output uses stdout.
+func reportJSON(err error) int {
+	if cancelled(err) {
+		lastErr = "cancelled"
+		fmt.Fprintln(os.Stderr, lastErr)
+		return 130
+	}
+	if !errors.Is(err, errReported) {
+		lastErr = message(err)
+		fmt.Fprintln(os.Stderr, lastErr)
+	}
+	return 1
 }
 
 func capitalize(s string) string {
@@ -195,15 +230,20 @@ func rootCmd() *cobra.Command {
 	disconnect := leaf("disconnect", "Turn masir off; the daemon keeps running", cmdDisconnect, cobra.NoArgs)
 	disconnect.Aliases = []string{"stop"}
 
-	useFlags := flagSpec{names: []string{"fastest"}, bool: true, help: "test every proxy and use the fastest"}
-	use := leaf("use [id]", "Switch the active proxy", cmdUse, cobra.MaximumNArgs(1), useFlags)
+	useFlags := []flagSpec{
+		{names: []string{"fastest"}, bool: true, help: "test every proxy and use the fastest"},
+		{names: []string{"json"}, bool: true, help: "one JSON object instead of the confirmation line"},
+	}
+	use := leaf("use [id]", "Switch the active proxy", cmdUse, cobra.MaximumNArgs(1), useFlags...)
 	use.ValidArgsFunction = completeNodes
 	use.Example = "# Pick from a list, with live latency\n" +
 		"masir use\n" +
 		"# Test every proxy, use the quickest\n" +
 		"masir use --fastest\n" +
 		"# Use a proxy by its id (from `masir sub list --nodes`)\n" +
-		"masir use 737e3ea15f56"
+		"masir use 737e3ea15f56\n" +
+		"# Machine-readable result, for scripts\n" +
+		"masir use 737e3ea15f56 --json"
 
 	mode := leaf("mode [proxy|direct]", "Where traffic no rule matches goes", cmdMode, cobra.MatchAll(cobra.MaximumNArgs(1), cobra.OnlyValidArgs))
 	mode.ValidArgs = []string{"proxy\tunmatched traffic goes through the active proxy", "direct\tunmatched traffic skips the proxy"}
@@ -212,7 +252,7 @@ func rootCmd() *cobra.Command {
 		"# Print the current mode\n" +
 		"masir mode"
 
-	subUse := leaf("use [id]", "Same as `masir use`", cmdUse, cobra.MaximumNArgs(1), useFlags)
+	subUse := leaf("use [id]", "Same as `masir use`", cmdUse, cobra.MaximumNArgs(1), useFlags...)
 	subUse.ValidArgsFunction = completeNodes
 	subUpdate := leaf("update [name]", "Refresh one subscription, or all", cmdSubUpdate, cobra.MaximumNArgs(1),
 		flagSpec{names: []string{"name"}, help: "only this subscription"})
@@ -221,7 +261,8 @@ func rootCmd() *cobra.Command {
 	subRemove.Aliases = []string{"rm"}
 	subRemove.ValidArgsFunction = completeSubs
 	subList := leaf("list", "List subscriptions with traffic and expiry", cmdSubList, cobra.NoArgs,
-		flagSpec{names: []string{"nodes"}, bool: true, help: "also list each config with its id"})
+		flagSpec{names: []string{"nodes"}, bool: true, help: "also list each config with its id"},
+		flagSpec{names: []string{"json"}, bool: true, help: "one JSON object instead of the tree"})
 	subList.Aliases = []string{"ls"}
 	subAdd := leaf("add [url]", "Add a subscription", cmdSubAdd, cobra.MaximumNArgs(1),
 		flagSpec{names: []string{"name"}, help: "a name; default: the provider's title"},
@@ -238,7 +279,9 @@ func rootCmd() *cobra.Command {
 		"# Machine-readable, for scripts and the widget\n" +
 		"masir sub test --json"
 	sub := group("sub", "List and manage subscriptions", subAdd, subList, subUpdate, subRemove, subUse, subTest)
-	listByDefault(sub, cmdSubList, flagSpec{names: []string{"nodes"}, bool: true, help: "also list each config with its id"})
+	listByDefault(sub, cmdSubList,
+		flagSpec{names: []string{"nodes"}, bool: true, help: "also list each config with its id"},
+		flagSpec{names: []string{"json"}, bool: true, help: "one JSON object instead of the tree"})
 	sub.Aliases = []string{"subscription", "subs"}
 
 	targetFlags := []flagSpec{
@@ -428,15 +471,20 @@ func group(use, short string, subs ...*cobra.Command) *cobra.Command {
 // usage errors and command failures always look like the rest of masir.
 func runE(fn func(args) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, pos []string) error {
+		a := argsFrom(cmd, pos)
+		reportError := report
+		if jsonOutput(cmd) {
+			reportError = reportJSON
+		}
 		if err := rootRefusal(cmd.CommandPath()); err != nil {
-			exitStatus = report(err)
+			exitStatus = reportError(err)
 			return nil
 		}
-		if !cmd.Hidden && cmd.Name() != "version" && cmd.Name() != "completion" {
+		if !jsonOutput(cmd) && !cmd.Hidden && cmd.Name() != "version" && cmd.Name() != "completion" {
 			maybeAnalyticsNotice()
 		}
-		if err := fn(argsFrom(cmd, pos)); err != nil {
-			exitStatus = report(err)
+		if err := fn(a); err != nil {
+			exitStatus = reportError(err)
 		}
 		return nil
 	}
