@@ -61,7 +61,7 @@ func (m Masir) Run(ctx context.Context, r *Reporter) error {
 	// daemon rewrite itself through a user-writable path. The app update carries the
 	// matching daemon instead.
 	if insideAppBundle(m.Binary) {
-		return errors.New("the running masir is inside Masir.app; update the app, which carries masir")
+		return errors.New("the running masir is part of the Masir app; update the app, which carries masir")
 	}
 	rel, err := Latest(ctx, m.Clients, ReleaseRepo)
 	if err != nil {
@@ -322,7 +322,7 @@ func (g Geo) Run(ctx context.Context, r *Reporter) error {
 		return errors.New("updates are off: there is no safe directory to stage a download")
 	}
 	if insideAppBundle(filepath.Join(g.AssetDir, "geoip.dat")) {
-		return errors.New("the geo data is inside Masir.app; update the app, which carries it")
+		return errors.New("the geo data is part of the Masir app; update the app, which carries it")
 	}
 	if _, err := os.Lstat(filepath.Join(g.AssetDir, geopack.CacheMarker)); err == nil {
 		return errors.New("the geo data is bundled with the desktop app; update the app, which carries it")
@@ -584,7 +584,8 @@ func insideAppBundle(path string) bool {
 		path = real
 	}
 	slash := filepath.ToSlash(path)
-	if strings.Contains(slash, "/resources/bin/") || strings.Contains(slash, "/Resources/bin/") {
+	// /opt/masir-desktop/bin is the .deb and .rpm layout: dpkg or rpm owns those files.
+	if strings.Contains(slash, "/resources/bin/") || strings.Contains(slash, "/Resources/bin/") || strings.Contains(slash, "/opt/masir-desktop/bin/") {
 		return true
 	}
 	for p := filepath.Clean(path); ; p = filepath.Dir(p) {

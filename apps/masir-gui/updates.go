@@ -400,7 +400,8 @@ func (a *app) daemonIsBundled() bool {
 	}
 	p := filepath.ToSlash(a.binary)
 	return strings.Contains(p, ".app/Contents/") ||
-		strings.Contains(p, "/resources/bin/") || strings.Contains(p, "/Resources/bin/")
+		strings.Contains(p, "/resources/bin/") || strings.Contains(p, "/Resources/bin/") ||
+		strings.Contains(p, "/opt/masir-desktop/bin/") // the .deb and .rpm layout
 }
 
 // daemonReleaseAvailable is the release check alone, before deciding which copy (the
