@@ -22,10 +22,6 @@ arch_list=$(printf '%s' "${GUI_ARCHES:-amd64 arm64}" | tr ',' ' ' | tr -d '\r')
 [ -n "$os_list" ] || { echo "build-gui: GUI_OS is empty" >&2; exit 1; }
 [ -n "$arch_list" ] || { echo "build-gui: GUI_ARCHES is empty" >&2; exit 1; }
 
-version=${GUI_VERSION:-$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' apps/masir-gui/mygo.json)}
-version=$(printf '%s' "$version" | tr -d '\r')
-[ -n "$version" ] || { echo "build-gui: no version in apps/masir-gui/mygo.json" >&2; exit 1; }
-
 # Verify the geo files against the source sums on every build, not just when they are
 # missing: a previous interrupted download could have left a truncated file. Set
 # MASIR_GEO_SKIP=1 for an offline build that already has its files.
@@ -44,7 +40,6 @@ add() {
 add github.com/Gozargah/Masir/libs/masir-daemon/internal/analytics.apiKey "${MASIR_POSTHOG_KEY:-}"
 add github.com/Gozargah/Masir/libs/masir-daemon/internal/analytics.host "${MASIR_POSTHOG_HOST:-}"
 add github.com/Gozargah/Masir/libs/masir-daemon/internal/update.publicKeys "${MASIR_UPDATE_PUBKEY:-}"
-ldflags="$ldflags -X main.version=$version"
 
 # MyGo needs the patches in patches/: its macOS popover animates a content size change on
 # AppKit's own schedule, so the panel's height ran ahead of the lists it holds, and its
@@ -84,6 +79,19 @@ if ! mkdir "$lock" 2>/dev/null; then
 	exit 1
 fi
 trap 'cleanup; rmdir "$lock" 2>/dev/null || true' EXIT INT TERM
+
+# Recover the source version after a build was killed before its cleanup. Do this
+# before resolving defaults or replacing the saved configuration.
+if [ -f "$config_orig" ]; then
+	cp "$config_orig" "$config"
+	rm -f "$config_orig"
+fi
+
+version=${GUI_VERSION:-$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' apps/masir-gui/mygo.json)}
+version=$(printf '%s' "$version" | tr -d '\r')
+[ -n "$version" ] || { echo "build-gui: no version in apps/masir-gui/mygo.json" >&2; exit 1; }
+
+ldflags="$ldflags -X main.version=$version"
 
 # MyGo and the bundled CLI must use the same version, including local overrides.
 cp "$config" "$config_orig"
