@@ -404,7 +404,7 @@ func updateSelf(job *pb.UpdateJob) error {
 		// bundle: replacing a file inside it breaks its signature and turns a
 		// user-writable directory into a root-owned update channel.
 		trackSelfUpdate("app-bundle", false, job, nil)
-		ui.Warn("This masir runs from inside Masir.app; update the app, which carries it.")
+		ui.Warn("This masir is part of the Masir app; update the app, which carries it.")
 		return nil
 	}
 	if same, _ := sameContent(src, self); same {
@@ -495,7 +495,8 @@ func insideAppBundle(path string) bool {
 		path = real
 	}
 	slash := filepath.ToSlash(path)
-	if strings.Contains(slash, "/resources/bin/") || strings.Contains(slash, "/Resources/bin/") {
+	// /opt/masir-desktop/bin is the .deb and .rpm layout: dpkg or rpm owns those files.
+	if strings.Contains(slash, "/resources/bin/") || strings.Contains(slash, "/Resources/bin/") || strings.Contains(slash, "/opt/masir-desktop/bin/") {
 		return true
 	}
 	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
@@ -635,7 +636,7 @@ func daemonSyncSelf(a args) error {
 		}
 	}
 	if insideAppBundle(dst) {
-		return fail("%s is inside Masir.app; update the app, which carries masir", dst)
+		return fail("%s is part of the Masir app; update the app, which carries masir", dst)
 	}
 	if !elevated() {
 		return elevate("daemon", "sync-self", "--from", src, "--to", dst)
