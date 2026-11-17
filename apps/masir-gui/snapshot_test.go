@@ -238,6 +238,33 @@ func TestSnapshots(t *testing.T) {
 			a.updates.state.parts, a.updates.state.phase = 2, updateAppDownloading
 			a.updates.state.progress, a.updates.state.total = 74, 100
 		}},
+		{"update-package-downloading", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
+			a.updates.state.phase = updateAppDownloading
+			a.updates.state.progress, a.updates.state.total = 42, 100
+		}},
+		{"update-package-verifying", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
+			a.updates.state.phase = updateVerifying
+		}},
+		{"update-package-password", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
+			a.updates.state.phase = updateAuthorizing
+		}},
+		{"update-package-installing", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
+			a.updates.state.phase = updateAppInstalling
+		}},
+		{"update-package-restarting", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
+			a.updates.state.phase = updateRestarting
+		}},
+		{"update-package-failed", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
+			a.updates.state.pkgSync = false
+			a.updates.state.phase = updateFailed
+			a.updates.state.err = "Another installer is running. Try again in a minute."
+		}},
 		{"settings-update", true, func(a *app, tt *ui.Tester) {
 			_ = tt.Click("Settings")
 			tt.Advance(time.Second)
