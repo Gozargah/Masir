@@ -57,8 +57,8 @@ func runJSONCommand(t *testing.T, f *jsonCommandDaemon, argv ...string) (string,
 	diagnostic, _ := io.ReadAll(errR)
 	outR.Close()
 	errR.Close()
-	if executeErr != nil && exitStatus == 0 {
-		t.Fatal(executeErr)
+	if executeErr != nil {
+		exitStatus = 1 // main exits 1 when Fang returns a usage error.
 	}
 	return string(out), string(diagnostic), exitStatus
 }
@@ -104,5 +104,40 @@ func TestJSONUseCommandSuccess(t *testing.T) {
 	out, diagnostic, code := runJSONCommand(t, f, "use", "cfg1", "--json")
 	if code != 0 || diagnostic != "" || !json.Valid([]byte(out)) || f.selections != 1 {
 		t.Fatalf("exit=%d stderr=%q stdout=%q selections=%d", code, diagnostic, out, f.selections)
+	}
+}
+
+func TestJSONInputKeepsHumanUsageReporting(t *testing.T) {
+	for _, command := range []string{"add", "edit"} {
+		t.Run(command, func(t *testing.T) {
+			out, diagnostic, code := runJSONCommand(t, &jsonCommandDaemon{}, "rules", command, "one", "extra", "--json", `{"domain":["example.com"]}`)
+			if code != 1 || !strings.Contains(out, "See the usage:") || diagnostic == "" {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", code, out, diagnostic)
+			}
+		})
+	}
+}
+func TestJSONOutputRequiresBooleanFlag(t *testing.T) {
+	for _, tt := range []struct {
+		argv []string
+		want bool
+	}{
+		{[]string{"use", "--json"}, true},
+		{[]string{"use", "--json=false"}, false},
+		{[]string{"use"}, false},
+		{[]string{"rules", "add", "--json", `{"domain":["example.com"]}`}, false},
+		{[]string{"rules", "edit", "--json", `{"domain":["example.com"]}`}, false},
+	} {
+		root := rootCmd()
+		cmd, rest, err := root.Find(tt.argv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.ParseFlags(rest); err != nil {
+			t.Fatal(err)
+		}
+		if got := jsonOutput(cmd); got != tt.want {
+			t.Errorf("jsonOutput(%v)=%v, want %v", tt.argv, got, tt.want)
+		}
 	}
 }
