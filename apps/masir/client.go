@@ -75,8 +75,9 @@ func cancelled(err error) bool {
 // rpcTimeoutShort bounds calls a person is waiting on interactively, like completions.
 const rpcTimeoutShort = 3 * time.Second
 
-// call runs one daemon call with a fresh context.
-func call[T any](fn func(ctx context.Context, c pb.DaemonServiceClient) (T, error)) (T, error) {
+// callOnce performs one RPC without interactive recovery. Machine-readable commands
+// use it so a daemon refusal cannot open a prompt or change unrelated settings.
+func callOnce[T any](fn func(ctx context.Context, c pb.DaemonServiceClient) (T, error)) (T, error) {
 	var zero T
 	c, err := daemon()
 	if err != nil {
@@ -84,7 +85,13 @@ func call[T any](fn func(ctx context.Context, c pb.DaemonServiceClient) (T, erro
 	}
 	ctx, cancel := rpc()
 	defer cancel()
-	res, err := fn(ctx, c)
+	return fn(ctx, c)
+}
+
+// call runs one daemon call with a fresh context.
+func call[T any](fn func(ctx context.Context, c pb.DaemonServiceClient) (T, error)) (T, error) {
+	var zero T
+	res, err := callOnce(fn)
 	if err == nil || inRulesPrompt || errorReason(err) != "RULES_BROKEN" {
 		return res, err
 	}
@@ -102,9 +109,7 @@ func call[T any](fn func(ctx context.Context, c pb.DaemonServiceClient) (T, erro
 			note:     "Nothing was changed.",
 		}
 	}
-	ctx2, cancel2 := rpc()
-	defer cancel2()
-	return fn(ctx2, c)
+	return callOnce(fn)
 }
 
 // errorReason is the masir ErrorInfo reason on a status error, e.g. "ROOT_REQUIRED".

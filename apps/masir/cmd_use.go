@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -19,9 +20,10 @@ func cmdUse(a args) error {
 	}
 
 	var key, reason string
+	asJSON := a.boolean("json", false)
 	switch {
 	case a.boolean("fastest", false):
-		key, err = fastest(all)
+		key, err = fastest(all, asJSON)
 		reason = "fastest"
 	case a.arg(0) != "":
 		s, cfg, ok := findNode(all, a.arg(0))
@@ -30,6 +32,11 @@ func cmdUse(a args) error {
 		}
 		key = nodeKey(s.sub.Id, cfg.Id)
 		reason = "id"
+	case asJSON:
+		// JSON mode never opens the picker: it draws on stdout and would
+		// corrupt the document. fail() reports on stderr, keeping stdout
+		// empty for the consumer.
+		return fail("pass a proxy id or --fastest when using --json (ids: `masir sub list --nodes`)")
 	case !ui.Interactive():
 		return advised("Without a terminal, pass a proxy id, or --fastest.", "The ids are listed by:", "masir sub list --nodes")
 	default:
@@ -39,18 +46,59 @@ func cmdUse(a args) error {
 	if err != nil {
 		return err
 	}
+	if asJSON {
+		name, err := switchConfig(all, key, reason, true)
+		if err != nil {
+			return err
+		}
+		b, err := marshalUse(key, name, reason)
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
 	return selectNode(all, key, "Active outbound switched to", reason)
 }
 
-func selectNode(all []subNodes, key, verb, reason string) error {
+// marshalUse renders `use --json`: the selection just made, in the same
+// active shape as `sub list --json`.
+func marshalUse(key, name, reason string) ([]byte, error) {
 	subID, cfgID := splitKey(key)
-	if _, err := call(func(ctx context.Context, c pb.DaemonServiceClient) (*pb.SelectConfigResponse, error) {
+	return json.MarshalIndent(map[string]any{
+		"active": map[string]string{"subscriptionId": subID, "configId": cfgID},
+		"name":   name,
+		"reason": reason,
+	}, "", "  ")
+}
+
+// switchConfig runs the SelectConfig RPC and returns the chosen config's
+// display name — the shared step behind `use`'s human and JSON output.
+func switchConfig(all []subNodes, key, reason string, asJSON bool) (string, error) {
+	subID, cfgID := splitKey(key)
+	rpcCall := call[*pb.SelectConfigResponse]
+	if asJSON {
+		rpcCall = callOnce[*pb.SelectConfigResponse]
+	}
+	if _, err := rpcCall(func(ctx context.Context, c pb.DaemonServiceClient) (*pb.SelectConfigResponse, error) {
 		return c.SelectConfig(ctx, &pb.SelectConfigRequest{SubscriptionId: subID, ConfigId: cfgID, Reason: reason})
 	}); err != nil {
-		return err
+		return "", err
 	}
 	_, cfg, _ := findNode(all, key)
-	ui.Success(fmt.Sprintf("%s %q [%s].", verb, ui.Visual(cfg.Name), cfg.Id))
+	if cfg == nil {
+		return "", nil
+	}
+	return cfg.Name, nil
+}
+
+func selectNode(all []subNodes, key, verb, reason string) error {
+	name, err := switchConfig(all, key, reason, false)
+	if err != nil {
+		return err
+	}
+	_, cfgID := splitKey(key)
+	ui.Success(fmt.Sprintf("%s %q [%s].", verb, ui.Visual(name), cfgID))
 
 	st, err := currentStatus()
 	if err != nil {
@@ -65,8 +113,10 @@ func selectNode(all []subNodes, key, verb, reason string) error {
 	return nil
 }
 
-// fastest tests every config and returns the quickest one's key.
-func fastest(all []subNodes) (string, error) {
+// fastest tests every config and returns the quickest one's key. quiet keeps
+// stdout clean for JSON output: no spinner frames, no outcome line — the
+// spinner's Stop writes to stdout and would corrupt the JSON document.
+func fastest(all []subNodes, quiet bool) (string, error) {
 	c, err := daemon()
 	if err != nil {
 		return "", err
@@ -75,7 +125,10 @@ func fastest(all []subNodes) (string, error) {
 	for _, s := range all {
 		total += len(s.configs)
 	}
-	sp := ui.Spin(fmt.Sprintf("Testing %d proxies", total))
+	var sp *ui.Spinner
+	if !quiet {
+		sp = ui.Spin(fmt.Sprintf("Testing %d proxies", total))
+	}
 
 	var (
 		mu       sync.Mutex
@@ -103,7 +156,9 @@ func fastest(all []subNodes) (string, error) {
 				mu.Lock()
 				defer mu.Unlock()
 				done++
-				sp.Message(fmt.Sprintf("Testing proxies... %d/%d", done, total))
+				if sp != nil {
+					sp.Message(fmt.Sprintf("Testing proxies... %d/%d", done, total))
+				}
 				if l.Error == "" && (bestMs < 0 || l.LatencyMs < bestMs) {
 					best, bestMs, bestName = nodeKey(s.sub.Id, cfgID), l.LatencyMs, names[nodeKey(s.sub.Id, cfgID)]
 				}
@@ -115,9 +170,21 @@ func fastest(all []subNodes) (string, error) {
 		return "", appCtx.Err()
 	}
 	if best == "" {
-		sp.Fail("No proxy responded.")
-		return "", errReported
+		return "", fastestFailure(sp)
 	}
-	sp.Stop(fmt.Sprintf("Fastest: %s (%dms)", ui.Visual(bestName), bestMs))
+	if sp != nil {
+		sp.Stop(fmt.Sprintf("Fastest: %s (%dms)", ui.Visual(bestName), bestMs))
+	}
 	return best, nil
+}
+
+// fastestFailure reports "no proxy responded": the spinner prints it when one
+// is running and errReported says so; quiet mode (JSON) has no spinner, so the
+// error travels back for report() to print — exit 1 must name its reason.
+func fastestFailure(sp *ui.Spinner) error {
+	if sp == nil {
+		return fail("No proxy responded.")
+	}
+	sp.Fail("No proxy responded.")
+	return errReported
 }

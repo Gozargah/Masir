@@ -310,13 +310,23 @@ func plural(n int) string {
 	return "s"
 }
 
-// activeKey is the current selection's "<sub>/<cfg>", or "".
-func activeKey() string {
+// activeKeyErr returns the active key, telling a lookup failure apart from an
+// absent selection: ("", nil) means nothing is selected.
+func activeKeyErr() (string, error) {
 	res, err := call(func(ctx context.Context, c pb.DaemonServiceClient) (*pb.GetActiveConfigResponse, error) {
 		return c.GetActiveConfig(ctx, &pb.GetActiveConfigRequest{})
 	})
-	if err != nil || res.ConfigId == "" {
-		return ""
+	if err != nil {
+		return "", err
 	}
-	return nodeKey(res.SubscriptionId, res.ConfigId)
+	if res.ConfigId == "" {
+		return "", nil
+	}
+	return nodeKey(res.SubscriptionId, res.ConfigId), nil
+}
+
+// activeKey is the current selection's "<sub>/<cfg>", or "".
+func activeKey() string {
+	key, _ := activeKeyErr()
+	return key
 }
