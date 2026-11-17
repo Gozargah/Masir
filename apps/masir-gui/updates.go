@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -101,6 +102,12 @@ type updateState struct {
 	bundleOffer bool
 	bundleSync  bool
 	bundleGap   string
+	// block says why MyGo can't replace this app; a .deb or .rpm is updated by its
+	// package manager instead. pkgSync says that flow owns the control, and pkgDir is
+	// the download it keeps for a retry.
+	block   installBlock
+	pkgSync bool
+	pkgDir  string
 	// wantApp says the person asked for the update and the app feed hasn't answered yet.
 	// A bundled daemon is updated by the app, so the answer decides what runs.
 	wantApp bool
@@ -425,7 +432,7 @@ func (a *app) appUpdateAvailable() bool {
 // hasUpdate reports whether either side has an update the person has not ignored. A
 // bundled daemon's release is shown too: the app update is how it is installed.
 func (a *app) hasUpdate() bool {
-	if a.updates.state.bundleOffer || a.daemonUpdateAvailable() || a.appUpdateAvailable() {
+	if a.updates.state.bundleOffer || a.daemonUpdateAvailable() || a.appUpdateAvailable() || a.packageUpdateAvailable() {
 		return true
 	}
 	// A bundled daemon is updated by the app. Until the app feed has answered for this
@@ -484,6 +491,15 @@ func (a *app) startUpdate() {
 	}
 	if a.updates.state.bundleOffer {
 		a.startBundledDaemonUpdate()
+		return
+	}
+	// The package carries the service's components too, so it goes before the daemon.
+	if b := a.updates.state.block; (b == blockPackageDeb || b == blockPackageRpm) && a.packageUpdateAvailable() {
+		a.startPackageUpdate()
+		return
+	}
+	// A read-only portable copy can only be replaced by hand; its daemon still updates.
+	if a.updates.state.block == blockReadOnly && !a.daemonUpdateAvailable() {
 		return
 	}
 	a.updates.state.err = ""
@@ -894,6 +910,10 @@ func (a *app) resumeUpdate() {
 			})
 		})
 	case updateAppPaused:
+		if a.updates.state.pkgSync {
+			a.startPackageUpdate()
+			return
+		}
 		a.startAppUpdate()
 	}
 }
@@ -924,6 +944,12 @@ func (a *app) cancelUpdate() {
 		}
 		a.updates.state.phase = updateAvailable
 		a.updates.state.progress, a.updates.state.total = 0, 0
+		if a.updates.state.pkgSync {
+			a.updates.state.pkgSync = false
+			if dir := a.updates.state.pkgDir; dir != "" {
+				a.async(func() { os.RemoveAll(dir) })
+			}
+		}
 	}
 }
 
@@ -971,6 +997,9 @@ func (a *app) ignoreUpdate() {
 		version = a.updates.state.rel.GetLatestVersion()
 	case a.appUpdateAvailable():
 		version = a.updates.state.app.Version
+	case a.packageUpdateAvailable():
+		// The daemon keeps any version, available or not.
+		version = packageTargetVersion(a.updates.state.rel)
 	}
 	if version == "" {
 		return
@@ -1044,6 +1073,9 @@ func (a *app) updateTooltip() string {
 	}
 	if a.updates.state.bundleSync {
 		return "Updating the daemon from this app; the connection will briefly restart"
+	}
+	if a.updates.state.block == blockReadOnly && a.updates.state.phase == updateAvailable && a.packageUpdateAvailable() && !a.daemonUpdateAvailable() {
+		return "Masir can't update itself here: its folder isn't writable. Download the new version from the release page."
 	}
 	if a.updates.state.parts < 2 {
 		return ""
@@ -1137,6 +1169,13 @@ func (a *app) followDaemonRestart(version string, request bool) {
 				a.updates.state.phase = updateFailed
 				a.updates.state.err = msg
 				a.notifyError("The update failed: " + a.updates.state.err)
+				// The package manager already replaced this app: keep running the old
+				// one and a retry can only find the new version installed.
+				if a.updates.state.pkgSync {
+					a.updates.state.pkgSync = false
+					a.updates.state.relaunching = true
+					relaunchApp()
+				}
 			})
 			return
 		}
@@ -1156,6 +1195,7 @@ func (a *app) followDaemonRestart(version string, request bool) {
 				a.updates.state.gapSeen = ""
 			}
 			a.updates.state.bundleSync = false
+			a.updates.state.pkgSync = false
 			a.updates.state.relaunchAfterRestart = false
 			a.updates.state.phase = updateIdle
 			if relaunch {
