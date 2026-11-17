@@ -101,6 +101,7 @@ func mayRunAsRoot(path string) bool {
 		"masir daemon enable",
 		"masir daemon disable",
 		"masir daemon rollback",
+		"masir desktop install-package",
 		// An installed service is restarted through the service manager; without one,
 		// daemonRestart refuses a root caller itself.
 		"masir daemon restart":
@@ -161,6 +162,13 @@ func handleError(_ io.Writer, _ fang.Styles, err error) {
 // report prints a command's error the clack way and returns the exit code: 130 when
 // the user quit, a codedError's code, 1 otherwise.
 func report(err error) int {
+	// A coded error is an answer for the caller even when a signal also arrived.
+	var ce *codedError
+	if errors.As(err, &ce) {
+		lastErr = message(err)
+		showError(err)
+		return ce.code
+	}
 	switch {
 	case cancelled(err):
 		lastErr = "cancelled"
@@ -171,10 +179,6 @@ func report(err error) int {
 	default:
 		lastErr = message(err)
 		showError(err)
-		var ce *codedError
-		if errors.As(err, &ce) {
-			return ce.code
-		}
 		return 1
 	}
 }
