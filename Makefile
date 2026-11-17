@@ -65,7 +65,7 @@ screenshots:
 #
 # Outputs go to apps/masir-gui/dist/<os>-<arch>.
 GUI_DIR := apps/masir-gui
-GUI_VERSION := $(shell sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' $(GUI_DIR)/mygo.json)
+GUI_VERSION ?= $(shell sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' $(GUI_DIR)/mygo.json)
 GUI_OS ?= darwin linux windows
 GUI_ARCHES ?= amd64 arm64
 
