@@ -49,9 +49,7 @@ func runJSONCommand(t *testing.T, f *jsonCommandDaemon, argv ...string) (string,
 	oldOut, oldStderr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = outW, errW
 	defer func() { os.Stdout, os.Stderr = oldOut, oldStderr }()
-	cmd := rootCmd()
-	cmd.SetArgs(argv)
-	executeErr := cmd.Execute()
+	executeErr := executeCLI(context.Background(), argv)
 	outW.Close()
 	errW.Close()
 	os.Stdout, os.Stderr = oldOut, oldStderr
@@ -59,7 +57,7 @@ func runJSONCommand(t *testing.T, f *jsonCommandDaemon, argv ...string) (string,
 	diagnostic, _ := io.ReadAll(errR)
 	outR.Close()
 	errR.Close()
-	if executeErr != nil {
+	if executeErr != nil && exitStatus == 0 {
 		t.Fatal(executeErr)
 	}
 	return string(out), string(diagnostic), exitStatus
@@ -72,6 +70,9 @@ func TestJSONCommandErrorsKeepStdoutEmpty(t *testing.T) {
 		daemon *jsonCommandDaemon
 		want   string
 	}{
+		{"extra arguments", []string{"use", "cfg1", "extra", "--json"}, &jsonCommandDaemon{}, "Accepts at most 1 arg"},
+		{"alias extra arguments", []string{"sub", "use", "cfg1", "extra", "--json"}, &jsonCommandDaemon{}, "Accepts at most 1 arg"},
+		{"list arguments", []string{"sub", "list", "extra", "--json"}, &jsonCommandDaemon{}, "Unknown command"},
 		{"empty", []string{"use", "cfg1", "--json"}, &jsonCommandDaemon{}, "There are no subscriptions"},
 		{"empty fastest", []string{"use", "--fastest", "--json"}, &jsonCommandDaemon{}, "There are no subscriptions"},
 		{"missing id", []string{"use", "--json"}, &jsonCommandDaemon{subs: []*pb.Subscription{sub}}, "pass a proxy id"},
