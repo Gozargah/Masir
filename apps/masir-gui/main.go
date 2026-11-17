@@ -322,6 +322,7 @@ func main() {
 		s.ready()
 		a.refreshLoginState()
 		a.autoInstallCLI()
+		a.detectPackageInstall()
 		go a.watch(context.Background())
 		// The panel is the app's greeting, unless the session started it: a login item
 		// stays in the tray until the user asks for it. Without a tray icon, the window is
