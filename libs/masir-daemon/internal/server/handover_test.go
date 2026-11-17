@@ -265,3 +265,31 @@ func TestAnApplyDoesNotRestartXrayAfterShutdownBegins(t *testing.T) {
 		t.Fatal("xray runs after shutdown closed it")
 	}
 }
+
+// An apply holds xrayMu across its shutdown check and Core.Apply. Even if it has
+// already passed that check, shutdown must wait for it before the final Close.
+func TestShutdownWaitsForAnApplyThatPassedItsCheck(t *testing.T) {
+	s := newTestServer(t)
+	s.xrayMu.Lock()
+	done := make(chan struct{})
+	go func() { s.BeginShutdown(); close(done) }()
+	// Shutdown must wait for the in-flight start rather than close Xray ahead of it.
+	select {
+	case <-done:
+		s.xrayMu.Unlock()
+		t.Fatal("shutdown finished while an apply could still start Xray")
+	case <-time.After(2500 * time.Millisecond):
+	}
+	s.xrayMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not finish after the apply released its lock")
+	}
+	if err := s.applyXray(context.Background(), nil); err == nil {
+		t.Fatal("an apply after the final Close was accepted")
+	}
+	if s.xray.Running() {
+		t.Fatal("Xray runs after shutdown")
+	}
+}

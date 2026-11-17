@@ -113,14 +113,7 @@ func (s *Server) applyLockedWithCollection(ctx context.Context, st store.State, 
 		}
 	}
 	if runs {
-		// Shutdown can begin at any point above: it closes Xray, and starting it again
-		// here would bind the proxy port after shutdown said it was down — the very
-		// conflict this daemon waits to avoid. Checked as late as possible, since the
-		// handover wait and the config build both take time.
-		if s.shuttingDown.Load() {
-			return status.Error(codes.Unavailable, "the daemon is shutting down")
-		}
-		if err := s.xray.Apply(ctx, p); err != nil {
+		if err := s.applyXray(ctx, p); err != nil {
 			mode := "proxy"
 			if tun {
 				mode = "tun"
@@ -290,3 +283,13 @@ func (s *Server) handoverPatience(st store.State, err error) error {
 // The addresses live in ports.Busy, which the CLI also asks while a service hands over: a
 // port this daemon will bind is a port the previous one has to have let go of.
 func probePorts(st store.State) error { return ports.Busy(st) }
+
+// applyXray keeps the shutdown check and start atomic with shutdown's final Close.
+func (s *Server) applyXray(ctx context.Context, p *xray.Profile) error {
+	s.xrayMu.Lock()
+	defer s.xrayMu.Unlock()
+	if s.shuttingDown.Load() {
+		return status.Error(codes.Unavailable, "the daemon is shutting down")
+	}
+	return s.xray.Apply(ctx, p)
+}
