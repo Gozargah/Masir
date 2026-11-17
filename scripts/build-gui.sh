@@ -8,7 +8,7 @@
 # GUI_OS (darwin, linux, windows) and GUI_ARCHES (amd64, arm64) are space or comma
 # separated. Each build goes to apps/masir-gui/dist/<os>-<arch>, with the masir executable
 # and the geo data in the bin folder of its resources. The version is mygo.json's, so the
-# app and the masir it ships have the same one.
+# app and the masir it ships have the same one. GUI_VERSION overrides both.
 #
 # The downloads are named masir-desktop-<os>-<version>-<arch>.<ext>, like the
 # masir-cli-<os>-<version>-<arch> archives the release also publishes.
@@ -21,10 +21,6 @@ os_list=$(printf '%s' "${GUI_OS:-darwin linux windows}" | tr ',' ' ' | tr -d '\r
 arch_list=$(printf '%s' "${GUI_ARCHES:-amd64 arm64}" | tr ',' ' ' | tr -d '\r')
 [ -n "$os_list" ] || { echo "build-gui: GUI_OS is empty" >&2; exit 1; }
 [ -n "$arch_list" ] || { echo "build-gui: GUI_ARCHES is empty" >&2; exit 1; }
-
-version=${GUI_VERSION:-$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' apps/masir-gui/mygo.json)}
-version=$(printf '%s' "$version" | tr -d '\r')
-[ -n "$version" ] || { echo "build-gui: no version in apps/masir-gui/mygo.json" >&2; exit 1; }
 
 # Verify the geo files against the source sums on every build, not just when they are
 # missing: a previous interrupted download could have left a truncated file. Set
@@ -44,7 +40,6 @@ add() {
 add github.com/Gozargah/Masir/libs/masir-daemon/internal/analytics.apiKey "${MASIR_POSTHOG_KEY:-}"
 add github.com/Gozargah/Masir/libs/masir-daemon/internal/analytics.host "${MASIR_POSTHOG_HOST:-}"
 add github.com/Gozargah/Masir/libs/masir-daemon/internal/update.publicKeys "${MASIR_UPDATE_PUBKEY:-}"
-ldflags="$ldflags -X main.version=$version"
 
 # MyGo needs the patches in patches/: its macOS popover animates a content size change on
 # AppKit's own schedule, so the panel's height ran ahead of the lists it holds, and its
@@ -57,7 +52,13 @@ go_mod="$root/apps/masir-gui/go.mod"
 go_sum="$root/apps/masir-gui/go.sum"
 go_mod_orig="$root/.mygo-patched.go.mod"
 go_sum_orig="$root/.mygo-patched.go.sum"
+config="$root/apps/masir-gui/mygo.json"
+config_orig="$root/.mygo-patched.mygo.json"
 cleanup() {
+	if [ -f "$config_orig" ]; then
+		cp "$config_orig" "$config"
+		rm -f "$config_orig"
+	fi
 	if [ -f "$go_mod_orig" ]; then
 		cp "$go_mod_orig" "$go_mod"
 		rm -f "$go_mod_orig"
@@ -78,6 +79,23 @@ if ! mkdir "$lock" 2>/dev/null; then
 	exit 1
 fi
 trap 'cleanup; rmdir "$lock" 2>/dev/null || true' EXIT INT TERM
+
+# Recover the source version after a build was killed before its cleanup. Do this
+# before resolving defaults or replacing the saved configuration.
+if [ -f "$config_orig" ]; then
+	cp "$config_orig" "$config"
+	rm -f "$config_orig"
+fi
+
+version=${GUI_VERSION:-$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' apps/masir-gui/mygo.json)}
+version=$(printf '%s' "$version" | tr -d '\r')
+[ -n "$version" ] || { echo "build-gui: no version in apps/masir-gui/mygo.json" >&2; exit 1; }
+
+ldflags="$ldflags -X main.version=$version"
+
+# MyGo and the bundled CLI must use the same version, including local overrides.
+cp "$config" "$config_orig"
+GUI_VERSION="$version" perl -0pi -e 's/"version":\s*"[^"]*"/"version": "$ENV{GUI_VERSION}"/' "$config"
 
 # Pack once, from the checksum-verified source pair. Keep release CLI archives raw;
 # only desktop resources use compression. A private directory prevents a failed

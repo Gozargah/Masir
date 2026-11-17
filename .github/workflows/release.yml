@@ -103,12 +103,9 @@ jobs:
             echo "::error::set MINISIGN_SECRET_KEY and the MYGO_UPDATER_PRIVATE_KEY secret (the app update signing key)"
             exit 1
           fi
-      - name: Set the app's version from the tag
+      - name: Resolve the release version
         shell: bash
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          perl -0pi -e 's/"version":\s*"[^"]*"/"version": "'"$version"'"/' apps/masir-gui/mygo.json
-          grep '"version"' apps/masir-gui/mygo.json
+        run: echo "GUI_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
       - name: Build the macOS app (arm64 and Intel)
         if: matrix.name == 'darwin'
         shell: bash
@@ -178,6 +175,16 @@ jobs:
               gh release upload $env:GITHUB_REF_NAME $_.FullName --clobber
             }
           }
+      - name: Generate Arch packaging
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p "$RUNNER_TEMP/arch"
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/arch:/out" archlinux:base-devel \
+            bash -c 'useradd -m builder && chown builder /out && su builder -c "sh /src/scripts/build-arch.sh $1 /out"' -- "$version"
+          tar -czf "$RUNNER_TEMP/masir-desktop-arch-$version.tar.gz" -C "$RUNNER_TEMP/arch" PKGBUILD .SRCINFO
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/masir-desktop-arch-$version.tar.gz" --clobber
       - name: Upload the Linux app
         if: matrix.name == 'linux'
         shell: bash
