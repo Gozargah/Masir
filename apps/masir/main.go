@@ -58,7 +58,7 @@ func main() {
 	ui.OnInterrupt = stop // a spinner catching Ctrl-C also ends the app's work
 	// fang parses arguments and renders help; errors that reach it are cobra's usage
 	// errors (unknown command, bad flag), which handleError prints in masir's style.
-	err := fang.Execute(ctx, rootCmd(), fang.WithVersion(version), fang.WithErrorHandler(handleError))
+	err := executeCLI(ctx, os.Args[1:])
 	stop()
 	if elevatedResult != "" {
 		writeElevatedResult(err == nil && exitStatus == 0)
@@ -128,6 +128,20 @@ func writeElevatedResult(ok bool) {
 	if os.WriteFile(tmp, []byte(msg), 0o600) == nil {
 		_ = os.Rename(tmp, elevatedResult)
 	}
+}
+
+// executeCLI shares Fang's usage-error path with command-level regression tests.
+func executeCLI(ctx context.Context, argv []string) error {
+	root := rootCmd()
+	root.SetArgs(argv)
+	return fang.Execute(ctx, root, fang.WithVersion(version), fang.WithErrorHandler(func(w io.Writer, styles fang.Styles, err error) {
+		cmd, _, _ := root.Find(argv)
+		if cmd != nil && argsFrom(cmd, nil).boolean("json", false) {
+			exitStatus = reportJSON(advised(capitalize(err.Error()), "See the usage:", "masir --help"))
+			return
+		}
+		handleError(w, styles, err)
+	}))
 }
 
 func handleError(_ io.Writer, _ fang.Styles, err error) {
