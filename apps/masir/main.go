@@ -315,7 +315,10 @@ func rootCmd() *cobra.Command {
 	enable := leaf("enable", "Install as a root service (needed for TUN); asks for sudo", daemonEnable, cobra.NoArgs,
 		flagSpec{names: []string{"user"}, help: "The uid to serve (default: you)"})
 	enable.Aliases = []string{"install"}
-	disable := leaf("disable", "Remove the root service; asks for sudo", daemonDisable, cobra.NoArgs)
+	disable := leaf("disable", "Remove the root service; asks for sudo", daemonDisable, cobra.NoArgs,
+		flagSpec{names: []string{"user"}, help: "The uid the service serves (default: you)"},
+		flagSpec{names: []string{"ports"}, bool: true, help: "Wait for the ports the service was using (default: yes)"},
+		flagSpec{names: []string{"stopped"}, bool: true, help: "The service's daemon has already stopped"})
 	disable.Aliases = []string{"uninstall"}
 	runDaemon := leaf("run", "Run the daemon in the foreground", daemonRun, cobra.NoArgs,
 		flagSpec{names: []string{"user"}, help: "As root: the user to serve (name or uid); default SUDO_UID"},

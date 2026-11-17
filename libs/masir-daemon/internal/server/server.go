@@ -29,6 +29,7 @@ type Server struct {
 
 	// mu serializes every change to state, the selection and the running config.
 	mu       sync.Mutex
+	xrayMu   sync.Mutex // serializes the shutdown check/start with the final Close
 	dir      string
 	state    store.State
 	resolved []compose.ResolvedRule // user rules as last applied
@@ -55,6 +56,15 @@ type Server struct {
 	stopTracked  sync.Once   // daemon_stopped is recorded once
 	subCount     atomic.Int64
 	totalConfigs atomic.Int64
+	// heldPorts is true from Boot until the first apply finishes or BeginShutdown closes
+	// Xray. It is what makes a port that is still taken during boot the daemon this one
+	// replaced, on its way out (a service being removed, a root daemon taking over),
+	// instead of a failure to report. It ends at the first apply so a later start (after
+	// Power went off) reports a busy port at once.
+	heldPorts atomic.Bool
+	// shuttingDown is set when BeginShutdown begins. An apply that is waiting for a port
+	// (or building a config) must not bring Xray back up after shutdown closed it.
+	shuttingDown atomic.Bool
 	// idle keeps Xray down, power and always-on proxy alike, until a client turns
 	// masir on: a daemon the CLI started for other work (subscriptions, rules,
 	// updates) shouldn't start proxying.
@@ -129,6 +139,7 @@ func (s *Server) Boot(ctx context.Context, dir string) error {
 	s.initUpdates(dir)
 	s.mu.Lock()
 	s.dir, s.state = dir, st
+	s.heldPorts.Store(true)
 	s.analytics = analytics.New(analytics.Options{
 		Dir:     dir,
 		Version: Version,
@@ -138,6 +149,11 @@ func (s *Server) Boot(ctx context.Context, dir string) error {
 	if err := s.reconcileLocked(ctx); err != nil {
 		log.Printf("start xray: %v", err)
 	}
+	// Boot is the handover, and it ends with this first apply: whatever the daemon this
+	// one replaced was holding, it has either let go or the apply above reported it. A
+	// later start (Power off, then on again) must report a busy port at once instead of
+	// waiting out the patience again for a predecessor that is long gone.
+	s.heldPorts.Store(false)
 	s.mu.Unlock()
 	s.track("daemon_started", map[string]any{
 		"idle":       s.idle.Load(),
@@ -184,6 +200,10 @@ func (s *Server) Shutdown(ctx context.Context, _ *pb.ShutdownRequest) (*pb.Shutd
 // nobody is waiting for a reply there and an open stream would hold the process — and
 // the service manager waiting for it — until it's killed. It is safe to call twice.
 func (s *Server) BeginShutdown() {
+	// Set before anything that can wait on s.mu: an apply holding mu may be waiting for a
+	// port or building a config, and it must not start Xray once this closes it. An apply
+	// that already passed the check holds xrayMu, so the final Close waits for it.
+	s.shuttingDown.Store(true)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	done := make(chan struct{})
@@ -198,7 +218,10 @@ func (s *Server) BeginShutdown() {
 	// Tear the TUN and proxy down before answering. A new daemon waits for the reply
 	// before taking the socket, so returning first would let it start while the old TUN
 	// still held its address.
+	s.xrayMu.Lock()
+	s.heldPorts.Store(false)
 	_ = s.xray.Close()
+	s.xrayMu.Unlock()
 	// A latency test is a call with nothing to watch `stopped`: cancel it, or the
 	// graceful stop waits for a probe that can take a while.
 	s.testMu.Lock()

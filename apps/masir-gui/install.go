@@ -14,6 +14,7 @@ import (
 	"github.com/egoist/mygo"
 
 	"github.com/Gozargah/Masir/libs/masir-core/service"
+	masird "github.com/Gozargah/Masir/libs/masir-daemon"
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
 )
 
@@ -294,7 +295,14 @@ func (a *app) removeDaemonService() {
 	a.serviceBusy = true
 	bin := a.binary
 	a.async(func() {
-		err := uninstallService(bin)
+		err := removeServiceFn(bin)
+		if err == nil {
+			// `masir daemon disable` stops the service and waits for its ports; this is
+			// the second half of the same wait, and it catches a CLI too old to have the
+			// first. Starting the bundle daemon before the ports are free is what showed
+			// "address already in use" for a proxy nobody else was using.
+			err = daemonPortWait()
+		}
 		a.post(func() {
 			a.serviceBusy = false
 			if err != nil {
@@ -306,6 +314,28 @@ func (a *app) removeDaemonService() {
 			a.serviceChecked = time.Time{}
 			a.refreshServiceState()
 			a.notifySuccess("The background service is removed")
+			a.noteHandover()
 		})
 	})
+}
+
+// handoverPortTimeout bounds the app's own wait for the removed service's ports.
+const handoverPortTimeout = 15 * time.Second
+
+// The machine calls removing the service makes. Both are variables so a test never asks
+// for a permission prompt or binds a real port.
+var (
+	removeServiceFn = uninstallService
+	daemonPortWait  = func() error { return masird.WaitPortsFree("", handoverPortTimeout) }
+)
+
+// noteHandover says what the person's connection becomes now that the service is gone.
+// The service's daemon ran as root, so Tunnel mode went with it: the daemon that replaces
+// it runs as the person, and a saved tunnel setting cannot be honored by it. Saying so
+// beats a switch that reads "Tunnel" over a proxy.
+func (a *app) noteHandover() {
+	if !a.status.GetSettings().GetTun() {
+		return // proxy only: nothing about the connection changes
+	}
+	a.notifyWarning("Tunnel mode needs the background service. Masir reconnects through the proxy until you install it again.")
 }

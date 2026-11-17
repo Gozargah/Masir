@@ -57,7 +57,9 @@ func uninstallService(bin string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := pkexec(abs, "daemon", "disable"); err != nil {
+	// --user names the user the service serves, as enable does: the removal waits for
+	// that user's ports, and pkexec records no SUDO_UID for masir to fall back on.
+	if _, err := pkexec(abs, "daemon", "disable", "--user", strconv.Itoa(os.Getuid())); err != nil {
 		return err
 	}
 	return nil
