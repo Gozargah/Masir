@@ -101,6 +101,10 @@ type PackageFiles struct{ Package, Checksums, Signature string }
 func FetchDesktopPackage(ctx context.Context, r PackageRequest, progress func(done, total int64)) (PackageFiles, error) {
 	base := strings.TrimSuffix(r.Base, "/") + "/v" + strings.TrimPrefix(r.Version, "v") + "/"
 	name := DesktopPackageName(r.Version, r.Format, r.Arch)
+	// The version comes from a release tag: never let it, or anything else, leave Dir.
+	if _, err := VersionTag(r.Version); err != nil || (r.Format != "deb" && r.Format != "rpm") || filepath.Base(name) != name {
+		return PackageFiles{}, fmt.Errorf("refusing desktop package %q", name)
+	}
 	files := PackageFiles{
 		Package:   filepath.Join(r.Dir, name),
 		Checksums: filepath.Join(r.Dir, DesktopChecksums),

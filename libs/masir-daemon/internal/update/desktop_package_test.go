@@ -243,6 +243,20 @@ func TestFetchDesktopPackageRefusesPlainHTTP(t *testing.T) {
 	}
 }
 
+func TestFetchDesktopPackageStaysInItsDirectory(t *testing.T) {
+	for _, bad := range []func(*PackageRequest){
+		func(r *PackageRequest) { r.Version = "../../x" },
+		func(r *PackageRequest) { r.Format = "deb/../../x" },
+		func(r *PackageRequest) { r.Arch = "amd64/../../x" },
+	} {
+		r := fetchReq("https://example.com", t.TempDir())
+		bad(&r)
+		if _, err := FetchDesktopPackage(context.Background(), r, func(int64, int64) {}); err == nil || !strings.Contains(err.Error(), "refusing desktop package") {
+			t.Fatalf("%+v: err = %v, want a refusal", r, err)
+		}
+	}
+}
+
 func TestFetchDesktopPackageProxy404IsNotUnreachable(t *testing.T) {
 	pkg := []byte("a masir package")
 	base, _ := releaseServer(t, pkg, pkg)
