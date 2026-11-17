@@ -76,16 +76,29 @@ func (a *app) startBundledDaemonUpdate() {
 	}
 	a.updates.state.bundleOffer = false
 	a.updates.state.bundleSync = true
-	a.updates.state.phase = updateInstalling
+	a.updates.state.phase = updateAuthorizing
 	a.updates.state.err = ""
 	a.updates.state.tunWasOn = a.status.GetTunRunning()
 	version := a.version
 	a.async(func() {
 		dir, err := installedComponents()
 		if err == nil {
-			err = installBundledDaemon(dir, nil)
+			err = installBundledDaemon(dir, func() {
+				a.post(func() {
+					if a.updates.state.phase == updateAuthorizing {
+						a.updates.state.phase = updateInstalling
+					}
+				})
+			})
 		}
 		a.post(func() {
+			if kind, _, ok := elevationKindOf(err); ok && kind == elevationCancelled {
+				a.updates.state.bundleOffer = true
+				a.updates.state.bundleSync = false
+				a.updates.state.phase = updateAvailable
+				a.updates.state.err = ""
+				return
+			}
 			if err != nil {
 				a.updates.state.phase = updateFailed
 				a.updates.state.err = describe(err)

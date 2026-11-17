@@ -118,7 +118,7 @@ func (a *app) updateLook(p palette) (text string, icon *ui.SVG, bg, fg ui.Color)
 		icon, bg = iconPause, p.accentHover
 	case updateAppPaused:
 		icon, bg = iconPlay, p.accentHover
-	case updateStarting, updateVerifying, updateInstalling, updateRestarting, updateAppInstalling:
+	case updateStarting, updateVerifying, updateInstalling, updateRestarting, updateAppInstalling, updateAuthorizing:
 		icon, bg = nil, p.accentHover // the filled lead-in shows movement
 	case updateFailed:
 		icon = iconRefresh

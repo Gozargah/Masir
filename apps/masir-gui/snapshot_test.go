@@ -30,6 +30,10 @@ func TestSnapshots(t *testing.T) {
 			a.updates.state.bundleOffer = true
 			a.updates.state.phase = updateAvailable
 		}},
+		{"update-enter-password", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.bundleSync = true
+			a.updates.state.phase = updateAuthorizing
+		}},
 		{"rolling-mid", true, func(a *app, tt *ui.Tester) {
 			a.latency[serverKey{"s1", "c1"}] = 2075
 			a.rules.rules = append(a.rules.rules, a.rules.rules[0])

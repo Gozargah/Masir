@@ -608,6 +608,16 @@ func TestThePartLabelsFitTheUpdateControl(t *testing.T) {
 	}
 }
 
+func TestPasswordAndFinishLabelsFitTheUpdateControl(t *testing.T) {
+	a := newTestApp(ukServers())
+	a.updates.state.phase = updateAuthorizing
+	for _, got := range []string{a.updateLabel(), "Finish Update"} {
+		if n := utf8.RuneCountInString(got); n > 17 {
+			t.Errorf("label %q is %d characters", got, n)
+		}
+	}
+}
+
 func TestSharedDesktopUpdateUsesOneDownloadAndImportsBeforeCommit(t *testing.T) {
 	f := ukServers()
 	f.status.Privileged = true

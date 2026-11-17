@@ -50,6 +50,7 @@ const (
 	updateAppDownloading
 	updateAppPaused
 	updateAppInstalling
+	updateAuthorizing
 	updateFailed
 )
 
@@ -460,7 +461,7 @@ func (a *app) busyUpdate() bool {
 	switch a.updates.state.phase {
 	case updateStarting, updateDownloading, updatePaused, updateVerifying,
 		updateInstalling, updateRestarting, updateAppDownloading, updateAppPaused,
-		updateAppInstalling:
+		updateAppInstalling, updateAuthorizing:
 		return true
 	}
 	return false
@@ -1031,13 +1032,16 @@ func (a *app) pausedLabel(part int) string {
 
 // updateTooltip says what the numbered label cannot: what each part is fetching.
 func (a *app) updateTooltip() string {
+	if a.updates.state.phase == updateAuthorizing {
+		return "Your password is needed to install the update."
+	}
+	if a.updates.state.phase == updateFailed && a.updates.state.err != "" {
+		return a.updates.state.err
+	}
 	if a.updates.state.bundleOffer {
-		return "Update daemon " + a.status.GetVersion() + " to " + a.version + " from this app. Administrator permission is required; the connection will briefly restart."
+		return "Finish the update: daemon " + a.status.GetVersion() + " to " + a.version + " from this app. Administrator permission is required; the connection will briefly restart."
 	}
 	if a.updates.state.bundleSync {
-		if a.updates.state.err != "" {
-			return a.updates.state.err
-		}
 		return "Updating the daemon from this app; the connection will briefly restart"
 	}
 	if a.updates.state.parts < 2 {
@@ -1057,8 +1061,11 @@ func (a *app) updateLabel() string {
 	if a.updates.state.bundleSync && a.updates.state.phase == updateInstalling {
 		return "Updating daemon..."
 	}
+	if a.updates.state.phase == updateAuthorizing {
+		return "Enter Password…"
+	}
 	if a.updates.state.bundleOffer {
-		return "Update daemon"
+		return "Finish Update"
 	}
 	if a.updates.state.bundleSync && a.updates.state.phase == updateFailed {
 		return "Retry"
