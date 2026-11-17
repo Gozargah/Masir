@@ -1,6 +1,7 @@
 package xray
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -178,6 +180,50 @@ func TestNullProbeDoesNotFailValidNeighbor(t *testing.T) {
 	})
 	if len(seen) != 2 {
 		t.Fatalf("missing results: %v", seen)
+	}
+}
+
+func TestProbeIgnoresXrayNoiseOnStdout(t *testing.T) {
+	// Xray logs to stdout on its own: a deprecation warning while the config parses
+	// (before the probe's quiet log config exists), REALITY's `show` trace, congestion
+	// debug. One such line ahead of the first result used to fail the decode for the
+	// whole batch: "json: cannot unmarshal number into Go value of type probeResult".
+	stream := "" +
+		"2026/11/16 17:39:16.880425 [Warning] common/errors: The feature Trojan (with no Flow, etc.) is deprecated, not recommended for using and might be removed.\n" +
+		"REALITY remoteAddr: 203.0.113.7:443\tis using X25519MLKEM768 for TLS' communication: true\n" +
+		"\n" +
+		"{\"Index\":0,\"Duration\":1000920,\"Error\":\"\"}\n" +
+		"{\"Index\":1,\"Duration\":0,\"Error\":\"dial tcp: connection refused\"}\n"
+	var got []probeResult
+	received, err := readProbeResults(bufio.NewReader(strings.NewReader(stream)), 2, func(r probeResult) {
+		got = append(got, r)
+	})
+	if err != nil {
+		t.Fatalf("noise failed the decode: %v", err)
+	}
+	if received != 2 || len(got) != 2 {
+		t.Fatalf("got %d results, want 2", received)
+	}
+	if got[0].Duration != 1000920*time.Nanosecond || got[0].Error != "" {
+		t.Errorf("first result: %+v", got[0])
+	}
+	if got[1].Error != "dial tcp: connection refused" {
+		t.Errorf("second result: %+v", got[1])
+	}
+}
+
+func TestProbeRejectsMalformedResult(t *testing.T) {
+	_, err := readProbeResults(bufio.NewReader(strings.NewReader("{\"Index\":0,\"Duration\":\"slow\"}\n")), 1, func(probeResult) {})
+	if err == nil {
+		t.Fatal("malformed result line accepted")
+	}
+	_, err = readProbeResults(bufio.NewReader(strings.NewReader("{\"Index\":2,\"Duration\":1}\n")), 1, func(probeResult) {})
+	if err == nil {
+		t.Fatal("out-of-range index accepted")
+	}
+	_, err = readProbeResults(bufio.NewReader(strings.NewReader("{\"Index\":0}\n{\"Index\":0}\n")), 2, func(probeResult) {})
+	if err == nil {
+		t.Fatal("duplicate index accepted")
 	}
 }
 
