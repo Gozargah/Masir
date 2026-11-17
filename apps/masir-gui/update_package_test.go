@@ -269,6 +269,7 @@ func TestPackageUpdateFailures(t *testing.T) {
 		{"unreachable", elevationExit(pkgExitUnreachable), nil, "GitHub isn't reachable. Connect Masir and try again.", true},
 		{"not newer", nil, elevationExit(pkgExitNotNewer), "This version is already installed. Restart Masir.", true},
 		{"package manager", nil, elevationExit(12), "helper said no", true},
+		{"root command's own error", nil, &elevationError{kind: elevationFailed, code: 1, msg: "root permission wasn't granted: error: install-package runs as root"}, "install-package runs as root", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			a, _, p := packageApp(t, blockPackageDeb)

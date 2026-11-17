@@ -295,7 +295,7 @@ func packageFailure(err error, f packageFiles, format string) (text string, dele
 	}
 	msg := strings.TrimPrefix(err.Error(), "root permission wasn't granted: ")
 	lines := strings.Split(strings.TrimSpace(msg), "\n")
-	return strings.TrimSpace(lines[len(lines)-1]), false
+	return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[len(lines)-1]), "error: ")), false
 }
 
 // removeOtherVersions deletes downloads of other releases: a newer release makes an
