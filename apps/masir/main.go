@@ -72,6 +72,9 @@ func main() {
 // internalRun reports whether this process is the daemon or an elevated helper, which
 // report their own analytics and shouldn't be treated as CLI commands.
 func internalRun() bool {
+	if len(os.Args) >= 2 && os.Args[1] == "desktop" {
+		return true
+	}
 	if len(os.Args) < 3 || os.Args[1] != "daemon" {
 		return false
 	}
@@ -156,7 +159,7 @@ func handleError(_ io.Writer, _ fang.Styles, err error) {
 }
 
 // report prints a command's error the clack way and returns the exit code: 130 when
-// the user quit, 1 otherwise.
+// the user quit, a codedError's code, 1 otherwise.
 func report(err error) int {
 	switch {
 	case cancelled(err):
@@ -168,6 +171,10 @@ func report(err error) int {
 	default:
 		lastErr = message(err)
 		showError(err)
+		var ce *codedError
+		if errors.As(err, &ce) {
+			return ce.code
+		}
 		return 1
 	}
 }
@@ -442,6 +449,7 @@ func rootCmd() *cobra.Command {
 		daemonGroup, updateCmd, getConfig,
 		leaf("menu", "Pick a command from an interactive menu", func(args) error { return menu() }, cobra.NoArgs),
 		leaf("version", "Print the versions of masir, its daemon and Xray", cmdVersion, cobra.NoArgs))
+	root.AddCommand(desktopCommands()...)
 	return root
 }
 

@@ -56,3 +56,6 @@ func FetchDesktopPackage(ctx context.Context, base, version, format, arch, dir, 
 	}, progress)
 	return f.Package, f.Checksums, f.Signature, err
 }
+
+// DesktopReleaseBase is where a release's desktop files live: <base>/v<version>/<name>.
+const DesktopReleaseBase = update.DesktopReleaseBase
