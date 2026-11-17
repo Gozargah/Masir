@@ -43,7 +43,7 @@ func TestRootMayRunTheDaemonAndServiceCommands(t *testing.T) {
 		"masir daemon run",
 		"masir daemon sync-service",
 		"masir daemon sync-self",
- "masir daemon import-desktop",
+		"masir daemon import-desktop",
 		"masir daemon unit",
 		"masir daemon sync-unit",
 		"masir daemon check",
@@ -51,12 +51,13 @@ func TestRootMayRunTheDaemonAndServiceCommands(t *testing.T) {
 		"masir daemon disable",
 		"masir daemon rollback",
 		"masir daemon restart",
+		"masir desktop install-package",
 	} {
 		if err := rootRefusal(path); err != nil {
 			t.Errorf("%s was refused: %v", path, err)
 		}
 	}
-	for _, path := range []string{"masir", "masir daemon start", "masir daemon stop", "masir update", "masir use"} {
+	for _, path := range []string{"masir", "masir daemon start", "masir daemon stop", "masir update", "masir use", "masir desktop fetch-package"} {
 		if err := rootRefusal(path); err == nil {
 			t.Errorf("%s was allowed as root", path)
 		}
