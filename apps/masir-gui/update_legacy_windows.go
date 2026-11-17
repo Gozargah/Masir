@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-func importLegacyDesktop(dir string) error {
+func importLegacyDesktop(dir string, authorized func()) error {
 	u, err := user.Current()
 	if err != nil {
 		return err
@@ -17,6 +17,9 @@ func importLegacyDesktop(dir string) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("offline service upgrade: %s: %w", out, err)
+	}
+	if authorized != nil {
+		authorized()
 	}
 	return nil
 }

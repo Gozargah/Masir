@@ -6,7 +6,7 @@ import (
 	"strconv"
 )
 
-func importLegacyDesktop(dir string) error {
-	_, err := pkexec(filepath.Join(dir, "masir"), "daemon", "import-desktop", "--from", dir, "--user", strconv.Itoa(os.Getuid()))
+func importLegacyDesktop(dir string, authorized func()) error {
+	_, err := pkexecAnnounced(authorized, filepath.Join(dir, "masir"), "daemon", "import-desktop", "--from", dir, "--user", strconv.Itoa(os.Getuid()))
 	return err
 }

@@ -26,7 +26,7 @@ func localUpdateApp(t *testing.T) (*app, *fakeDaemon) {
 		installedComponents, installBundledDaemon, reconcileUpdatedService = oldDir, oldHelper, oldReconcile
 	})
 	installedComponents = func() (string, error) { return "/installed/bin", nil }
-	installBundledDaemon = func(string) error { t.Fatal("unsolicited administrator helper"); return nil }
+	installBundledDaemon = func(string, func()) error { t.Fatal("unsolicited administrator helper"); return nil }
 	reconcileUpdatedService = func() error { return nil }
 	f.calls = nil
 	return a, f
@@ -43,7 +43,7 @@ func TestLocalDaemonUpdateWaitsForClick(t *testing.T) {
 		t.Fatalf("discovery used daemon APIs: %v", f.calls)
 	}
 	calls := 0
-	installBundledDaemon = func(dir string) error {
+	installBundledDaemon = func(dir string, _ func()) error {
 		calls++
 		if dir != "/installed/bin" || a.updateLabel() != "Updating daemon..." || a.daemonStep() != daemonWait {
 			t.Fatal("wrong import or missing busy guard")
@@ -96,7 +96,7 @@ func TestLocalDaemonFailureOnlyRetriesOnClick(t *testing.T) {
 		t.Run(reason, func(t *testing.T) {
 			a, f := localUpdateApp(t)
 			calls := 0
-			installBundledDaemon = func(string) error { calls++; return errors.New(reason) }
+			installBundledDaemon = func(string, func()) error { calls++; return errors.New(reason) }
 			a.observeUpdates(f.status)
 			a.startUpdate()
 			a.observeUpdates(f.status)
@@ -133,7 +133,7 @@ func TestLocalDaemonDoesNotTrustHelperExitAlone(t *testing.T) {
 	t.Cleanup(func() { daemonWaitTimeout = old })
 	daemonWaitTimeout = 0
 	calls := 0
-	installBundledDaemon = func(string) error { calls++; return nil }
+	installBundledDaemon = func(string, func()) error { calls++; return nil }
 	a.observeUpdates(f.status)
 	a.startUpdate()
 	if a.updates.state.phase != updateFailed || !a.updates.state.bundleSync {
@@ -182,7 +182,7 @@ func TestDaemonUpdateControlInvokesHelperOnlyOnClick(t *testing.T) {
 	a, f := localUpdateApp(t)
 	a.observeUpdates(f.status)
 	calls := 0
-	installBundledDaemon = func(string) error { calls++; return errors.New("permission declined") }
+	installBundledDaemon = func(string, func()) error { calls++; return errors.New("permission declined") }
 	tt := tester(a)
 	if calls != 0 {
 		t.Fatal("rendering prompted for administrator access")
@@ -200,7 +200,7 @@ func TestLocalDaemonMismatchReportsBothVersions(t *testing.T) {
 	old := daemonWaitTimeout
 	t.Cleanup(func() { daemonWaitTimeout = old })
 	daemonWaitTimeout = time.Millisecond
-	installBundledDaemon = func(string) error { return nil }
+	installBundledDaemon = func(string, func()) error { return nil }
 	a.observeUpdates(f.status)
 	a.startUpdate()
 	if a.updates.state.phase != updateFailed || !strings.Contains(a.updateTooltip(), "1.1.0") || !strings.Contains(a.updateTooltip(), "1.2.0") {
@@ -268,7 +268,7 @@ func TestLocalOfferTakesPriorityOverNewerRemoteRelease(t *testing.T) {
 		t.Fatal("remote release replaced the local action")
 	}
 	calls := 0
-	installBundledDaemon = func(string) error { calls++; f.status.Version = a.version; return nil }
+	installBundledDaemon = func(string, func()) error { calls++; f.status.Version = a.version; return nil }
 	a.startUpdate()
 	if calls != 1 || f.called("start update") {
 		t.Fatalf("local click downloaded a remote release: %v", f.calls)

@@ -83,7 +83,7 @@ func (a *app) startBundledDaemonUpdate() {
 	a.async(func() {
 		dir, err := installedComponents()
 		if err == nil {
-			err = installBundledDaemon(dir)
+			err = installBundledDaemon(dir, nil)
 		}
 		a.post(func() {
 			if err != nil {
