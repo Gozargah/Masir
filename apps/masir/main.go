@@ -130,13 +130,19 @@ func writeElevatedResult(ok bool) {
 	}
 }
 
+// jsonOutput distinguishes the boolean output flag from rules' JSON input data.
+func jsonOutput(cmd *cobra.Command) bool {
+	enabled, _ := cmd.Flags().GetBool("json")
+	return enabled
+}
+
 // executeCLI shares Fang's usage-error path with command-level regression tests.
 func executeCLI(ctx context.Context, argv []string) error {
 	root := rootCmd()
 	root.SetArgs(argv)
 	return fang.Execute(ctx, root, fang.WithVersion(version), fang.WithErrorHandler(func(w io.Writer, styles fang.Styles, err error) {
 		cmd, _, _ := root.Find(argv)
-		if cmd != nil && argsFrom(cmd, nil).boolean("json", false) {
+		if cmd != nil && jsonOutput(cmd) {
 			exitStatus = reportJSON(advised(capitalize(err.Error()), "See the usage:", "masir --help"))
 			return
 		}
@@ -464,14 +470,14 @@ func runE(fn func(args) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, pos []string) error {
 		a := argsFrom(cmd, pos)
 		reportError := report
-		if a.boolean("json", false) {
+		if jsonOutput(cmd) {
 			reportError = reportJSON
 		}
 		if err := rootRefusal(cmd.CommandPath()); err != nil {
 			exitStatus = reportError(err)
 			return nil
 		}
-		if !a.boolean("json", false) && !cmd.Hidden && cmd.Name() != "version" && cmd.Name() != "completion" {
+		if !jsonOutput(cmd) && !cmd.Hidden && cmd.Name() != "version" && cmd.Name() != "completion" {
 			maybeAnalyticsNotice()
 		}
 		if err := fn(a); err != nil {
