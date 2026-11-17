@@ -107,7 +107,11 @@ func cmdSubList(a args) error {
 		return err
 	}
 	if a.boolean("json", false) {
-		b, err := marshalSubList(all, activeKey())
+		active, err := activeKeyErr()
+		if err != nil {
+			return err
+		}
+		b, err := marshalSubList(all, active)
 		if err != nil {
 			return err
 		}

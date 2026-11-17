@@ -20,9 +20,10 @@ func cmdUse(a args) error {
 	}
 
 	var key, reason string
+	asJSON := a.boolean("json", false)
 	switch {
 	case a.boolean("fastest", false):
-		key, err = fastest(all)
+		key, err = fastest(all, asJSON)
 		reason = "fastest"
 	case a.arg(0) != "":
 		s, cfg, ok := findNode(all, a.arg(0))
@@ -40,7 +41,7 @@ func cmdUse(a args) error {
 	if err != nil {
 		return err
 	}
-	if a.boolean("json", false) {
+	if asJSON {
 		name, err := switchConfig(all, key, reason)
 		if err != nil {
 			return err
@@ -103,8 +104,10 @@ func selectNode(all []subNodes, key, verb, reason string) error {
 	return nil
 }
 
-// fastest tests every config and returns the quickest one's key.
-func fastest(all []subNodes) (string, error) {
+// fastest tests every config and returns the quickest one's key. quiet keeps
+// stdout clean for JSON output: no spinner frames, no outcome line — the
+// spinner's Stop writes to stdout and would corrupt the JSON document.
+func fastest(all []subNodes, quiet bool) (string, error) {
 	c, err := daemon()
 	if err != nil {
 		return "", err
@@ -113,7 +116,10 @@ func fastest(all []subNodes) (string, error) {
 	for _, s := range all {
 		total += len(s.configs)
 	}
-	sp := ui.Spin(fmt.Sprintf("Testing %d proxies", total))
+	var sp *ui.Spinner
+	if !quiet {
+		sp = ui.Spin(fmt.Sprintf("Testing %d proxies", total))
+	}
 
 	var (
 		mu       sync.Mutex
@@ -141,7 +147,9 @@ func fastest(all []subNodes) (string, error) {
 				mu.Lock()
 				defer mu.Unlock()
 				done++
-				sp.Message(fmt.Sprintf("Testing proxies... %d/%d", done, total))
+				if sp != nil {
+					sp.Message(fmt.Sprintf("Testing proxies... %d/%d", done, total))
+				}
 				if l.Error == "" && (bestMs < 0 || l.LatencyMs < bestMs) {
 					best, bestMs, bestName = nodeKey(s.sub.Id, cfgID), l.LatencyMs, names[nodeKey(s.sub.Id, cfgID)]
 				}
@@ -153,9 +161,13 @@ func fastest(all []subNodes) (string, error) {
 		return "", appCtx.Err()
 	}
 	if best == "" {
-		sp.Fail("No proxy responded.")
+		if sp != nil {
+			sp.Fail("No proxy responded.")
+		}
 		return "", errReported
 	}
-	sp.Stop(fmt.Sprintf("Fastest: %s (%dms)", ui.Visual(bestName), bestMs))
+	if sp != nil {
+		sp.Stop(fmt.Sprintf("Fastest: %s (%dms)", ui.Visual(bestName), bestMs))
+	}
 	return best, nil
 }
