@@ -29,6 +29,7 @@ type Server struct {
 
 	// mu serializes every change to state, the selection and the running config.
 	mu       sync.Mutex
+	xrayMu   sync.Mutex // serializes the shutdown check/start with the final Close
 	dir      string
 	state    store.State
 	resolved []compose.ResolvedRule // user rules as last applied
@@ -201,7 +202,7 @@ func (s *Server) Shutdown(ctx context.Context, _ *pb.ShutdownRequest) (*pb.Shutd
 func (s *Server) BeginShutdown() {
 	// Set before anything that can wait on s.mu: an apply holding mu may be waiting for a
 	// port or building a config, and it must not start Xray once this closes it. An apply
-	// that already reached Core.Apply holds xray's own lock, so Close waits for it.
+	// that already passed the check holds xrayMu, so the final Close waits for it.
 	s.shuttingDown.Store(true)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -217,8 +218,10 @@ func (s *Server) BeginShutdown() {
 	// Tear the TUN and proxy down before answering. A new daemon waits for the reply
 	// before taking the socket, so returning first would let it start while the old TUN
 	// still held its address.
+	s.xrayMu.Lock()
 	s.heldPorts.Store(false)
 	_ = s.xray.Close()
+	s.xrayMu.Unlock()
 	// A latency test is a call with nothing to watch `stopped`: cancel it, or the
 	// graceful stop waits for a probe that can take a while.
 	s.testMu.Lock()
