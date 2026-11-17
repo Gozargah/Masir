@@ -152,6 +152,21 @@ func report(err error) int {
 	}
 }
 
+// reportJSON keeps every diagnostic on stderr, including advice and cancellation.
+// It deliberately avoids the terminal UI, whose styled output uses stdout.
+func reportJSON(err error) int {
+	if cancelled(err) {
+		lastErr = "cancelled"
+		fmt.Fprintln(os.Stderr, lastErr)
+		return 130
+	}
+	if !errors.Is(err, errReported) {
+		lastErr = message(err)
+		fmt.Fprintln(os.Stderr, lastErr)
+	}
+	return 1
+}
+
 func capitalize(s string) string {
 	if s == "" {
 		return s
@@ -433,15 +448,20 @@ func group(use, short string, subs ...*cobra.Command) *cobra.Command {
 // usage errors and command failures always look like the rest of masir.
 func runE(fn func(args) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, pos []string) error {
+		a := argsFrom(cmd, pos)
+		reportError := report
+		if a.boolean("json", false) {
+			reportError = reportJSON
+		}
 		if err := rootRefusal(cmd.CommandPath()); err != nil {
-			exitStatus = report(err)
+			exitStatus = reportError(err)
 			return nil
 		}
-		if !cmd.Hidden && cmd.Name() != "version" && cmd.Name() != "completion" {
+		if !a.boolean("json", false) && !cmd.Hidden && cmd.Name() != "version" && cmd.Name() != "completion" {
 			maybeAnalyticsNotice()
 		}
-		if err := fn(argsFrom(cmd, pos)); err != nil {
-			exitStatus = report(err)
+		if err := fn(a); err != nil {
+			exitStatus = reportError(err)
 		}
 		return nil
 	}
