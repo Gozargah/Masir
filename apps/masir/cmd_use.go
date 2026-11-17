@@ -32,6 +32,11 @@ func cmdUse(a args) error {
 		}
 		key = nodeKey(s.sub.Id, cfg.Id)
 		reason = "id"
+	case asJSON:
+		// JSON mode never opens the picker: it draws on stdout and would
+		// corrupt the document. fail() reports on stderr, keeping stdout
+		// empty for the consumer.
+		return fail("pass a proxy id or --fastest when using --json (ids: `masir sub list --nodes`)")
 	case !ui.Interactive():
 		return advised("Without a terminal, pass a proxy id, or --fastest.", "The ids are listed by:", "masir sub list --nodes")
 	default:
@@ -161,13 +166,21 @@ func fastest(all []subNodes, quiet bool) (string, error) {
 		return "", appCtx.Err()
 	}
 	if best == "" {
-		if sp != nil {
-			sp.Fail("No proxy responded.")
-		}
-		return "", errReported
+		return "", fastestFailure(sp)
 	}
 	if sp != nil {
 		sp.Stop(fmt.Sprintf("Fastest: %s (%dms)", ui.Visual(bestName), bestMs))
 	}
 	return best, nil
+}
+
+// fastestFailure reports "no proxy responded": the spinner prints it when one
+// is running and errReported says so; quiet mode (JSON) has no spinner, so the
+// error travels back for report() to print — exit 1 must name its reason.
+func fastestFailure(sp *ui.Spinner) error {
+	if sp == nil {
+		return fail("No proxy responded.")
+	}
+	sp.Fail("No proxy responded.")
+	return errReported
 }
