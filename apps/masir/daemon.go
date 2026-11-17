@@ -154,18 +154,98 @@ func daemonRollback(args) error {
 	return nil
 }
 
-func daemonDisable(args) error {
+// daemonDisable removes the service in the order that leaves nothing holding the ports.
+//
+// The service's daemon has to stop before anything else: a supervisor's own stop
+// (launchd's bootout, systemd's disable --now, the SCM's Delete) answers as soon as the
+// job is gone, while the daemon it stopped still holds the proxy port and the TUN. The
+// app starts the bundled daemon the moment this returns, so a return that didn't wait for
+// the ports is what showed "proxy: listen tcp 0.0.0.0:7890: bind: address already in
+// use" on a machine whose only proxy was the one being removed.
+//
+// --user names the user the service serves, so root finds that user's settings; --ports
+// waits for the ports those settings ask for.
+func daemonDisable(a args) error {
+	user := a.str("user")
 	if !elevated() {
-		return elevate("daemon", "disable")
+		if user == "" {
+			user = currentUser()
+		}
+		// The elevated copy is a new process: forward the options the caller chose, or a
+		// `--ports=false` here would still wait for ports there.
+		argv := []string{"daemon", "disable", "--user", user}
+		if !a.boolean("ports", true) {
+			argv = append(argv, "--ports=false")
+		}
+		if a.boolean("stopped", false) {
+			argv = append(argv, "--stopped")
+		}
+		return elevate(argv...)
 	}
-	if err := uninstallService(); err != nil {
+	// Root can't be the user the service serves: its socket and settings belong to a
+	// regular account. sudo records that account in SUDO_UID, which is where the daemon
+	// itself looks when it is given no --user, so a bare `sudo masir daemon disable`
+	// names the same user it serves. A permission prompt that isn't sudo (the app's
+	// osascript or pkexec) records nothing, and names the uid with --user instead.
+	if user == "" {
+		user = sudoUser()
+	}
+	if user == "" || user == "0" {
+		return advised("This needs your normal user, not root: masir asks for permission itself.",
+			"Run it again without sudo:", "masir daemon disable")
+	}
+	waitPorts := a.boolean("ports", true)
+	// Stop it over the socket while it still answers: the reply waits for Xray's TUN and
+	// proxy to be down, which is the half a supervisor's stop never waits for.
+	if !a.boolean("stopped", false) {
+		stopBeforeRemove(user)
+	}
+	if err := removeServiceFn(); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(service.InstallDir()); err != nil {
+	if err := removeInstallDir(); err != nil {
 		return err
+	}
+	if waitPorts {
+		if err := waitPortsFree(user, removePortTimeout); err != nil {
+			// The detail is the bind error itself, which names the port and host: that is
+			// what the person needs to find whatever still holds it.
+			return &userError{
+				headline: "The masir service is removed, but the ports it used are still taken, so the next daemon would start without the proxy.",
+				details:  err.Error(),
+				advice:   advice{text: "Quit whatever still holds the port, then start masir again:", cmds: []string{"masir connect"}},
+			}
+		}
 	}
 	ui.Success("The masir service is removed. The daemon runs in the background again when masir needs it.")
 	return nil
+}
+
+// The machine calls removing the service makes, replaceable in tests so they never touch
+// the machine they run on.
+var (
+	waitPortsFree    = masird.WaitPortsFree
+	removeServiceFn  = uninstallService
+	removeInstallDir = func() error { return os.RemoveAll(service.InstallDir()) }
+)
+
+// removePortTimeout bounds the wait for the removed service's ports. Xray closes its
+// listeners in BeginShutdown, before it answers; the rest is the time a process needs to
+// be reaped, and past this the failure is worth reporting rather than hiding.
+const removePortTimeout = 15 * time.Second
+
+// stopBeforeRemove asks the service's daemon to exit and waits for its socket. It runs as
+// root, so it must name the socket by the uid the service serves: root's own sockets are
+// somewhere else (see rootRefusal). Nothing answering is not a failure — a service that
+// was already stopped has nothing left to stop.
+func stopBeforeRemove(user string) {
+	uid, err := strconv.Atoi(user)
+	if err != nil {
+		return // not a uid: this OS names its sockets another way
+	}
+	if err := stopTheDaemon(paths.PrivilegedSocketPath(uid)); err != nil {
+		ui.Note("The service's daemon didn't answer the stop; removing the service anyway.", ui.Yellow("▲ Service"))
+	}
 }
 
 // daemonCheck answers a running daemon that is about to install this version: stdin

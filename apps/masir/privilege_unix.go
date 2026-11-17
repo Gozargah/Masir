@@ -101,11 +101,17 @@ func startElevatedDaemon(user string, log *os.File) error {
 	return nil
 }
 
-// elevate re-runs masir with args as root, through sudo.
-func elevate(args ...string) error { return asRoot(args...) }
+// elevate re-runs masir with args as root, through sudo. It is a variable so a test can
+// see what the elevated copy is asked to do without becoming root.
+var elevate = func(args ...string) error { return asRoot(args...) }
 
 // currentUser is who the service should serve: this user's uid.
 func currentUser() string { return strconv.Itoa(os.Getuid()) }
+
+// sudoUser is the account sudo recorded before it became root, which is the user a
+// service serves. A permission prompt that isn't sudo (the app's osascript, pkexec)
+// records nothing, so its caller names the uid with --user instead.
+func sudoUser() string { return os.Getenv("SUDO_UID") }
 
 // stopServiceForInstall is a no-op: on Unix, a running binary can be renamed over.
 func stopServiceForInstall() {}
