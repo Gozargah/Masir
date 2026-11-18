@@ -735,7 +735,9 @@ func (a *app) waitForDaemon(version string, timeout time.Duration) error {
 		if err == nil {
 			st := res.GetStatus()
 			lastVersion = st.GetVersion()
-			if version == "" || sameVersion(st.GetVersion(), version) {
+			// This version or newer: a newer daemon (a service ahead of the app) isn't
+			// a failed update; an older or cached one is.
+			if version == "" || sameVersion(st.GetVersion(), version) || newerRelease(st.GetVersion(), version) {
 				sawVersion = true
 				if !a.updates.state.tunWasOn || st.GetTunRunning() {
 					return nil
