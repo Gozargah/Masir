@@ -105,9 +105,10 @@ type updateState struct {
 	// block says why MyGo can't replace this app; a .deb or .rpm is updated by its
 	// package manager instead. pkgSync says that flow owns the control, and pkgDir is
 	// the download it keeps for a retry.
-	block   installBlock
-	pkgSync bool
-	pkgDir  string
+	block      installBlock
+	pkgSync    bool
+	pkgDir     string
+	pkgVersion string // the release the package flow downloads
 	// pkgLast is closed when the last download or cleanup of the package cache ends.
 	pkgLast chan struct{}
 	// wantApp says the person asked for the update and the app feed hasn't answered yet.
@@ -953,8 +954,15 @@ func (a *app) cancelUpdate() {
 		a.updates.state.progress, a.updates.state.total = 0, 0
 		if a.updates.state.pkgSync {
 			a.updates.state.pkgSync = false
-			if dir := a.updates.state.pkgDir; dir != "" {
-				a.pkgSerial(func() func() { os.RemoveAll(dir); return nil })
+			// Queued now: after the cancelled download ends and before any retry, which
+			// would otherwise resume the partial a cancel promised to delete.
+			if v := a.updates.state.pkgVersion; v != "" {
+				a.pkgSerial(func() func() {
+					if root, err := packageCacheDir(); err == nil {
+						os.RemoveAll(filepath.Join(root, v))
+					}
+					return nil
+				})
 			}
 		}
 	}
