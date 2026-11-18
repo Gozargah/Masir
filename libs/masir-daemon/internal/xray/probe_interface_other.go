@@ -1,4 +1,4 @@
-//go:build !darwin || !xray_patched
+//go:build !darwin
 
 package xray
 

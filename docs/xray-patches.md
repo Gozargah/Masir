@@ -7,8 +7,8 @@ applied to a downloaded source copy; the upstream module is not vendored.
 The patch applies outbound socket controllers to XICMP's IPv4/IPv6 datagram and
 raw ICMP sockets using the actual configured peers. Local and remote peers use
 separate sockets, unused address families stay unopened, and failed setup closes
-all opened sockets. On macOS, binding selects the default route for the peer
-address family and exempts loopback before any route lookup. The patch exposes
+all opened sockets. On macOS, binding selects the longest matching non-TUN route for the peer
+address, including connected LAN routes without a default gateway and exempts loopback before any route lookup. The patch exposes
 the TUN interface binding as `InterfaceUpdater.BindSocket`. It includes regression tests
 for controller invocation and failed socket cleanup.
 
@@ -35,18 +35,18 @@ sh scripts/with-xray.sh go test ./libs/masir-daemon/internal/xray
 sh scripts/with-xray.sh go build -o dist/masir ./apps/masir
 ```
 
-The preparer enables `xray_patched`. The macOS probe-helper binding uses this tag
-because `BindSocket` is a patched-only API. Plain `go test`/`go build` still compile
-against stock Xray, as headless GUI tests compile against stock MyGo; use the
-preparer to exercise or ship the XICMP fix. Existing comma-separated `GOFLAGS`
-tags are preserved; direct wrapped Go `-tags` overrides must include `xray_patched`
-or the preparer rejects them.
+On macOS the probe helper detects the added `BindSocket` API through a small
+interface. A prepared-build regression test requires that capability to exist.
+Stock Xray builds retain their no-op helper, while prepared builds install the
+binding regardless of caller-supplied build tags. The preparer does not inspect
+or modify `GOFLAGS` or `-tags`; Go handles their quoting and validation directly.
 
 `make test`/`make test-race` and CI also run the patched dependency's XICMP and
 TUN packages. ICMP integration tests skip only when socket support is denied or
 unavailable; CI enables Linux ping sockets and sets `XRAY_REQUIRE_ICMP=1` so
 these assertions must run on capable macOS/Linux jobs. The full upstream suite
-additionally needs GeoIP/GeoSite fixtures in the prepared module's `resources` directory; it has known public DNS/ECH
+additionally needs GeoIP/GeoSite fixtures in the prepared module's `resources`
+directory; it has known public DNS/ECH
 failures and races that reproduce on unmodified upstream. The targeted patched
 packages and Masir checks pass.
 

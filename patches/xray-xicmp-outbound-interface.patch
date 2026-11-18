@@ -2,16 +2,17 @@ diff --git a/proxy/tun/bind_socket_darwin.go b/proxy/tun/bind_socket_darwin.go
 new file mode 100644
 --- /dev/null
 +++ b/proxy/tun/bind_socket_darwin.go
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,40 @@
 +//go:build darwin
 +
 +package tun
 +
 +import (
 +	"fmt"
-+	"golang.org/x/sys/unix"
 +	"net"
 +	"net/netip"
++
++	"golang.org/x/sys/unix"
 +)
 +
 +func socketRouteFamily(network, address string) (int, error) {
@@ -39,22 +40,26 @@ new file mode 100644
 +	updater.Lock()
 +	index, name := updater.tunIndex, updater.fixedName
 +	updater.Unlock()
-+	return findDarwinOutboundInterface(index, name, family)
++	peer, _ := netip.ParseAddrPort(address)
++	return findDarwinOutboundInterface(index, name, family, peer.Addr())
 +}
 diff --git a/proxy/tun/bind_socket_darwin_test.go b/proxy/tun/bind_socket_darwin_test.go
 new file mode 100644
 --- /dev/null
 +++ b/proxy/tun/bind_socket_darwin_test.go
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,122 @@
 +//go:build darwin
 +
 +package tun
 +
 +import (
-+	"golang.org/x/net/route"
-+	"golang.org/x/sys/unix"
++	"net"
++	"net/netip"
 +	"strings"
 +	"testing"
++
++	"golang.org/x/net/route"
++	"golang.org/x/sys/unix"
 +)
 +
 +func defaultTestRoute(family, index int) route.Message {
@@ -110,6 +115,59 @@ new file mode 100644
 +	err := updater.BindSocket("tcp4", "192.0.2.1:80", nil)
 +	if err == nil || !strings.Contains(err.Error(), "iface not found") {
 +		t.Fatalf("expected missing-interface error, got %v", err)
++	}
++}
++
++func connectedTestRoute(prefix string, index int) route.Message {
++	p := netip.MustParsePrefix(prefix)
++	addrs := make([]route.Addr, unix.RTAX_MAX)
++	if p.Addr().Is4() {
++		var mask [4]byte
++		copy(mask[:], net.CIDRMask(p.Bits(), 32))
++		addrs[unix.RTAX_DST] = &route.Inet4Addr{IP: p.Addr().As4()}
++		addrs[unix.RTAX_NETMASK] = &route.Inet4Addr{IP: mask}
++	} else {
++		var mask [16]byte
++		copy(mask[:], net.CIDRMask(p.Bits(), 128))
++		addrs[unix.RTAX_DST] = &route.Inet6Addr{IP: p.Addr().As16()}
++		addrs[unix.RTAX_NETMASK] = &route.Inet6Addr{IP: mask}
++	}
++	return &route.RouteMessage{Index: index, Flags: unix.RTF_UP, Addrs: addrs}
++}
++
++func TestConnectedIPv6PeerNeedsNoDefaultRoute(t *testing.T) {
++	routes := []route.Message{defaultTestRoute(unix.AF_INET, 11), connectedTestRoute("fd00:1::/64", 12), connectedTestRoute("::/1", 99), connectedTestRoute("8000::/1", 99)}
++	index, err := selectDarwinPeerRoute(routes, map[int]bool{99: true}, unix.AF_INET6, netip.MustParseAddr("fd00:1::2"))
++	if err != nil || index != 12 {
++		t.Fatalf("connected IPv6 peer: index=%d err=%v, want 12", index, err)
++	}
++	if _, err := selectDarwinPeerRoute(routes, map[int]bool{99: true}, unix.AF_INET6, netip.MustParseAddr("2001:db8::2")); err == nil {
++		t.Fatal("off-link IPv6 peer needs a matching route")
++	}
++	routes = append(routes, defaultTestRoute(unix.AF_INET6, 13))
++	index, err = selectDarwinPeerRoute(routes, map[int]bool{99: true}, unix.AF_INET6, netip.MustParseAddr("2001:db8::2"))
++	if err != nil || index != 13 {
++		t.Fatalf("off-link peer: index=%d err=%v, want 13", index, err)
++	}
++}
++
++func TestPeerRoutesPreferHostRoutesAndKeepRejects(t *testing.T) {
++	peer := netip.MustParseAddr("192.0.2.3")
++	host := connectedTestRoute("192.0.2.3/32", 17).(*route.RouteMessage)
++	host.Flags |= unix.RTF_HOST
++	host.Addrs[unix.RTAX_NETMASK] = nil
++	routes := []route.Message{defaultTestRoute(unix.AF_INET, 11), host}
++	index, err := selectDarwinPeerRoute(routes, nil, unix.AF_INET, peer)
++	if err != nil || index != 17 {
++		t.Fatalf("host route: %d %v", index, err)
++	}
++	index, err = selectDarwinPeerRoute(routes, map[int]bool{17: true}, unix.AF_INET, peer)
++	if err != nil || index != 11 {
++		t.Fatalf("excluded route: %d %v", index, err)
++	}
++	host.Flags |= unix.RTF_REJECT
++	if _, err := selectDarwinPeerRoute(routes, nil, unix.AF_INET, peer); err == nil {
++		t.Fatal("reject route must not fall back to a default")
 +	}
 +}
 diff --git a/proxy/tun/bind_socket_other.go b/proxy/tun/bind_socket_other.go
@@ -231,22 +289,67 @@ diff --git a/proxy/tun/handler.go b/proxy/tun/handler.go
 diff --git a/proxy/tun/tun_darwin.go b/proxy/tun/tun_darwin.go
 --- a/proxy/tun/tun_darwin.go
 +++ b/proxy/tun/tun_darwin.go
-@@ -571,6 +571,10 @@
+@@ -10,6 +10,7 @@
+ 	"net/netip"
+ 	"os"
+ 	"strconv"
++	"strings"
+ 	"sync"
+ 	"sync/atomic"
+ 	"time"
+@@ -571,6 +572,10 @@
  }
 
  func findOutboundInterface(tunIndex int, fixedName string) (*net.Interface, error) {
 +	return findDarwinOutboundInterface(tunIndex, fixedName, unix.AF_UNSPEC)
 +}
 +
-+func findDarwinOutboundInterface(tunIndex int, fixedName string, family int) (*net.Interface, error) {
++func findDarwinOutboundInterface(tunIndex int, fixedName string, family int, peers ...netip.Addr) (*net.Interface, error) {
  	if fixedName != "" {
  		iface, err := net.InterfaceByName(fixedName)
  		if err != nil {
-@@ -591,6 +595,14 @@
+@@ -591,6 +596,51 @@
  		return nil, err
  	}
 
-+	index, err := selectDarwinOutboundRoute(messages, tunIndex, family)
++	var index int
++	if len(peers) > 0 && peers[0].IsValid() {
++		excluded := map[int]bool{tunIndex: true}
++		// Probe helpers have no TUN index. Exclude native TUN interfaces so their
++		// more-specific capture routes do not win over the real peer route.
++		if tunIndex == 0 {
++			interfaces, e := net.Interfaces()
++			if e != nil {
++				return nil, e
++			}
++			for _, iface := range interfaces {
++				if strings.HasPrefix(iface.Name, "utun") {
++					excluded[iface.Index] = true
++				}
++			}
++		}
++		if zone := peers[0].Zone(); zone != "" {
++			scope, e := net.InterfaceByName(zone)
++			if e != nil {
++				numeric, parseErr := strconv.Atoi(zone)
++				if parseErr != nil {
++					return nil, e
++				}
++				scope, e = net.InterfaceByIndex(numeric)
++				if e != nil {
++					return nil, e
++				}
++			}
++			for _, m := range messages {
++				if r, ok := m.(*route.RouteMessage); ok && r.Index != scope.Index {
++					excluded[r.Index] = true
++				}
++			}
++		}
++		index, err = selectDarwinPeerRoute(messages, excluded, family, peers[0])
++	} else {
++		index, err = selectDarwinOutboundRoute(messages, tunIndex, family)
++	}
 +	if err != nil {
 +		return nil, err
 +	}
@@ -257,7 +360,7 @@ diff --git a/proxy/tun/tun_darwin.go b/proxy/tun/tun_darwin.go
  	var ipv6Index int
  	for _, message := range messages {
  		routeMessage, ok := message.(*route.RouteMessage)
-@@ -602,11 +614,11 @@
+@@ -602,11 +652,11 @@
  		}
 
  		family, ok := defaultRouteFamily(routeMessage)
@@ -271,7 +374,7 @@ diff --git a/proxy/tun/tun_darwin.go b/proxy/tun/tun_darwin.go
  		}
  		if family == unix.AF_INET6 && ipv6Index == 0 {
  			ipv6Index = routeMessage.Index
-@@ -614,9 +626,9 @@
+@@ -614,9 +664,9 @@
  	}
 
  	if ipv6Index != 0 {
@@ -284,6 +387,72 @@ diff --git a/proxy/tun/tun_darwin.go b/proxy/tun/tun_darwin.go
  }
 
  func defaultRouteFamily(message *route.RouteMessage) (int, bool) {
+@@ -792,3 +842,65 @@
+ 	copy(mask[:], net.CIDRMask(bits, 128))
+ 	return mask
+ }
++
++// Pick the longest matching non-TUN route. Connected routes are valid egress
++// routes even when that address family has no default gateway.
++func selectDarwinPeerRoute(messages []route.Message, excluded map[int]bool, family int, peer netip.Addr) (int, error) {
++	peer = peer.Unmap().WithZone("")
++	best, index, blocked := -1, 0, false
++	for _, message := range messages {
++		r, ok := message.(*route.RouteMessage)
++		if !ok || r.Index <= 0 || excluded[r.Index] || r.Flags&unix.RTF_UP == 0 {
++			continue
++		}
++		prefix, ok := darwinRoutePrefix(r)
++		if !ok || (family == unix.AF_INET && !prefix.Addr().Is4()) || (family == unix.AF_INET6 && !prefix.Addr().Is6()) || !prefix.Contains(peer) {
++			continue
++		}
++		if prefix.Bits() > best {
++			best, index = prefix.Bits(), r.Index
++			blocked = r.Flags&(unix.RTF_REJECT|unix.RTF_BLACKHOLE) != 0
++		}
++	}
++	if blocked {
++		return 0, errors.New("peer route rejects traffic")
++	}
++	if index == 0 {
++		return 0, errors.New("peer route not found")
++	}
++	return index, nil
++}
++
++func darwinRoutePrefix(r *route.RouteMessage) (netip.Prefix, bool) {
++	if len(r.Addrs) <= unix.RTAX_DST {
++		return netip.Prefix{}, false
++	}
++	var address netip.Addr
++	var mask net.IPMask
++	switch dst := r.Addrs[unix.RTAX_DST].(type) {
++	case *route.Inet4Addr:
++		address = netip.AddrFrom4(dst.IP)
++		if len(r.Addrs) > unix.RTAX_NETMASK {
++			if m, ok := r.Addrs[unix.RTAX_NETMASK].(*route.Inet4Addr); ok {
++				mask = net.IPMask(m.IP[:])
++			}
++		}
++	case *route.Inet6Addr:
++		address = netip.AddrFrom16(dst.IP)
++		if len(r.Addrs) > unix.RTAX_NETMASK {
++			if m, ok := r.Addrs[unix.RTAX_NETMASK].(*route.Inet6Addr); ok {
++				mask = net.IPMask(m.IP[:])
++			}
++		}
++	default:
++		return netip.Prefix{}, false
++	}
++	if r.Flags&unix.RTF_HOST != 0 {
++		return netip.PrefixFrom(address, address.BitLen()), true
++	}
++	ones, bits := mask.Size()
++	if bits != address.BitLen() {
++		return netip.Prefix{}, false
++	}
++	return netip.PrefixFrom(address, ones).Masked(), true
++}
 diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/finalmask/xicmp/client.go
 --- a/transport/internet/finalmask/xicmp/client.go
 +++ b/transport/internet/finalmask/xicmp/client.go
@@ -641,20 +810,21 @@ diff --git a/transport/internet/finalmask/xicmp/client_control_test.go b/transpo
 new file mode 100644
 --- /dev/null
 +++ b/transport/internet/finalmask/xicmp/client_control_test.go
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,177 @@
 +//go:build darwin || linux
 +
 +package xicmp
 +
 +import (
 +	"errors"
-+	"golang.org/x/net/icmp"
 +	"os"
 +	"syscall"
 +	"testing"
 +
 +	"github.com/xtls/xray-core/common/net"
 +	"github.com/xtls/xray-core/transport/internet"
++
++	"golang.org/x/net/icmp"
 +)
 +
 +func withControllers(t *testing.T, controllers ...func(string, string, syscall.RawConn) error) {

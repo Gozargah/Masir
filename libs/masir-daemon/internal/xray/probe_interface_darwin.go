@@ -1,5 +1,3 @@
-//go:build xray_patched
-
 package xray
 
 import (
@@ -9,12 +7,17 @@ import (
 	"github.com/xtls/xray-core/transport/internet"
 )
 
-// Probe helpers have no TUN inbound, so they do not install Xray's interface
-// controller. The host may still route through the daemon's TUN. Select the
-// physical default route for each new socket, including XICMP's ICMP sockets.
+// probeSocketBinder is supplied by the patched dependency. Detecting this API
+// keeps stock builds working without coupling runtime binding to Go build tags.
+type probeSocketBinder interface {
+	BindSocket(string, string, syscall.RawConn) error
+}
+
+// Helpers have no TUN inbound and therefore install their own binding controller.
 func configureProbeInterface() error {
-	updater := new(tun.InterfaceUpdater)
-	return internet.RegisterDialerController(func(network, address string, c syscall.RawConn) error {
-		return updater.BindSocket(network, address, c)
-	})
+	binder, ok := any(new(tun.InterfaceUpdater)).(probeSocketBinder)
+	if !ok {
+		return nil
+	} // stock Xray; patched builds are checked by the tests
+	return internet.RegisterDialerController(binder.BindSocket)
 }
