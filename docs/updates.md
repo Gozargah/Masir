@@ -195,19 +195,24 @@ can't be asked.
    (`~/.cache/<App>/updates/<version>`). It tries directly first. It then tries Masir's
    local proxy, but only when the proxy is already running: the update never starts it.
    A paused download resumes, and downloads of other versions are deleted. The CLI
-   verifies the signed list and the package before it reports success.
+   verifies the signed list and the package before it reports success, and refuses a
+   signed package of another version or format than the one asked for.
 2. **Install, as root.** The app checks that the bundled CLI and every directory above
    it are owned by root and not writable by anyone else. It then runs that exact file
    through `pkexec masir desktop install-package`. No custom polkit policy is involved,
    so the person types their password every time. The root command trusts nothing the
    person can still write, and works in this order:
+   - take `/var/lib/masir-desktop.update.lock` (`flock`), so a second install fails
+     as a busy installer instead of deleting the first one's staging;
    - copy the three files, as regular files opened with `O_NOFOLLOW` and capped in
      size, into a fresh 0700 directory under `/var/lib/masir-desktop.update-*`
      (left-over ones from a killed run are removed first);
    - verify that copy against the signed list, with the minisign keys built into the
      CLI. The version comes from the signed line, never from the file name;
    - read the package's own metadata (`dpkg-deb`/`rpm`): it must be `masir-desktop`
-     at the signed version, and newer than the installed package;
+     at the signed version, and newer than the installed package. A package dpkg
+     holds unpacked or half-configured doesn't count as installed, so apt can finish
+     it;
    - install the copy with `apt-get install -y` (dpkg lock timeout 0, so a busy
      installer fails at once) or `dnf install -y`;
    - with a service installed and older than the package, run the *new* bundle's
@@ -222,7 +227,7 @@ Exit codes the app reads from `masir desktop …` (`apps/masir/exit_code.go`):
 | Code | Meaning |
 |---|---|
 | 10 | the package isn't the signed release |
-| 11 | another installer holds the package manager's lock |
+| 11 | another installer holds the package manager's lock, or another Masir update is installing |
 | 12 | the package manager refused the package |
 | 13 | the app is installed, the service didn't take the new version |
 | 14 | the package isn't newer than what is installed |
@@ -234,7 +239,7 @@ What the control shows:
 |---|---|---|
 | password dialog cancelled | **New Update** again | — |
 | account not allowed to elevate | Update failed | Your account isn't allowed to install software. |
-| no polkit agent | Update failed | Masir can't ask for your password here. Run: sudo apt install <package> |
+| no polkit agent (or its text fallback can't start) | Update failed | Masir can't ask for your password here. Run: sudo apt install <package> |
 | 10 | Update failed (the download is deleted) | The download didn't match the signed release; nothing was installed. |
 | 11 | Update failed | Another installer is running. Try again in a minute. |
 | 14 | Update failed | This version is already installed. Restart Masir. |
