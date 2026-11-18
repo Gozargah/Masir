@@ -140,13 +140,15 @@ func pkexecAnnounced(authorized func(), argv ...string) ([]byte, error) {
 }
 
 // classifyPkexec reads pkexec's exit: 126 is a dismissed dialog, 127 a refusal or, by
-// its message, no authentication agent; anything else is the helper's own status.
+// its message, no authentication agent ("No authentication agent found", or "Error
+// creating textual authentication agent" when its own fallback has no terminal, as
+// under Setsid); anything else is the helper's own status.
 func classifyPkexec(exit int, output string) *elevationError {
 	e := &elevationError{kind: elevationFailed, code: exit, msg: "root permission wasn't granted: " + output}
 	switch {
 	case exit == 126:
 		e.kind, e.msg = elevationCancelled, "permission wasn't granted"
-	case exit == 127 && strings.Contains(output, "No authentication agent"):
+	case exit == 127 && strings.Contains(output, "authentication agent"):
 		e.kind = elevationUnavailable
 	case exit == 127:
 		e.kind = elevationDenied
