@@ -1,6 +1,7 @@
 package xray
 
 import (
+	"net"
 	"syscall"
 
 	"github.com/xtls/xray-core/proxy/tun"
@@ -11,13 +12,22 @@ import (
 // keeps stock builds working without coupling runtime binding to Go build tags.
 type probeSocketBinder interface {
 	BindSocket(string, string, syscall.RawConn) error
+	SetExcludedTunIndex(int)
 }
 
 // Helpers have no TUN inbound and therefore install their own binding controller.
-func configureProbeInterface() error {
+func configureProbeInterface(tunName string) error {
+	if tunName == "" {
+		return nil
+	}
 	binder, ok := any(new(tun.InterfaceUpdater)).(probeSocketBinder)
 	if !ok {
-		return nil
-	} // stock Xray; patched builds are checked by the tests
+		return nil // stock Xray
+	}
+	iface, err := net.InterfaceByName(tunName)
+	if err != nil {
+		return err
+	}
+	binder.SetExcludedTunIndex(iface.Index)
 	return internet.RegisterDialerController(binder.BindSocket)
 }

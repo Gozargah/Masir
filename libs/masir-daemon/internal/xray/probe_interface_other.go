@@ -2,4 +2,4 @@
 
 package xray
 
-func configureProbeInterface() error { return nil }
+func configureProbeInterface(string) error { return nil }
