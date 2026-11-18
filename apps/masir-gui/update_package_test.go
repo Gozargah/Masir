@@ -258,6 +258,20 @@ func TestADaemonJobDoesNotMoveThePackageFlow(t *testing.T) {
 	}
 }
 
+// The daemon's update watch ending (a restart, a closed stream) while the package is
+// verified or the password is asked doesn't fail the package update.
+func TestADaemonWatchEndingDoesNotFailThePackageFlow(t *testing.T) {
+	for _, phase := range []updatePhase{updateVerifying, updateAuthorizing} {
+		a, _, _ := packageApp(t, blockPackageDeb)
+		a.updates.state.pkgSync = true
+		a.updates.state.phase = phase
+		a.daemonWatchEnded()
+		if a.updates.state.phase != phase || a.updates.state.err != "" {
+			t.Fatalf("phase %v: became %v %q", phase, a.updates.state.phase, a.updates.state.err)
+		}
+	}
+}
+
 func TestPackageUpdateCancelledDialogReturnsQuietly(t *testing.T) {
 	a, _, p := packageApp(t, blockPackageDeb)
 	p.installErr = &elevationError{kind: elevationCancelled, msg: "permission wasn't granted"}
