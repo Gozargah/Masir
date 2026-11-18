@@ -61,7 +61,7 @@ diff --git a/proxy/tun/bind_socket_darwin_test.go b/proxy/tun/bind_socket_darwin
 new file mode 100644
 --- /dev/null
 +++ b/proxy/tun/bind_socket_darwin_test.go
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,155 @@
 +//go:build darwin
 +
 +package tun
@@ -202,6 +202,19 @@ new file mode 100644
 +	}
 +	if _, err := validateDarwinRouteInterface(local, false); err == nil {
 +		t.Fatal("loopback must not become a default egress")
++	}
++}
++
++func TestScopedRejectDoesNotBlockUnscopedPeer(t *testing.T) {
++	peer := netip.MustParseAddr("2001:db8::1")
++	reject := connectedTestRoute("2001:db8::1/128", 12).(*route.RouteMessage)
++	reject.Flags |= unix.RTF_IFSCOPE | unix.RTF_REJECT
++	routes := []route.Message{defaultTestRoute(unix.AF_INET6, 11), reject}
++	if index, err := selectDarwinPeerRoute(routes, nil, unix.AF_INET6, peer); index != 11 || err != nil {
++		t.Fatalf("unscoped route: %d %v", index, err)
++	}
++	if _, err := selectDarwinPeerRoute(routes, map[int]bool{11: true}, unix.AF_INET6, peer.WithZone("en1")); err == nil {
++		t.Fatal("scoped reject route was ignored")
 +	}
 +}
 diff --git a/proxy/tun/bind_socket_other.go b/proxy/tun/bind_socket_other.go
@@ -427,7 +440,7 @@ diff --git a/proxy/tun/tun_darwin.go b/proxy/tun/tun_darwin.go
  	}
  	return iface, nil
  }
-@@ -792,3 +841,65 @@
+@@ -792,3 +841,66 @@
  	copy(mask[:], net.CIDRMask(bits, 128))
  	return mask
  }
@@ -435,11 +448,12 @@ diff --git a/proxy/tun/tun_darwin.go b/proxy/tun/tun_darwin.go
 +// Pick the longest matching non-TUN route. Connected routes are valid egress
 +// routes even when that address family has no default gateway.
 +func selectDarwinPeerRoute(messages []route.Message, excluded map[int]bool, family int, peer netip.Addr) (int, error) {
++	scoped := peer.Zone() != ""
 +	peer = peer.Unmap().WithZone("")
 +	best, index, blocked := -1, 0, false
 +	for _, message := range messages {
 +		r, ok := message.(*route.RouteMessage)
-+		if !ok || r.Index <= 0 || excluded[r.Index] || r.Flags&unix.RTF_UP == 0 {
++		if !ok || r.Index <= 0 || excluded[r.Index] || r.Flags&unix.RTF_UP == 0 || (!scoped && r.Flags&unix.RTF_IFSCOPE != 0) {
 +			continue
 +		}
 +		prefix, ok := darwinRoutePrefix(r)
@@ -519,7 +533,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  	"github.com/xtls/xray-core/transport/internet/finalmask"
  	"golang.org/x/net/icmp"
  	"golang.org/x/net/ipv4"
-@@ -35,68 +38,119 @@
+@@ -35,68 +38,183 @@
  	err  error
  }
 
@@ -528,6 +542,8 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	id        int
 +	refreshAt time.Time
 +	done      chan struct{}
++	writes    int
++	drain     *time.Timer
 +}
 +
  type xicmpConnClient struct {
@@ -551,6 +567,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	nextID, seq                 int
 +	initialID                   int
 +	peers                       map[netip.Addr]*icmpPeerSocket
++	draining                    map[*icmpPeerSocket]bool
 +	readDeadline, writeDeadline time.Time
 +	deadlineChanged             chan struct{}
 +	readCh                      chan packet
@@ -565,20 +582,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 -	if c.DGRAM {
 -		icmp4, err4 = icmp.ListenPacket("udp4", "0.0.0.0")
 -		icmp6, err6 = icmp.ListenPacket("udp6", "::")
--	} else {
--		icmp4, err4 = icmp.ListenPacket("ip4:icmp", "0.0.0.0")
--		icmp6, err6 = icmp.ListenPacket("ip6:ipv6-icmp", "::")
--	}
--	if err4 != nil || err6 != nil {
--		return nil, errors.Combine(err4, err6)
--	}
--
- 	ips := make([]netip.Addr, 0, len(c.IPs))
--	for _, ip := range c.IPs {
--		ips = append(ips, netip.MustParseAddr(ip))
--	}
--
--	var ip net.IP
++	ips := make([]netip.Addr, 0, len(c.IPs))
 +	for _, raw := range c.IPs {
 +		peer, err := netip.ParseAddr(raw)
 +		if err != nil {
@@ -587,13 +591,27 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +		ips = append(ips, peer.Unmap())
 +	}
 +	var ip netip.Addr
- 	if len(ips) > 0 {
++	if len(ips) > 0 {
++		ip = ips[0]
+ 	} else {
+-		icmp4, err4 = icmp.ListenPacket("ip4:icmp", "0.0.0.0")
+-		icmp6, err6 = icmp.ListenPacket("ip6:ipv6-icmp", "::")
+-	}
+-	if err4 != nil || err6 != nil {
+-		return nil, errors.Combine(err4, err6)
+-	}
+-
+-	ips := make([]netip.Addr, 0, len(c.IPs))
+-	for _, ip := range c.IPs {
+-		ips = append(ips, netip.MustParseAddr(ip))
+-	}
+-
+-	var ip net.IP
+-	if len(ips) > 0 {
 -		ip = ips[mrand.Intn(len(ips))].AsSlice()
 -	} else {
 -		ip = dest.Address.IP()
 -	}
-+		ip = ips[0]
-+	} else {
 +		ip, _ = netip.AddrFromSlice(dest.Address.IP())
 +	}
 +	if !ip.IsValid() {
@@ -604,7 +622,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  	var clientID [8]byte
  	common.Must2(rand.Read(clientID[:]))
 -
--	conn := &xicmpConnClient{
+ 	conn := &xicmpConnClient{
 -		icmp4:    icmp4,
 -		icmp6:    icmp6,
 -		udp:      c.DGRAM,
@@ -621,26 +639,45 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 -	go conn.recv4()
 -	go conn.recv6()
 -
--	return conn, nil
-+	return &xicmpConnClient{udp: c.DGRAM, ips: ips, ip: ip, port: dest.Port.String(), clientID: clientID, initialID: mrand.Intn(65536), seq: 1, peers: make(map[netip.Addr]*icmpPeerSocket), deadlineChanged: make(chan struct{}), readCh: make(chan packet), closeCh: make(chan struct{})}, nil
++		udp: c.DGRAM, ips: ips, ip: ip, port: dest.Port.String(), clientID: clientID,
++		initialID: mrand.Intn(65536), seq: 1,
++		peers: make(map[netip.Addr]*icmpPeerSocket), draining: make(map[*icmpPeerSocket]bool),
++		deadlineChanged: make(chan struct{}), readCh: make(chan packet), closeCh: make(chan struct{}),
++	}
++	if len(ips) <= 1 {
++		if _, err := conn.socketForPeer(ip); err != nil {
++			return nil, err
++		}
++	}
+ 	return conn, nil
 +}
 +
 +// Refresh cached bindings periodically, including when a stale route silently
 +// drops packets. Immediate write failures retire the socket for the next send.
-+const peerSocketRefresh = 10 * time.Second
++const (
++	peerSocketRefresh = 10 * time.Second
++	peerSocketDrain   = 2 * time.Second
++)
 +
 +func (c *xicmpConnClient) socketForPeer(peer netip.Addr) (*icmpPeerSocket, error) {
-+	peer = peer.Unmap()
 +	c.mu.Lock()
 +	defer c.mu.Unlock()
++	return c.socketForPeerLocked(peer)
++}
++
++func (c *xicmpConnClient) socketForPeerLocked(peer netip.Addr) (*icmpPeerSocket, error) {
++	peer = peer.Unmap()
 +	if c.closed() {
 +		return nil, io.ErrClosedPipe
 +	}
 +	previous := c.peers[peer]
-+	if previous != nil && time.Now().Before(previous.refreshAt) {
++	if previous != nil && !previous.closed() && !c.draining[previous] && time.Now().Before(previous.refreshAt) {
 +		return previous, nil
 +	}
-+	if !c.udp && previous == nil && c.nextID >= 65536 {
++	if !c.udp && c.nextID >= 65536 && (previous == nil || !previous.closed()) {
++		if previous != nil && !previous.closed() && !c.draining[previous] {
++			return previous, nil
++		}
 +		return nil, fmt.Errorf("raw ICMP peer ID space exhausted")
 +	}
 +	network, address := "ip6:ipv6-icmp", "::"
@@ -654,21 +691,31 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +		}
 +	}
 +	conn, err := listenControlledICMP(network, address, net.JoinHostPort(peer.String(), c.port))
-+	if err != nil {
-+		return nil, err
++	if err == nil {
++		err = conn.SetWriteDeadline(c.writeDeadline)
++		if err != nil {
++			conn.Close()
++		}
 +	}
-+	if err = conn.SetWriteDeadline(c.writeDeadline); err != nil {
-+		conn.Close()
++	if err != nil {
++		if previous != nil && !previous.closed() && !c.draining[previous] {
++			previous.refreshAt = time.Now().Add(peerSocketRefresh)
++			return previous, nil
++		}
 +		return nil, err
 +	}
 +	id := (c.initialID + c.nextID) % 65536
-+	if previous != nil {
++	if previous != nil && (c.udp || previous.closed()) {
 +		id = previous.id
-+		previous.close()
 +	} else {
++		// Raw sockets can observe each other's replies while draining. Do not
++		// assign the same ID to two live sockets on this connection.
 +		c.nextID++
 +	}
 +	socket := &icmpPeerSocket{conn: conn, id: id, refreshAt: time.Now().Add(peerSocketRefresh), done: make(chan struct{})}
++	if previous != nil && !previous.closed() && !c.draining[previous] {
++		c.retire(previous)
++	}
 +
 +	c.peers[peer] = socket
 +	c.wg.Add(1)
@@ -680,6 +727,33 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	return socket, nil
 +}
 +
++// The client lock protects borrowing, retirement and timer state.
++func (c *xicmpConnClient) retire(socket *icmpPeerSocket) {
++	c.draining[socket] = true
++	c.drainWhenIdle(socket)
++}
++
++func (c *xicmpConnClient) drainWhenIdle(socket *icmpPeerSocket) {
++	if socket.writes != 0 || socket.drain != nil {
++		return
++	}
++	socket.drain = time.AfterFunc(peerSocketDrain, func() {
++		c.mu.Lock()
++		defer c.mu.Unlock()
++		socket.close()
++		delete(c.draining, socket)
++	})
++}
++
++func (s *icmpPeerSocket) closed() bool {
++	select {
++	case <-s.done:
++		return true
++	default:
++		return false
++	}
++}
++
 +// Caller holds the client lock when retiring a socket.
 +func (s *icmpPeerSocket) close() {
 +	select {
@@ -687,12 +761,15 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +		return
 +	default:
 +		close(s.done)
++		if s.drain != nil {
++			s.drain.Stop()
++		}
 +		s.conn.Close()
 +	}
  }
 
  func (c *xicmpConnClient) closed() bool {
-@@ -108,26 +162,17 @@
+@@ -108,26 +226,17 @@
  	}
  }
 
@@ -724,7 +801,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  			}
  			errors.LogErrorInner(context.Background(), err, "recv err 4")
  			return
-@@ -149,7 +194,7 @@
+@@ -149,7 +258,7 @@
 
  		// errors.LogDebug(context.Background(), "id ", echo.ID, " seq ", echo.Seq, " addr ", addr)
 
@@ -733,7 +810,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  			continue
  		}
 
-@@ -161,7 +206,8 @@
+@@ -161,7 +270,8 @@
  		copy(p, echo.Data)
 
  		if !c.udp {
@@ -743,7 +820,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  		}
 
  		select {
-@@ -169,33 +215,24 @@
+@@ -169,33 +279,24 @@
  			p:    p,
  			addr: addr,
  		}:
@@ -783,7 +860,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  			}
  			errors.LogErrorInner(context.Background(), err, "recv err 6")
  			return
-@@ -217,7 +254,7 @@
+@@ -217,7 +318,7 @@
 
  		// errors.LogDebug(context.Background(), "id ", echo.ID, " seq ", echo.Seq, " addr ", addr)
 
@@ -792,7 +869,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  			continue
  		}
 
-@@ -229,7 +266,8 @@
+@@ -229,7 +330,8 @@
  		copy(p, echo.Data)
 
  		if !c.udp {
@@ -802,7 +879,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  		}
 
  		select {
-@@ -237,23 +275,46 @@
+@@ -237,23 +339,58 @@
  			p:    p,
  			addr: addr,
  		}:
@@ -822,17 +899,24 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +func (c *xicmpConnClient) ReadFrom(p []byte) (int, net.Addr, error) {
 +	for {
 +		c.mu.Lock()
++		if c.closed() {
++			c.mu.Unlock()
++			return 0, nil, io.EOF
++		}
 +		deadline, changed := c.readDeadline, c.deadlineChanged
-+		c.mu.Unlock()
 +		var timer *time.Timer
 +		var timeout <-chan time.Time
 +		if !deadline.IsZero() {
-+			if !time.Now().Before(deadline) {
++			remaining := time.Until(deadline)
++			if remaining <= 0 {
++				c.mu.Unlock()
 +				return 0, nil, os.ErrDeadlineExceeded
 +			}
-+			timer = time.NewTimer(time.Until(deadline))
++			timer = time.NewTimer(remaining)
 +			timeout = timer.C
 +		}
++		c.mu.Unlock()
++
 +		select {
 +		case packet, ok := <-c.readCh:
 +			if timer != nil {
@@ -852,6 +936,11 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +			if timer != nil {
 +				timer.Stop()
 +			}
++		case <-c.closeCh:
++			if timer != nil {
++				timer.Stop()
++			}
++			return 0, nil, io.EOF
 +		case <-timeout:
 +			// Re-read the current deadline in case it changed as the timer fired.
 +		}
@@ -859,7 +948,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  }
 
  func (c *xicmpConnClient) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-@@ -268,15 +329,14 @@
+@@ -268,15 +405,14 @@
  	c.seq %= 65536
  	c.mu.Unlock()
 
@@ -873,48 +962,55 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	}
  	if c.udp {
 -		addr = &net.UDPAddr{IP: ip}
--	} else {
--		addr = &net.IPAddr{IP: ip}
 +		addr = &net.UDPAddr{IP: peer.AsSlice(), Zone: peer.Zone()}
-+	} else {
+ 	} else {
+-		addr = &net.IPAddr{IP: ip}
 +		addr = &net.IPAddr{IP: peer.AsSlice(), Zone: peer.Zone()}
  	}
 
  	b := pool.Get().([]byte)[:finalmask.UDPSize]
-@@ -285,15 +345,24 @@
+@@ -285,14 +421,33 @@
  	copy(b[8:], c.clientID[:])
  	copy(b[16:], p)
 
 -	if ip.To4() != nil {
 -		b = marshal(b, ipv4.ICMPTypeEcho, c.id, seq, 8+len(p))
 -		_, err = c.icmp4.WriteTo(b, addr)
--	} else {
--		b = marshal(b, ipv6.ICMPTypeEchoRequest, c.id, seq, 8+len(p))
--		_, err = c.icmp6.WriteTo(b, addr)
--	}
--
-+	socket, err := c.socketForPeer(peer)
- 	if err != nil {
++	c.mu.Lock()
++	socket, err := c.socketForPeerLocked(peer)
++	if err == nil {
++		socket.writes++
++	}
++	c.mu.Unlock()
++	if err != nil {
 +		return 0, err
 +	}
 +	if peer.Is4() {
 +		b = marshal(b, ipv4.ICMPTypeEcho, socket.id, seq, 8+len(p))
-+	} else {
+ 	} else {
+-		b = marshal(b, ipv6.ICMPTypeEchoRequest, c.id, seq, 8+len(p))
+-		_, err = c.icmp6.WriteTo(b, addr)
+-	}
+-
 +		b = marshal(b, ipv6.ICMPTypeEchoRequest, socket.id, seq, 8+len(p))
 +	}
 +	_, err = socket.conn.WriteTo(b, addr)
 +
-+	if err != nil {
-+		c.mu.Lock()
-+		if c.peers[peer] == socket {
-+			socket.refreshAt = time.Time{}
-+			socket.close()
-+		}
-+		c.mu.Unlock()
++	c.mu.Lock()
++	socket.writes--
++	if err != nil && !c.closed() && c.peers[peer] == socket {
++		socket.refreshAt = time.Time{}
++		// Retire from future writes immediately, but let borrowed writes and
++		// outstanding replies finish on this socket.
++		c.retire(socket)
++	} else if !c.closed() && c.draining[socket] {
++		c.drainWhenIdle(socket)
++	}
++	c.mu.Unlock()
+ 	if err != nil {
  		errors.LogErrorInner(context.Background(), err, "send err")
  		return 0, err
- 	}
-@@ -302,13 +371,15 @@
+@@ -302,13 +457,19 @@
 
  func (c *xicmpConnClient) Close() error {
  	c.mu.Lock()
@@ -929,11 +1025,15 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	for _, socket := range c.peers {
 +		socket.close()
 +	}
++	for socket := range c.draining {
++		socket.close()
++	}
++	clear(c.draining)
 +	c.mu.Unlock()
  	c.wg.Wait()
  	close(c.readCh)
  	return nil
-@@ -319,20 +390,36 @@
+@@ -319,20 +480,42 @@
  }
 
  func (c *xicmpConnClient) SetDeadline(t time.Time) error {
@@ -944,6 +1044,9 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	c.setReadDeadline(t)
 +	c.writeDeadline = t
 +	for _, socket := range c.peers {
++		socket.conn.SetWriteDeadline(t)
++	}
++	for socket := range c.draining {
 +		socket.conn.SetWriteDeadline(t)
 +	}
  	return nil
@@ -973,10 +1076,13 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	for _, socket := range c.peers {
 +		socket.conn.SetWriteDeadline(t)
 +	}
++	for socket := range c.draining {
++		socket.conn.SetWriteDeadline(t)
++	}
  	return nil
  }
 
-@@ -360,3 +447,38 @@
+@@ -360,3 +543,38 @@
  	}
  	return b[:8+dataLen]
  }
@@ -1019,7 +1125,7 @@ diff --git a/transport/internet/finalmask/xicmp/client_control_test.go b/transpo
 new file mode 100644
 --- /dev/null
 +++ b/transport/internet/finalmask/xicmp/client_control_test.go
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,286 @@
 +//go:build darwin || linux
 +
 +package xicmp
@@ -1131,7 +1237,7 @@ new file mode 100644
 +		}
 +		return nil
 +	})
-+	p, err := NewConnClient(&Config{DGRAM: true}, &net.Destination{Address: net.LocalHostIP, Port: 1234, Network: net.Network_UDP})
++	p, err := NewConnClient(&Config{DGRAM: true, IPs: []string{"192.0.2.1", "198.51.100.2"}}, &net.Destination{Address: net.LocalHostIP, Port: 1234, Network: net.Network_UDP})
 +	if err != nil {
 +		t.Fatal(err)
 +	}
@@ -1161,7 +1267,7 @@ new file mode 100644
 +}
 +
 +func TestReadDeadlineBeforeFirstWrite(t *testing.T) {
-+	p, err := NewConnClient(&Config{DGRAM: true}, &net.Destination{Address: net.LocalHostIP})
++	p, err := NewConnClient(&Config{DGRAM: true, IPs: []string{"127.0.0.1", "::1"}}, &net.Destination{Address: net.LocalHostIP})
 +	if err != nil {
 +		t.Fatal(err)
 +	}
@@ -1177,7 +1283,6 @@ new file mode 100644
 +	case <-time.After(time.Second):
 +		t.Fatal("read blocked without a socket")
 +	}
-+	p.SetReadDeadline(time.Time{})
 +	p.Close()
 +	if _, _, err := p.ReadFrom(nil); !errors.Is(err, io.EOF) {
 +		t.Fatalf("closed read: %v", err)
@@ -1239,5 +1344,71 @@ new file mode 100644
 +	}
 +	if fresh == first || fresh.id != first.id || calls != 2 {
 +		t.Fatal("failed write did not refresh its peer binding")
++	}
++}
++
++func TestSinglePeerSetupErrorAndRefreshFallback(t *testing.T) {
++	requireICMPSockets(t)
++	rejected := errors.New("socket unavailable")
++	fail := true
++	withControllers(t, func(string, string, syscall.RawConn) error {
++		if fail {
++			return rejected
++		}
++		return nil
++	})
++	cfg := &Config{DGRAM: true}
++	dest := &net.Destination{Address: net.LocalHostIP}
++	if conn, err := NewConnClient(cfg, dest); conn != nil || !errors.Is(err, rejected) {
++		t.Fatalf("dial error: %v", err)
++	}
++	fail = false
++	conn, err := NewConnClient(cfg, dest)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer conn.Close()
++	c := conn.(*xicmpConnClient)
++	old := c.peers[c.ip]
++	old.refreshAt = time.Time{}
++	fail = true
++	got, err := c.socketForPeer(c.ip)
++	if err != nil || got != old {
++		t.Fatalf("working socket lost on refresh: %v", err)
++	}
++	c.mu.Lock()
++	c.retire(old)
++	c.mu.Unlock()
++	if got, err := c.socketForPeer(c.ip); got != nil || !errors.Is(err, rejected) {
++		t.Fatalf("retired socket reused: %v", err)
++	}
++}
++
++func TestRefreshDrainsAfterBorrowedWrites(t *testing.T) {
++	requireICMPSockets(t)
++	withControllers(t)
++	p, err := NewConnClient(&Config{DGRAM: true}, &net.Destination{Address: net.LocalHostIP})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer p.Close()
++	c := p.(*xicmpConnClient)
++	c.mu.Lock()
++	old := c.peers[c.ip]
++	old.refreshAt = time.Time{}
++	old.writes++
++	fresh, err := c.socketForPeerLocked(c.ip)
++	alive := !old.closed() && c.draining[old] && old.drain == nil
++	old.writes--
++	c.drainWhenIdle(old)
++	started := old.drain != nil && !old.closed()
++	c.mu.Unlock()
++	if err != nil || fresh == old || !alive || !started {
++		t.Fatalf("refresh interrupted the previous socket: %v", err)
++	}
++	select {
++	case <-old.done:
++	case <-time.After(peerSocketDrain + time.Second):
++		t.Fatal("old socket did not finish draining")
 +	}
 +}

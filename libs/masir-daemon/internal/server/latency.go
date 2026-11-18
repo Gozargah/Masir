@@ -29,7 +29,7 @@ func (s *Server) TestLatency(ctx context.Context, req *pb.TestLatencyRequest) (*
 	}
 
 	started := time.Now()
-	d, err := xray.MeasureDelay(ctx, []byte(req.XrayConfigJson), xray.LatencyOptions{URL: req.ProbeUrl, TunName: s.probeTunName()})
+	d, err := xray.MeasureDelay(ctx, []byte(req.XrayConfigJson), xray.LatencyOptions{URL: req.ProbeUrl, CurrentTunName: s.probeTunName})
 
 	if ctx.Err() != nil { // cancelled or timed out: this is an RPC-level outcome
 		return nil, status.FromContextError(ctx.Err()).Err()

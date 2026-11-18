@@ -287,7 +287,7 @@ func TestTestLatency(t *testing.T) {
 	}
 
 	got := map[string]Latency{}
-	if err := m.TestLatency(ctx, s.ID, nil, target.URL, "", func(id string, l Latency) { got[id] = l }); err != nil {
+	if err := m.TestLatency(ctx, s.ID, nil, target.URL, nil, func(id string, l Latency) { got[id] = l }); err != nil {
 		t.Fatal(err)
 	}
 	cfg := byName(t, s.Configs)
@@ -305,7 +305,7 @@ func TestTestLatency(t *testing.T) {
 		}
 	}
 
-	if err := m.TestLatency(ctx, s.ID, []string{"nope"}, target.URL, "", func(string, Latency) {}); !errors.Is(err, ErrNotFound) {
+	if err := m.TestLatency(ctx, s.ID, []string{"nope"}, target.URL, nil, func(string, Latency) {}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown config id: %v", err)
 	}
 }
