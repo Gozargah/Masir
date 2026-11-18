@@ -81,24 +81,30 @@ func (a *app) startBundledDaemonUpdate() {
 	a.updates.state.err = ""
 	a.updates.state.tunWasOn = a.status.GetTunRunning()
 	version := a.version
-	unitOnly := a.updates.state.unitPending
-	if unitOnly && newerRelease(a.status.GetVersion(), version) {
-		version = a.status.GetVersion()
+	running := a.status.GetVersion()
+	unitPending := a.updates.state.unitPending
+	importNeeded := !unitPending || newerRelease(version, running)
+	if !importNeeded {
+		version = running
 	}
 	a.async(func() {
 		var err error
-		if unitOnly {
-			err = retryServiceUnit()
-		} else if dir, checkErr := installedComponents(); checkErr != nil {
-			err = checkErr
-		} else {
-			err = installBundledDaemon(dir, func() {
-				a.post(func() {
-					if a.updates.state.phase == updateAuthorizing {
-						a.updates.state.phase = updateInstalling
-					}
+		if importNeeded {
+			var dir string
+			dir, err = installedComponents()
+			if err == nil {
+				err = installBundledDaemon(dir, func() {
+					a.post(func() {
+						if a.updates.state.phase == updateAuthorizing {
+							a.updates.state.phase = updateInstalling
+						}
+					})
 				})
-			})
+			}
+		}
+		if err == nil && unitPending {
+			a.post(func() { a.updates.state.phase = updateAuthorizing })
+			err = retryServiceUnit()
 		}
 		a.post(func() {
 			if kind, _, ok := elevationKindOf(err); ok && kind == elevationCancelled {
@@ -114,7 +120,7 @@ func (a *app) startBundledDaemonUpdate() {
 				a.notifyError("Couldn't update the daemon: " + a.updates.state.err)
 				return
 			}
-			if unitOnly {
+			if unitPending {
 				a.updates.state.unitPending = false
 				a.saveGUISettings()
 			}

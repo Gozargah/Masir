@@ -666,3 +666,36 @@ func TestPackageInstallUsesTheCurrentTunnelState(t *testing.T) {
 		t.Fatal("installation retained the tunnel state from download start")
 	}
 }
+
+func TestPackageUnitRetryImportsAnOlderDaemonFirst(t *testing.T) {
+	a, f, _ := packageApp(t, blockPackageDeb)
+	a.version = "0.1.8"
+	f.status.ServiceInstalled = true
+	f.status.Privileged = true
+	a.updates.state.unitPending = true
+	a.applyStatus(f.status)
+
+	oldComponents, oldImport, oldRetry := installedComponents, installBundledDaemon, retryServiceUnit
+	t.Cleanup(func() {
+		installedComponents, installBundledDaemon, retryServiceUnit = oldComponents, oldImport, oldRetry
+	})
+	installedComponents = func() (string, error) { return "bundled components", nil }
+	var steps []string
+	installBundledDaemon = func(_ string, authorized func()) error {
+		steps = append(steps, "import")
+		authorized()
+		next := proto.Clone(f.status).(*pb.Status)
+		next.Version = a.version
+		f.status = next
+		return nil
+	}
+	retryServiceUnit = func() error {
+		steps = append(steps, "unit")
+		return nil
+	}
+
+	a.startUpdate()
+	if !slices.Equal(steps, []string{"import", "unit"}) || a.updates.state.unitPending || a.updates.state.phase != updateIdle {
+		t.Fatalf("steps %v, pending %v, phase %v", steps, a.updates.state.unitPending, a.updates.state.phase)
+	}
+}
