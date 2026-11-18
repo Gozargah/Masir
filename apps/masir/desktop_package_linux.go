@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -19,8 +20,11 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/semver"
 
+	"github.com/Gozargah/Masir/libs/masir-core/client"
+	"github.com/Gozargah/Masir/libs/masir-core/paths"
 	"github.com/Gozargah/Masir/libs/masir-core/service"
 	masird "github.com/Gozargah/Masir/libs/masir-daemon"
+	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
 )
 
 var fetchPackage = masird.FetchDesktopPackage
@@ -133,6 +137,8 @@ var (
 	runPackageManager       = execPackageManager
 	serviceInstalled        = service.Installed
 	serviceVersion          = installedServiceVersion
+	runningServiceVersion   = liveServiceVersion
+	restartServiceNow       = restartInstalledService
 	runBundled              = execBundled
 )
 
@@ -240,8 +246,17 @@ func installDesktopPackage(pkg, sums, sig, user string, out io.Writer) (err erro
 	if !serviceInstalled() {
 		return nil
 	}
-	// Already current (the drift case): importing would only restart it for nothing.
+	// Already current on disk (the drift case): importing would only restart it for
+	// nothing. But an earlier update can replace the binary without restarting the
+	// process, and the app waits for the running daemon: restart one that answers with
+	// an older version. One that doesn't answer is stopped, which the person may have
+	// chosen, or still starting from the current binary: leave it alone.
 	if current, err := serviceVersion(); err == nil && !newerVersion(version, current) {
+		if running, err := runningServiceVersion(user); err == nil && newerVersion(version, running) {
+			if err := restartServiceNow(); err != nil {
+				return coded(exitServicePending, err)
+			}
+		}
 		return nil
 	}
 	if err := runBundled("daemon", "import-desktop", "--from", filepath.Dir(packagedBinary), "--user", user); err != nil {
@@ -400,6 +415,36 @@ func packageManagerBusy(format, output string) bool {
 }
 
 // installedServiceVersion asks the service's binary, which prints "masir version <v>".
+// liveServiceVersion asks the running service that serves user for its version, over
+// that user's privileged socket.
+func liveServiceVersion(user string) (string, error) {
+	uid, err := strconv.Atoi(user)
+	if err != nil {
+		return "", err
+	}
+	conn, c, err := client.DialSocket(paths.PrivilegedSocketPath(uid))
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := c.GetStatus(ctx, &pb.GetStatusRequest{})
+	if err != nil {
+		return "", err
+	}
+	return res.GetStatus().GetVersion(), nil
+}
+
+// restartInstalledService restarts the running service through systemd, which runs the
+// binary on disk. try-restart never starts a unit that isn't running.
+func restartInstalledService() error {
+	if out, err := rootCommand("/usr/bin/systemctl", "try-restart", "masird.service").CombinedOutput(); err != nil {
+		return fmt.Errorf("restart the service: %w: %s", err, lastLine(string(out)))
+	}
+	return nil
+}
+
 func installedServiceVersion() (string, error) {
 	b, err := rootCommand(service.BinaryPath(), "--version").Output()
 	if err != nil {

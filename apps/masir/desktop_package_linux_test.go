@@ -98,6 +98,7 @@ type installFake struct {
 	pmOutput  string
 	pmErr     error
 	bundleErr error
+	restarts  int
 }
 
 func newInstallFake(t *testing.T) *installFake {
@@ -108,7 +109,7 @@ func newInstallFake(t *testing.T) *installFake {
 			t.Fatal(err)
 		}
 	}
-	saved := []any{packageStagingParent, packageStagingOwned, verifyPackage, installedPackageVersion, packageMetadata, runPackageManager, serviceInstalled, serviceVersion, runBundled, elevated}
+	saved := []any{packageStagingParent, packageStagingOwned, verifyPackage, installedPackageVersion, packageMetadata, runPackageManager, serviceInstalled, serviceVersion, runBundled, elevated, runningServiceVersion, restartServiceNow}
 	t.Cleanup(func() {
 		packageStagingParent = saved[0].(string)
 		packageStagingOwned = saved[1].(func(string) error)
@@ -120,6 +121,8 @@ func newInstallFake(t *testing.T) *installFake {
 		serviceVersion = saved[7].(func() (string, error))
 		runBundled = saved[8].(func(...string) error)
 		elevated = saved[9].(func() bool)
+		runningServiceVersion = saved[10].(func(string) (string, error))
+		restartServiceNow = saved[11].(func() error)
 	})
 	packageStagingParent = f.staging
 	packageStagingOwned = func(string) error { return nil }
@@ -135,6 +138,8 @@ func newInstallFake(t *testing.T) *installFake {
 	}
 	serviceInstalled = func() bool { return true }
 	serviceVersion = func() (string, error) { return "0.1.6", nil }
+	runningServiceVersion = func(string) (string, error) { return "0.1.7", nil }
+	restartServiceNow = func() error { f.restarts++; return nil }
 	runBundled = func(args ...string) error {
 		f.bundled = append(f.bundled, args)
 		return f.bundleErr
@@ -416,6 +421,40 @@ func TestInstallPackageSkipsTheServiceWhenItIsCurrentOrAbsent(t *testing.T) {
 	serviceInstalled = func() bool { return false }
 	if err := f.install(io.Discard); err != nil || len(f.bundled) != 0 {
 		t.Fatalf("no service: %v, bundled runs %v", err, f.bundled)
+	}
+}
+
+// The binary on disk is current but the running service isn't (an earlier update
+// replaced it without a restart): one supervised restart, no import. A service that
+// doesn't answer is never started.
+func TestInstallPackageRestartsAStaleRunningService(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		running    string
+		runningErr error
+		restartErr error
+		restarts   int
+		code       int
+	}{
+		{name: "stale", running: "0.1.6", restarts: 1},
+		{name: "current", running: "0.1.7"},
+		{name: "newer", running: "0.1.8"},
+		// Stopped (perhaps on purpose) or still starting from the current binary.
+		{name: "not answering", runningErr: errors.New("no socket")},
+		{name: "restart fails", running: "0.1.6", restartErr: errors.New("failed"), restarts: 1, code: exitServicePending},
+	} {
+		f := newInstallFake(t)
+		serviceVersion = func() (string, error) { return "0.1.7", nil }
+		runningServiceVersion = func(user string) (string, error) {
+			if user != "1000" {
+				t.Errorf("%s: asked the service of %q", c.name, user)
+			}
+			return c.running, c.runningErr
+		}
+		restartServiceNow = func() error { f.restarts++; return c.restartErr }
+		if code := exitOf(f.install(io.Discard)); code != c.code || f.restarts != c.restarts || len(f.bundled) != 0 {
+			t.Errorf("%s: exit %d, restarts %d, bundled %v; want exit %d, restarts %d, no import", c.name, code, f.restarts, f.bundled, c.code, c.restarts)
+		}
 	}
 }
 
