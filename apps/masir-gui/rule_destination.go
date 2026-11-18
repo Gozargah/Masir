@@ -70,23 +70,18 @@ func (a *app) ruleDestinationAccordion(c *ui.Context, p palette) {
 
 func (a *app) ruleDestinationServers(c *ui.Context, p palette) {
 	query := strings.ToLower(strings.TrimSpace(a.ruleDestinationQuery))
-	var servers []server
-	for _, s := range a.subscriptions.servers {
-		hay := s.search
-		if hay == "" {
-			hay = serverSearchText(s.cfg.Name, s.subName, s.cfg)
-		}
-		if query == "" || strings.Contains(hay, query) {
-			servers = append(servers, s)
-		}
-	}
-	groups := orderedGroups(servers)
+	folds := &a.ruleServerFolds
+	folds.update(query)
+	groups := orderedGroups(a.serversMatching(query))
 	var items []serverListItem
 	height := float32(8)
 	for i := range groups {
 		g := &groups[i]
 		items = append(items, serverListItem{group: g})
-		height += 22
+		height += 30
+		if folds.collapsed(a, g.id) {
+			continue
+		}
 		for _, s := range g.servers {
 			items = append(items, serverListItem{srv: s})
 			height += 38
@@ -108,7 +103,8 @@ func (a *app) ruleDestinationServers(c *ui.Context, p palette) {
 	containListScroll(ui.List(c, &a.ruleDestinations, len(items), func(i int) {
 		it := items[i]
 		if it.group != nil {
-			ui.Row(c).Label("Target server group "+it.group.name).Height(22).Padding(0, 6).AlignItems(ui.Center).Background(p.listHeader).Children(func() { label(c, strings.ToUpper(ltr(it.group.name)), sizeMicro, 14, 600, p.muted).SingleLine() })
+			g := it.group
+			a.groupHeader(c, p, g.id, g.name, len(g.servers), folds.collapsed(a, g.id), "Target server group "+g.name, func() { folds.toggle(a, g.id) }, nil)
 			return
 		}
 		a.ruleDestinationServer(c, p, it.srv)
@@ -117,22 +113,7 @@ func (a *app) ruleDestinationServers(c *ui.Context, p palette) {
 
 func (a *app) ruleDestinationServer(c *ui.Context, p palette, s server) {
 	target := "config:" + s.key.sub + "/" + s.key.cfg
-	selected := a.rulePage.target == target
-	row := ui.ButtonBase(c.Key(s.key)).Label("Pin "+s.subName+" "+s.cfg.Name).Disabled(a.rulePage.busy).Padding(3, 4, 3, 6).MinHeight(34).Radius(6).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer).Border(1, ui.Transparent).Shrink(0)
-	if selected {
-		row.Background(p.pinnedSurface).Border(1, p.pinned)
-	} else if row.Hovered() {
-		row.Background(p.cardHover)
-	}
-	row.Children(func() {
-		serverIdentity(c, p, s)
-		if selected {
-			ui.Icon(c, iconCheck).FontSize(12).TextColor(p.pinned).Shrink(0)
-		} else if ms := a.latency[s.key]; ms > 0 {
-			label(c, formatMs(ms), sizeMicro, 14, 400, p.muted).Shrink(0)
-		}
-	})
-	if row.Clicked() {
+	if a.serverListRow(c, p, s, "Pin "+s.subName+" "+s.cfg.Name, a.rulePage.target == target, true, a.rulePage.busy) {
 		a.rulePage.target = target
 	}
 }

@@ -14,7 +14,10 @@ import (
 const maxServerListHeight float32 = 300
 
 func (a *app) serverPicker(c *ui.Context, p palette) {
-	servers := a.filteredServers()
+	query := strings.ToLower(strings.TrimSpace(a.query))
+	folds := &a.mainServerFolds
+	folds.update(query)
+	servers := a.serversMatching(query)
 	groups := orderedGroups(servers)
 
 	panelBar(c, p, func() { searchInput(c, "server-search", &a.query, "Search servers…", p) }, func() {
@@ -41,7 +44,7 @@ func (a *app) serverPicker(c *ui.Context, p palette) {
 	for i := range groups {
 		g := &groups[i]
 		items = append(items, serverListItem{group: g})
-		collapsed := a.isGroupCollapsed(g.id) && a.query == ""
+		collapsed := folds.collapsed(a, g.id)
 		for _, s := range g.servers {
 			if !collapsed || s.key == active {
 				items = append(items, serverListItem{srv: s})
@@ -78,7 +81,19 @@ func (a *app) serverPicker(c *ui.Context, p palette) {
 	list := containListScroll(ui.List(c, &a.serversList, len(items), func(i int) {
 		it := a.serverItems[i]
 		if it.group != nil {
-			a.groupHeader(c, p, *it.group)
+			g := it.group
+			var openDetails func()
+			if g.id != "custom" {
+				openDetails = func() { a.openSubscription(g.id) }
+			}
+			ui.Column(c).Background(p.listHeader).Children(func() {
+				a.groupHeader(c, p, g.id, g.name, len(g.servers), folds.collapsed(a, g.id), "Server group "+g.name, func() { folds.toggle(a, g.id) }, openDetails)
+				for _, sub := range a.subscriptions.subscriptions {
+					if sub.Id == g.id && sub.LastError != "" {
+						label(c, "Refresh failed: "+sub.LastError, sizeCaption, 15, 400, p.errorC).Padding(0, tw(2), tw(1)).MaxLines(2)
+					}
+				}
+			})
 			return
 		}
 		a.serverItem(c, p, it.srv)
@@ -177,87 +192,127 @@ func orderedGroups(servers []server) []serverGroup {
 	return out
 }
 
-func (a *app) groupHeader(c *ui.Context, p palette, g serverGroup) {
-	subID := g.id
-	collapsed := a.isGroupCollapsed(subID) && a.query == ""
-	// Pinned headers cover the rows scrolling underneath them.
-	ui.Column(c).Background(p.listHeader).Children(func() {
-		ui.Row(c).Padding(tw(1), tw(2)).Radius(tw(1)).AlignItems(ui.Center).Justify(ui.SpaceBetween).Shrink(0).Children(func() {
-			ui.Row(c).Gap(tw(1)).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).Children(func() {
+// Search initially reveals matching servers. Folds made while searching
+// apply to that search and leave the saved subscription folds intact.
+type serverSearchFolds struct {
+	query  string
+	groups map[string]bool
+}
+
+func (f *serverSearchFolds) update(query string) {
+	if f.query != query {
+		f.query = query
+		f.groups = nil
+	}
+}
+
+func (f *serverSearchFolds) collapsed(a *app, id string) bool {
+	if f.query == "" {
+		return a.isGroupCollapsed(id)
+	}
+	return f.groups[id]
+}
+
+func (f *serverSearchFolds) toggle(a *app, id string) {
+	if f.query == "" {
+		a.toggleGroupCollapse(id)
+		return
+	}
+	if f.groups == nil {
+		f.groups = make(map[string]bool)
+	}
+	f.groups[id] = !f.groups[id]
+}
+
+func (a *app) groupHeader(c *ui.Context, p palette, id, title string, countServers int, collapsed bool, headerLabel string, toggle, openDetails func()) {
+	ui.Column(c).Label(headerLabel).Background(p.listHeader).Shrink(0).Children(func() {
+		ui.Row(c).Padding(tw(1), tw(2), tw(1), tw(1)).Gap(tw(1.5)).AlignItems(ui.Center).Shrink(0).Children(func() {
+			drawTitle := func() {
+				label(c, strings.ToUpper(ltr(title)), sizeMicro, 18, 600, p.muted).LetterSpacing(0.5).SingleLine().Grow(1).MinWidth(0)
+			}
+			n := fmt.Sprintf("%d nodes", countServers)
+			if countServers == 1 {
+				n = "1 node"
+			}
+			drawCount := func() { label(c, n, sizeCaption, 18, 400, p.muted) }
+			if toggle == nil {
+				ui.Row(c).Height(22).PaddingStart(tw(1)).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).Clip().Children(drawTitle)
+				drawCount()
+			} else {
 				chevron := iconChevronDown
-				collapseTitle := "Collapse " + g.name
+				collapseTitle := "Collapse " + title
 				if collapsed {
 					chevron = iconChevronRight
-					collapseTitle = "Expand " + g.name
+					collapseTitle = "Expand " + title
 				}
-				if iconButton(c, "group-collapse-"+subID, chevron, collapseTitle, p, iconXS, variantGhost, 11) {
-					a.toggleGroupCollapse(subID)
-				}
-				name := ui.ButtonBase(c.Key("subscription-" + subID)).Grow(1).Basis(0).MinWidth(0).Clip().Cursor(ui.CursorPointer)
+				name := ui.ButtonBase(c.Key("group-collapse-" + id)).Label(collapseTitle).Height(22).
+					Gap(tw(1)).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).Clip().Cursor(ui.CursorPointer)
 				name.Children(func() {
-					label(c, strings.ToUpper(ltr(g.name)), sizeMicro, 18, 600, p.muted).LetterSpacing(0.5).SingleLine().Grow(1).MinWidth(0).MarginEnd(tw(2))
+					ui.Icon(c, chevron).Size(12, 12).TextColor(p.muted).Shrink(0)
+					drawTitle()
 				})
-				if name.Clicked() {
-					if subID != "" && subID != "custom" {
-						a.openSubscription(subID)
-					}
+				count := ui.ButtonBase(c.Key("group-count-" + id)).Cursor(ui.CursorPointer).Shrink(0)
+				count.Children(drawCount)
+				if name.Clicked() || count.Clicked() {
+					toggle()
 				}
-			})
-			ui.Row(c).Gap(tw(1.5)).AlignItems(ui.Center).Shrink(0).Children(func() {
-				n := fmt.Sprintf("%d node", len(g.servers))
-				if len(g.servers) > 1 {
-					n += "s"
-				}
-				countBtn := ui.ButtonBase(c.Key("group-count-" + subID)).Cursor(ui.CursorPointer)
-				countBtn.Children(func() {
-					count := label(c, n, sizeCaption, 18, 400, p.muted)
-					if p.dark {
-						count.Opacity(0.75)
-					}
-				})
-				if countBtn.Clicked() {
-					a.toggleGroupCollapse(subID)
-				}
-				if iconButton(c, "group-test-"+subID, iconZap, "Test all "+g.name+" configs", p, iconXS, variantGhost, 10) {
-					a.testServers(g.servers...)
-				}
-			})
-		})
-		for _, s := range a.subscriptions.subscriptions {
-			if s.Id == subID && s.LastError != "" {
-				label(c, "Refresh failed: "+s.LastError, sizeCaption, 15, 400, p.errorC).Padding(0, tw(2), tw(1)).MaxLines(2)
 			}
-		}
+			if iconButton(c, "group-test-"+id, iconZap, "Test all "+title+" configs", p, iconXS, variantGhost, 10) {
+				var targets []server
+				for _, s := range a.subscriptions.servers {
+					if s.key.sub == id || (id == "custom" && s.key.sub == "") {
+						targets = append(targets, s)
+					}
+				}
+				if len(targets) > 0 {
+					a.testServers(targets...)
+				}
+			}
+			if openDetails != nil && iconButton(c, "group-details-"+id, iconChevronRight, "Open "+title+" subscription", p, iconXS, variantGhost, 11) {
+				openDetails()
+			}
+		})
 	})
 }
 
 func (a *app) serverItem(c *ui.Context, p palette, s server) {
-	active, _ := a.activeKey()
-	selected := active == s.key
-	row := ui.ButtonBase(c.Key(s.key)).Padding(tw(1.5), tw(1), tw(1.5), tw(2)).Radius(tw(2)).MinHeight(38).Cursor(ui.CursorPointer).
+	active, ok := a.activeKey()
+	if a.serverListRow(c, p, s, "Use "+s.cfg.GetName(), ok && active == s.key, false, false) {
+		a.selectServer(s)
+	}
+}
+
+func (a *app) serverListRow(c *ui.Context, p palette, s server, action string, selected, pinned, disabled bool) bool {
+	row := ui.ButtonBase(c.Key(s.key)).Label(action).Disabled(disabled).
+		Padding(tw(1.5), tw(1), tw(1.5), tw(2)).Radius(tw(2)).MinHeight(38).Cursor(ui.CursorPointer).
 		AlignItems(ui.Center).Justify(ui.SpaceBetween).Shrink(0)
 	bg := ui.Color{}
 	switch {
+	case selected && pinned:
+		bg = p.pinnedSurface
 	case selected:
 		bg = p.healthySurface
 	case row.Hovered():
 		bg = p.cardHover
 	}
 	tint(row, bg)
+	probe := false
 	row.Children(func() {
 		serverIdentity(c, p, s)
 		ui.Row(c).Gap(tw(1.5)).AlignItems(ui.Center).Shrink(0).Children(func() {
-			if latencyBadge(c, "lat", a.latency[s.key], a.testing[s.key], p) {
-				a.testServers(s)
+			if selected && pinned {
+				ui.Icon(c, iconCheck).FontSize(12).TextColor(p.pinned).Shrink(0)
 			}
+			probe = latencyBadge(c, "lat", a.latency[s.key], a.testing[s.key], p)
 		})
 	})
-	if row.Clicked() {
-		a.selectServer(s)
+	if probe {
+		a.testServers(s)
 	}
+	return row.Clicked() && !probe
 }
 
-// serverIdentity is shared by the connection picker and the rule-target picker.
+// serverIdentity gives server rows a common flag and title layout.
 func serverIdentity(c *ui.Context, p palette, s server) {
 	flag, title, detail := serverTitle(s.cfg.Name)
 	ui.Row(c).Gap(tw(2.5)).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).MarginEnd(tw(2)).Children(func() {

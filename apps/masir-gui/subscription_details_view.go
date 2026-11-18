@@ -29,25 +29,7 @@ func (a *app) subscriptionDetailsView(c *ui.Context, p palette) {
 			// Keep the server group framed while only its rows scroll and virtualize.
 			ui.Column(c).Label("Subscription server group").Radius(cardRadius).Background(p.card).Border(1, p.borderDefault).Clip().Grow(1).Basis(0).MinHeight(0).Children(func() {
 				configs := s.GetConfigs()
-				// Keep the header distinct from the list while retaining the native glass.
-				headerTint := ui.RGBA(20, 24, 32, 0.10)
-				if p.dark {
-					headerTint = ui.RGBA(0, 0, 0, 0.4)
-				}
-				ui.Row(c).Label("Subscription server header").Padding(7, 8).Background(headerTint).AlignItems(ui.Center).Justify(ui.SpaceBetween).Shrink(0).Children(func() {
-					label(c, fmt.Sprintf("Servers · %d", len(configs)), sizeCaption, 16, 600, p.muted)
-					testing := false
-					for _, cfg := range configs {
-						testing = testing || a.testing[serverKey{s.Id, cfg.Id}]
-					}
-					if iconButton(c, "test-subscription", iconZap, "Test all nodes", p, iconXS, variantGhost, 11) && !testing && len(configs) > 0 {
-						targets := make([]server, 0, len(configs))
-						for _, cfg := range configs {
-							targets = append(targets, server{key: serverKey{s.Id, cfg.Id}, subName: s.Name, cfg: cfg})
-						}
-						a.testServers(targets...)
-					}
-				})
+				a.groupHeader(c, p, s.Id, subscriptionName(s), len(configs), false, "Subscription server header", nil, nil)
 				cardDivider(c, p)
 				a.subscriptionNodes.Key = func(i int) any {
 					if len(configs) == 0 {
@@ -70,8 +52,8 @@ func (a *app) subscriptionDetailsView(c *ui.Context, p palette) {
 						return
 					}
 					cfg := configs[i]
-					a.subscriptionServerItem(c, p, server{key: serverKey{s.Id, cfg.Id}, subName: s.Name, cfg: cfg})
-				})).Label("Subscription servers").Background(p.subdued).Padding(4, 6, 6).ScrollbarInsets(0, 1, 0).Gap(3).Grow(1).Basis(0).MinHeight(0)
+					a.serverItem(c, p, server{key: serverKey{s.Id, cfg.Id}, subName: s.Name, cfg: cfg})
+				})).Label("Subscription servers").Padding(4, 6, 6).ScrollbarInsets(0, 1, 0).Gap(3).Grow(1).Basis(0).MinHeight(0)
 			})
 		})
 		a.subscriptionDetailsFooter(c, p, s)
@@ -142,45 +124,6 @@ func subscriptionInfoRow(c *ui.Context, p palette, icon *ui.SVG, title, value st
 			label(c, value, sizeCaption, 15, 400, p.text).MaxLines(2)
 		})
 	})
-}
-
-func (a *app) subscriptionServerItem(c *ui.Context, p palette, s server) {
-	active, ok := a.activeKey()
-	selected := ok && active == s.key
-	row := ui.ButtonBase(c.Key(s.key)).Label("Use "+s.cfg.GetName()).Padding(7, 6).Radius(6).AlignItems(ui.Center).Gap(7).Cursor(ui.CursorPointer)
-	if selected {
-		row.Background(p.healthySurface)
-	} else if row.Hovered() {
-		row.Background(p.cardHover)
-	}
-	handled := false
-	row.Children(func() {
-		flag, title, detail := serverTitle(s.cfg.GetName())
-		iconTile(c, p, func() { flagElement(c, flag, 18) })
-		ui.Column(c).Grow(1).Basis(0).MinWidth(0).Children(func() {
-			ltrLabel(c, title, sizeBody, 16, 500, p.text)
-			if detail != "" || selected {
-				ui.Row(c).AlignItems(ui.Center).Gap(4).Children(func() {
-					if detail != "" {
-						ltrLabel(c, detail, sizeCaption, 14, 400, p.muted).SingleLine().MinWidth(0).Shrink(1)
-					}
-					if selected {
-						if detail != "" {
-							label(c, "·", sizeMicro, 14, 400, p.muted).Shrink(0)
-						}
-						label(c, "Active", sizeMicro, 14, 500, p.healthy).Shrink(0)
-					}
-				})
-			}
-		})
-		handled = latencyBadge(c, "node-latency", a.latency[s.key], a.testing[s.key], p)
-		if handled {
-			a.testServers(s)
-		}
-	})
-	if row.Clicked() && !handled {
-		a.selectServer(s)
-	}
 }
 
 func (a *app) subscriptionDetailsFooter(c *ui.Context, p palette, s *pb.Subscription) {
