@@ -248,23 +248,35 @@ func (a *app) packageInstalled(version string, files packageFiles, format string
 		a.packageFailed(err, files, format)
 		return
 	}
-	if dir := st.pkgDir; dir != "" {
-		a.pkgSerial(func() func() { os.RemoveAll(dir); return nil })
+	// The download is installed: delete it, then do what follows. Relaunching first
+	// could quit before the deletion ran and leave the package in the cache.
+	dir := st.pkgDir
+	cleanThen := func(then func()) {
+		if dir == "" {
+			if then != nil {
+				then()
+			}
+			return
+		}
+		a.pkgSerial(func() func() { os.RemoveAll(dir); return then })
 	}
+	relaunch := func() { relaunchApp() }
 	switch {
 	case pending || a.status == nil || !a.reachable:
 		// The new app offers Finish Update for a service that didn't take it.
 		st.relaunching = true
-		relaunchApp()
+		cleanThen(relaunch)
 	case a.status.GetServiceInstalled() && newerRelease(version, a.status.GetVersion()):
+		cleanThen(nil)
 		st.relaunchAfterRestart = true
 		a.followDaemonRestart(version, false) // the root command restarted it
 	case a.daemonIsBundled():
+		cleanThen(nil)
 		st.relaunchAfterRestart = true
 		a.restartDaemon(version)
 	default:
 		st.relaunching = true
-		relaunchApp()
+		cleanThen(relaunch)
 	}
 }
 
