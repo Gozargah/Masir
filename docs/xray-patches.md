@@ -5,8 +5,11 @@ pinned in `libs/masir-daemon/go.mod` (`676eaf66f8f0`). Like the MyGo patches, it
 applied to a downloaded source copy; the upstream module is not vendored.
 
 The patch applies outbound socket controllers to XICMP's IPv4/IPv6 datagram and
-raw ICMP sockets, closes sockets when setup fails, and exposes the existing TUN
-interface binding as `InterfaceUpdater.BindSocket`. It includes regression tests
+raw ICMP sockets using the actual configured peers. Local and remote peers use
+separate sockets, unused address families stay unopened, and failed setup closes
+all opened sockets. On macOS, binding selects the default route for the peer
+address family and exempts loopback before any route lookup. The patch exposes
+the TUN interface binding as `InterfaceUpdater.BindSocket`. It includes regression tests
 for controller invocation and failed socket cleanup.
 
 `scripts/with-xray.sh` prepares an ignored `.xray-patched.*` directory and runs a
@@ -35,11 +38,15 @@ sh scripts/with-xray.sh go build -o dist/masir ./apps/masir
 The preparer enables `xray_patched`. The macOS probe-helper binding uses this tag
 because `BindSocket` is a patched-only API. Plain `go test`/`go build` still compile
 against stock Xray, as headless GUI tests compile against stock MyGo; use the
-preparer to exercise or ship the XICMP fix.
+preparer to exercise or ship the XICMP fix. Existing comma-separated `GOFLAGS`
+tags are preserved; direct wrapped Go `-tags` overrides must include `xray_patched`
+or the preparer rejects them.
 
 `make test`/`make test-race` and CI also run the patched dependency's XICMP and
-TUN packages. The full upstream suite additionally needs GeoIP/GeoSite fixtures
-in the prepared module's `resources` directory; it has known public DNS/ECH
+TUN packages. ICMP integration tests skip only when socket support is denied or
+unavailable; CI enables Linux ping sockets and sets `XRAY_REQUIRE_ICMP=1` so
+these assertions must run on capable macOS/Linux jobs. The full upstream suite
+additionally needs GeoIP/GeoSite fixtures in the prepared module's `resources` directory; it has known public DNS/ECH
 failures and races that reproduce on unmodified upstream. The targeted patched
 packages and Masir checks pass.
 

@@ -15,7 +15,6 @@ import (
 func configureProbeInterface() error {
 	updater := new(tun.InterfaceUpdater)
 	return internet.RegisterDialerController(func(network, address string, c syscall.RawConn) error {
-		updater.Update()
 		return updater.BindSocket(network, address, c)
 	})
 }
