@@ -242,3 +242,22 @@ func TestPickerSearchesMoreLazily(t *testing.T) {
 		t.Errorf("google should be selected in its group without a copy among custom items: %+v", pk.custom)
 	}
 }
+
+// A loader can complete after a render reads its old state but before that
+// render publishes its cache. Its invalidation must survive cache publication.
+func TestPickerKeepsInvalidationDuringRowBuild(t *testing.T) {
+	pk := NewPicker(PickParams{More: &PickSource{Label: "More"}})
+	pk.filter = []rune("aichat")
+	pk.rowsWith(func() []row {
+		old := pk.buildRows()
+		pk.mu.Lock()
+		pk.more.loaded = true
+		pk.more.items = []PickItem{{Value: "geosite:category-ai-chat", Label: "AI chat"}}
+		pk.rowsDirty = true
+		pk.mu.Unlock()
+		return old
+	})
+	if !slices.ContainsFunc(pk.rows(), func(r row) bool { return r.kind == rowItem && r.item.Value == "geosite:category-ai-chat" }) {
+		t.Fatal("completed source load was hidden by stale cached rows")
+	}
+}
