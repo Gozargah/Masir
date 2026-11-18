@@ -40,7 +40,10 @@ func serverSearchText(name, sub string, cfg *pb.SubscriptionConfig) string {
 
 // filteredServers are the servers matching the search, in the order of their subscriptions.
 func (a *app) filteredServers() []server {
-	q := strings.ToLower(strings.TrimSpace(a.query))
+	return a.serversMatching(strings.ToLower(strings.TrimSpace(a.query)))
+}
+
+func (a *app) serversMatching(q string) []server {
 	if q == "" {
 		return a.subscriptions.servers
 	}
