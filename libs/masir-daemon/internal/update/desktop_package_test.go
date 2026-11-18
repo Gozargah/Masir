@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -148,8 +149,14 @@ func TestFetchDesktopPackageDownloadsAndVerifies(t *testing.T) {
 	if got, _ := os.ReadFile(files.Package); !bytes.Equal(got, pkg) {
 		t.Fatal("package bytes differ")
 	}
-	if fi, _ := os.Stat(dir); fi.Mode().Perm() != 0o700 {
-		t.Fatalf("dir mode = %v", fi.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o700 {
+			t.Fatalf("dir mode = %v", fi.Mode().Perm())
+		}
 	}
 }
 

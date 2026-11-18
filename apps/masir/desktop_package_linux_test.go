@@ -437,12 +437,14 @@ func TestInstallPackageRestartsAStaleRunningService(t *testing.T) {
 		runningErr    error
 		restartErr    error
 		unitRestarted bool
+		unitErr       error
 		restarts      int
 		code          int
 	}{
 		{name: "stale", running: "0.1.6", restarts: 1},
 		{name: "unit sync restarted", running: "0.1.6", unitRestarted: true},
 		{name: "current", running: "0.1.7"},
+		{name: "unit sync fails on current service", running: "0.1.7", unitErr: errors.New("reload failed"), code: exitUnitPending},
 		{name: "newer", running: "0.1.8"},
 		// Stopped (perhaps on purpose) or still starting from the current binary.
 		{name: "not answering", runningErr: errors.New("no socket")},
@@ -457,9 +459,16 @@ func TestInstallPackageRestartsAStaleRunningService(t *testing.T) {
 			return c.running, c.runningErr
 		}
 		restartServiceNow = func() error { f.restarts++; return c.restartErr }
-		syncPackageServiceUnit = func(string) (bool, error) { return c.unitRestarted, nil }
-		if code := exitOf(f.install(io.Discard)); code != c.code || f.restarts != c.restarts || len(f.bundled) != 0 {
-			t.Errorf("%s: exit %d, restarts %d, bundled %v; want exit %d, restarts %d, no import", c.name, code, f.restarts, f.bundled, c.code, c.restarts)
+		syncs := 0
+		syncPackageServiceUnit = func(user string) (bool, error) {
+			syncs++
+			if user != "1000" {
+				t.Errorf("%s: synced the service of %q", c.name, user)
+			}
+			return c.unitRestarted, c.unitErr
+		}
+		if syncCode := exitOf(f.install(io.Discard)); syncs != 1 || syncCode != c.code || f.restarts != c.restarts || len(f.bundled) != 0 {
+			t.Errorf("%s: exit %d, reloads %d, restarts %d, bundled %v", c.name, syncCode, syncs, f.restarts, f.bundled)
 		}
 	}
 }

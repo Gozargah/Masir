@@ -240,6 +240,7 @@ Exit codes the app reads from `masir desktop …` (`apps/masir/exit_code.go`):
 | 12 | the package manager refused the package |
 | 13 | the app is installed, the service didn't take the new version |
 | 14 | the package isn't newer than what is installed |
+| 16 | the app is installed and the service unit still needs reconciliation |
 | 20 | the release host couldn't be reached |
 
 What the control shows:
@@ -254,10 +255,10 @@ What the control shows:
 | 14 | Update failed | This version is already installed. Restart Masir. |
 | 20 | Update failed | GitHub isn't reachable. Connect Masir and try again. |
 | 12, other | Update failed | the last line of the package manager's error |
-| 13 | the app relaunches | the new app offers **Finish Update** |
+| 13 | the app relaunches | the new app offers **Finish Update** for an outdated daemon |
+| 16 | the app relaunches | **Finish Update** retries the service unit even when the daemon is already current |
 
-Nothing is rolled back when the service step fails: the new app stays installed, and its
-**Finish Update** imports the service, as on any other system.
+The new app stays installed if the service step fails.
 
 A portable copy unpacked into a folder the person can't write is not a package. Its daemon
 still updates, and the app tooltip says to download the new version from the release page.

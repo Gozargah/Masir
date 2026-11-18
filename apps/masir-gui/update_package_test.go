@@ -614,3 +614,55 @@ func TestAPackageUpdateNeedsARealNewerVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestPackageUnitRetrySurvivesRelaunchAtEqualVersion(t *testing.T) {
+	a, _, p := packageApp(t, blockPackageDeb)
+	a.guiSettingsFile = filepath.Join(t.TempDir(), "settings.json")
+	p.installErr = elevationExit(pkgExitUnitPending)
+	relaunchApp = a.flushGUISettings
+	a.startUpdate()
+	a.confirmInstall()
+
+	b, f, _ := packageApp(t, blockPackageDeb)
+	b.version = f.status.Version
+	f.status.ServiceInstalled = true
+	f.status.Privileged = true
+	b.guiSettingsFile = a.guiSettingsFile
+	b.loadGUISettings()
+	b.applyStatus(f.status)
+	if b.updateLabel() != "Finish Update" {
+		t.Fatalf("pending service unit label %q", b.updateLabel())
+	}
+	oldRetry := retryServiceUnit
+	t.Cleanup(func() { retryServiceUnit = oldRetry })
+	retries := 0
+	retryServiceUnit = func() error {
+		retries++
+		if retries == 1 {
+			return errors.New("unit reload failed")
+		}
+		return nil
+	}
+	b.startUpdate()
+	if b.updates.state.phase != updateFailed || !b.updates.state.unitPending {
+		t.Fatal("failed retry lost the pending service unit")
+	}
+	b.retryUpdate()
+	if retries != 2 || b.updates.state.unitPending {
+		t.Fatalf("reload attempts %d, pending %v", retries, b.updates.state.unitPending)
+	}
+}
+
+func TestPackageInstallUsesTheCurrentTunnelState(t *testing.T) {
+	a, f, _ := packageApp(t, blockPackageDeb)
+	f.status.TunRunning = true
+	a.applyStatus(f.status)
+	a.startUpdate()
+	next := proto.Clone(f.status).(*pb.Status)
+	next.TunRunning = false
+	a.applyStatus(next)
+	a.confirmInstall()
+	if a.updates.state.tunWasOn {
+		t.Fatal("installation retained the tunnel state from download start")
+	}
+}

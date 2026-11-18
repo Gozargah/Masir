@@ -56,7 +56,7 @@ func serviceDefinition(bin string, uid int) string { return servicePlist(bin, ui
 
 // applyServiceDefinition writes text to the plist and reloads launchd, so a changed
 // definition applies now instead of at the next login. It must run as root.
-func applyServiceDefinition(path, text string) error {
+func applyServiceDefinition(path, text string, _ bool) error {
 	old, _ := os.ReadFile(path)
 	if string(old) == text {
 		return nil

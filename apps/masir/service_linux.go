@@ -56,14 +56,14 @@ func serviceDefinition(bin string, uid int) string { return serviceUnit(bin, uid
 // applyServiceDefinition writes text to the unit and reloads systemd. It restarts the
 // service when the file changed, so a new sandbox (capabilities, ProtectSystem) applies
 // now instead of at some later reinstall. It must run as root, outside the unit.
-func applyServiceDefinition(path, text string) error {
-	_, err := applyLinuxServiceDefinition(path, text)
+func applyServiceDefinition(path, text string, retry bool) error {
+	_, err := applyLinuxServiceDefinition(path, text, retry)
 	return err
 }
 
-func applyLinuxServiceDefinition(path, text string) (restarted bool, err error) {
+func applyLinuxServiceDefinition(path, text string, retry bool) (restarted bool, err error) {
 	changed, err := writeServiceDefinition(path, text)
-	if err != nil || !changed {
+	if err != nil || (!changed && !retry) {
 		return false, err
 	}
 	if err := run("systemctl", "daemon-reload"); err != nil {

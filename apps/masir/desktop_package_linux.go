@@ -256,7 +256,7 @@ func installDesktopPackage(pkg, sums, sig, user string, out io.Writer) (err erro
 		running, runningErr := runningServiceVersion(user)
 		restarted, err := syncPackageServiceUnit(user)
 		if err != nil {
-			return coded(exitServicePending, err)
+			return coded(exitUnitPending, err)
 		}
 		if !restarted && runningErr == nil && newerVersion(version, running) {
 			if err := restartServiceNow(); err != nil {
@@ -269,7 +269,7 @@ func installDesktopPackage(pkg, sums, sig, user string, out io.Writer) (err erro
 		return coded(exitServicePending, err)
 	}
 	if err := runBundled("daemon", "sync-unit", "--user", user); err != nil {
-		return coded(exitServicePending, err)
+		return coded(exitUnitPending, err)
 	}
 	return nil
 }
@@ -278,7 +278,7 @@ func reconcilePackageServiceUnit(user string) (bool, error) {
 	var restarted bool
 	err := syncServiceUnitWith(user, func(path, text string) error {
 		var err error
-		restarted, err = applyLinuxServiceDefinition(path, text)
+		restarted, err = applyLinuxServiceDefinition(path, text, false)
 		return err
 	})
 	return restarted, err

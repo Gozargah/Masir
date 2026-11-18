@@ -390,7 +390,8 @@ func rootCmd() *cobra.Command {
 		flagSpec{names: []string{"user"}, help: "The uid the service serves"})
 	unitCmd.Hidden = true // an update compares it with the installed definition
 	syncUnitCmd := leaf("sync-unit", "Rewrite the installed service definition from the service's binary", daemonSyncUnit, cobra.NoArgs,
-		flagSpec{names: []string{"user"}, help: "The uid the service serves"})
+		flagSpec{names: []string{"user"}, help: "The uid the service serves"},
+		flagSpec{names: []string{"retry"}, bool: true, help: "Retry loading the Linux service definition"})
 	syncUnitCmd.Hidden = true // an update applies a definition that changed
 	checkRules := leaf("check", "Answer whether the rules on stdin can run (a daemon asks a new version this)", daemonCheck, cobra.NoArgs)
 	checkRules.Hidden = true // the daemon runs it on a downloaded version before installing it
