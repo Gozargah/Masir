@@ -218,13 +218,14 @@ func installDesktopPackage(pkg, sums, sig, user string, out io.Writer) (err erro
 	if name != "masir-desktop" || strings.TrimPrefix(inside, "v") != version {
 		return coded(exitMismatch, fmt.Errorf("the package is %s %s, not masir-desktop %s", name, inside, version))
 	}
-	installed, err := installedPackageVersion(format)
+	installed, complete, err := installedPackageVersion(format)
 	if err != nil {
 		return coded(exitInstallFailed, err)
 	}
-	// "" is a package dpkg holds unpacked or half-configured: apt may repair it, even
-	// at the same version, rather than leaving the person stuck on "already installed".
-	if installed != "" && !newerVersion(version, installed) {
+	// A package dpkg holds unpacked or half-configured may be finished at its own
+	// version, rather than leaving the person stuck on "already installed"; it is never
+	// replaced by an older one.
+	if complete && !newerVersion(version, installed) || !complete && newerVersion(installed, version) {
 		return coded(exitNotNewer, fmt.Errorf("masir-desktop %s is installed; %s isn't newer", installed, version))
 	}
 
@@ -327,9 +328,9 @@ func newerVersion(a, b string) bool {
 	return semver.IsValid(canon(a)) && semver.Compare(canon(a), canon(b)) > 0
 }
 
-// queryInstalledPackage returns the installed version, or "" when dpkg holds the
-// package but not fully installed (a failed configure leaves it half-configured).
-func queryInstalledPackage(format string) (string, error) {
+// queryInstalledPackage returns the installed version, and whether it is fully
+// installed: a failed configure leaves a .deb half-configured.
+func queryInstalledPackage(format string) (version string, complete bool, err error) {
 	var cmd *exec.Cmd
 	if format == "deb" {
 		cmd = rootCommand("/usr/bin/dpkg-query", "-W", "-f=${Version}\t${db:Status-Status}", "masir-desktop")
@@ -338,23 +339,26 @@ func queryInstalledPackage(format string) (string, error) {
 	}
 	b, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("masir-desktop isn't installed as a %s: %w", format, err)
+		return "", false, fmt.Errorf("masir-desktop isn't installed as a %s: %w", format, err)
 	}
 	if format == "deb" {
-		return debInstalledVersion(string(b)), nil
+		return debInstalledVersion(string(b))
 	}
-	return strings.TrimSpace(string(b)), nil
+	return strings.TrimSpace(string(b)), true, nil
 }
 
 // debInstalledVersion reads dpkg-query's "<version>\t<status>". Pending triggers still
 // mean installed; any other state is one apt should be allowed to finish.
-func debInstalledVersion(out string) string {
-	version, status, _ := strings.Cut(strings.TrimSpace(out), "\t")
+func debInstalledVersion(out string) (version string, complete bool, err error) {
+	version, status, ok := strings.Cut(strings.TrimSpace(out), "\t")
+	if !ok || version == "" || status == "" {
+		return "", false, fmt.Errorf("unexpected dpkg-query output %q", out)
+	}
 	switch status {
 	case "installed", "triggers-pending", "triggers-awaited":
-		return version
+		return version, true, nil
 	}
-	return ""
+	return version, false, nil
 }
 
 func readPackageMetadata(format, path string) (name, version string, err error) {

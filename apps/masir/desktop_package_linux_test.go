@@ -113,7 +113,7 @@ func newInstallFake(t *testing.T) *installFake {
 		packageStagingParent = saved[0].(string)
 		packageStagingOwned = saved[1].(func(string) error)
 		verifyPackage = saved[2].(func([]byte, []byte, string, string) (string, string, error))
-		installedPackageVersion = saved[3].(func(string) (string, error))
+		installedPackageVersion = saved[3].(func(string) (string, bool, error))
 		packageMetadata = saved[4].(func(string, string) (string, string, error))
 		runPackageManager = saved[5].(func(string, string) (string, error))
 		serviceInstalled = saved[6].(func() bool)
@@ -127,7 +127,7 @@ func newInstallFake(t *testing.T) *installFake {
 		f.verified = true
 		return "0.1.7", "deb", nil
 	}
-	installedPackageVersion = func(string) (string, error) { return "0.1.6", nil }
+	installedPackageVersion = func(string) (string, bool, error) { return "0.1.6", true, nil }
 	packageMetadata = func(string, string) (string, string, error) { return "masir-desktop", "0.1.7", nil }
 	runPackageManager = func(_, path string) (string, error) {
 		f.pm = append(f.pm, path)
@@ -192,7 +192,7 @@ func TestInstallPackageRejectsWhatIsntTheSignedRelease(t *testing.T) {
 func TestInstallPackageRejectsADowngrade(t *testing.T) {
 	for _, installed := range []string{"0.1.7", "0.1.8"} {
 		f := newInstallFake(t)
-		installedPackageVersion = func(string) (string, error) { return installed, nil }
+		installedPackageVersion = func(string) (string, bool, error) { return installed, true, nil }
 		if code := exitOf(f.install(io.Discard)); code != exitNotNewer || len(f.pm) != 0 {
 			t.Fatalf("installed %s: exit = %d, package manager runs = %d", installed, code, len(f.pm))
 		}
@@ -248,26 +248,40 @@ func TestInstallLockOutlivesTheInstallInItsChildren(t *testing.T) {
 	again.Close()
 }
 
-// A package dpkg left half-configured at the target version is repaired, not refused.
+// A package dpkg left half-configured is finished at its own version or a newer one,
+// never replaced by an older one.
 func TestInstallPackageRepairsAnIncompleteInstall(t *testing.T) {
-	f := newInstallFake(t)
-	installedPackageVersion = func(string) (string, error) { return "", nil }
-	if err := f.install(io.Discard); err != nil || len(f.pm) != 1 {
-		t.Fatalf("err = %v, package manager runs = %d", err, len(f.pm))
+	for installed, want := range map[string]int{"0.1.6": 0, "0.1.7": 0, "0.1.8": exitNotNewer} {
+		f := newInstallFake(t)
+		installedPackageVersion = func(string) (string, bool, error) { return installed, false, nil }
+		runs := 1
+		if want != 0 {
+			runs = 0
+		}
+		if code := exitOf(f.install(io.Discard)); code != want || len(f.pm) != runs {
+			t.Fatalf("half-configured %s: exit = %d, package manager runs = %d", installed, code, len(f.pm))
+		}
 	}
 }
 
 func TestDebInstalledVersion(t *testing.T) {
-	for out, want := range map[string]string{
-		"0.1.7\tinstalled\n":      "0.1.7",
-		"0.1.7\ttriggers-pending": "0.1.7",
-		"0.1.7\thalf-configured":  "",
-		"0.1.7\tunpacked":         "",
-		"0.1.7\thalf-installed":   "",
-		"0.1.7":                   "",
+	for out, complete := range map[string]bool{
+		"0.1.7\tinstalled\n":      true,
+		"0.1.7\ttriggers-pending": true,
+		"0.1.7\ttriggers-awaited": true,
+		"0.1.7\thalf-configured":  false,
+		"0.1.7\tunpacked":         false,
+		"0.1.7\thalf-installed":   false,
 	} {
-		if got := debInstalledVersion(out); got != want {
-			t.Errorf("%q: got %q, want %q", out, got, want)
+		v, c, err := debInstalledVersion(out)
+		if err != nil || v != "0.1.7" || c != complete {
+			t.Errorf("%q: got %q %v %v, want 0.1.7 %v", out, v, c, err, complete)
+		}
+	}
+	// Anything else fails closed rather than allowing an install.
+	for _, out := range []string{"0.1.7", "", "\tinstalled", "0.1.7\t"} {
+		if _, _, err := debInstalledVersion(out); err == nil {
+			t.Errorf("%q: accepted", out)
 		}
 	}
 }
