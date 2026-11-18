@@ -102,7 +102,7 @@ func (s *Server) UpdateSubscription(ctx context.Context, req *pb.UpdateSubscript
 
 func (s *Server) TestSubscriptionLatency(req *pb.TestSubscriptionLatencyRequest, stream pb.DaemonService_TestSubscriptionLatencyServer) error {
 	ctx := stream.Context()
-	err := s.subs.TestLatency(ctx, req.SubscriptionId, req.ConfigIds, req.ProbeUrl, func(id string, l subs.Latency) {
+	err := s.subs.TestLatency(ctx, req.SubscriptionId, req.ConfigIds, req.ProbeUrl, s.probeTunName, func(id string, l subs.Latency) {
 		// A send fails only once the client is gone, which also cancels ctx and stops the test.
 		_ = stream.Send(&pb.TestSubscriptionLatencyResponse{ConfigId: id, Result: toPBLatency(&l)})
 	})

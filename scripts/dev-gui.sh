@@ -7,6 +7,9 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -z "${MASIR_XRAY_SOURCE:-}" ]; then
+ exec sh "$root/scripts/with-xray.sh" sh "$root/scripts/dev-gui.sh" "$@"
+fi
 cd "$root"
 
 work="$root/.mygo-patched"

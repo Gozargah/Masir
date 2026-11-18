@@ -1,0 +1,67 @@
+# Patched Xray builds
+
+`patches/xray-xicmp-outbound-interface.patch` applies to the Xray-core version
+pinned in `libs/masir-daemon/go.mod` (`676eaf66f8f0`). Like the MyGo patches, it is
+applied to a downloaded source copy; the upstream module is not vendored.
+
+The patch applies outbound socket controllers to XICMP's IPv4 and IPv6
+sockets. Each peer, including its IPv6 zone, gets its own socket. A single
+required peer opens at dial time so setup errors reach the caller. Optional
+peers open on first use. Bindings refresh on the first write after ten seconds
+or on the next write after a send fails. A failed periodic refresh can reuse
+the live socket. Retired sockets drain replies for two seconds after their last
+active send. Raw ICMP IDs remain reserved until their sockets close, then
+become available for reuse. Reads honor deadlines before a socket opens and
+return EOF after the connection closes.
+
+On macOS, binding selects a matching non-TUN route, respecting interface scope
+and including connected LAN and local host routes. The daemon snapshots its
+active TUN after the probe acquires a worker slot. If that interface disappears
+before setup, the helper retries once with the new state. With Masir's TUN off,
+probes use normal system routing, including routes owned by other VPNs. On
+Linux, automatic binding uses a scoped IPv6 peer's zone first, then the
+peer address family's default route for unscoped peers. Explicit interface
+settings take precedence.
+
+`scripts/with-xray.sh` prepares an ignored `.xray-patched.*` directory and runs a
+command with a private Go workspace replacing only Xray-core. It preserves the
+caller's working directory, uses the repository's Go toolchain, and removes the
+copy/workspace on exit. Tracked module/workspace files and the module cache are
+not edited. Nested invocations reuse the prepared source.
+
+Use the normal Make targets for patched CLI/desktop builds and project checks:
+
+```sh
+make build
+make gui-local
+make test
+make test-race
+```
+
+The desktop build/dev scripts, Lima tests, and CLI release/snapshot workflows
+also enter the preparer. To run a focused command with the patch:
+
+```sh
+sh scripts/with-xray.sh go test ./libs/masir-daemon/internal/xray
+sh scripts/with-xray.sh go build -o dist/masir ./apps/masir
+```
+
+On macOS the probe helper detects the added `BindSocket` API through a small
+interface. A prepared-build regression test requires that capability to exist.
+Stock Xray builds retain their no-op helper, while prepared builds install the
+binding regardless of caller-supplied build tags. The preparer does not inspect
+or modify `GOFLAGS` or `-tags`; Go handles their quoting and validation directly.
+
+`make test`/`make test-race` and CI also run the patched dependency's XICMP and
+TUN packages. ICMP integration tests skip only when socket support is denied or
+unavailable; CI enables Linux ping sockets and sets `XRAY_REQUIRE_ICMP=1` so
+these assertions must run on capable macOS/Linux jobs. The full upstream suite
+additionally needs GeoIP/GeoSite fixtures in the prepared module's `resources`
+directory; it has known public DNS/ECH
+failures and races that reproduce on unmodified upstream. The targeted patched
+packages and Masir checks pass.
+
+When upgrading Xray, the preparer fails if the patch no longer applies. Rebase
+the patch, run the project and patched-dependency tests, and verify an XICMP
+probe with TUN enabled. Remove the patch and conditional API use when upstream
+provides the equivalent socket controller behavior and binding API.

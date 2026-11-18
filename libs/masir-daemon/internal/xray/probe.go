@@ -27,6 +27,10 @@ const (
 // Each helper still probes up to eight outbounds concurrently.
 var probeSlot = make(chan struct{}, 1)
 
+const probeTunMissingExit = 3
+
+var errProbeTunMissing = errors.New("probe TUN interface disappeared")
+
 type probeRequest struct {
 	Config  []byte
 	Probes  [][]byte
@@ -59,6 +63,9 @@ func init() {
 			debug.SetMemoryLimit(100 * 1024 * 1024)
 		}
 		if err := serveProbe(os.Stdin, results); err != nil {
+			if errors.Is(err, errProbeTunMissing) {
+				os.Exit(probeTunMissingExit)
+			}
 			os.Exit(1)
 		}
 		// Process exit also releases resources leaked by an unsuccessful core.New.
@@ -133,6 +140,23 @@ func runProbe(ctx context.Context, req probeRequest, count int, report func(prob
 	defer func() { <-probeSlot }()
 	ctx, cancel := context.WithTimeout(ctx, probeLifetime)
 	defer cancel()
+	currentTunName := req.Options.CurrentTunName
+	if currentTunName != nil {
+		req.Options.TunName = currentTunName()
+	}
+	err := runProbeWorker(ctx, req, count, report)
+	if errors.Is(err, errProbeTunMissing) && currentTunName != nil {
+		if name := currentTunName(); name != req.Options.TunName {
+			req.Options.TunName = name
+			return runProbeWorker(ctx, req, count, report)
+		}
+	}
+	return err
+}
+
+func runProbeWorker(ctx context.Context, req probeRequest, count int, report func(probeResult)) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	data, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("encode probe: %w", err)
@@ -178,6 +202,10 @@ func runProbe(ctx context.Context, req probeRequest, count int, report func(prob
 		return protocolErr
 	}
 	if waitErr != nil {
+		var exit *exec.ExitError
+		if received == 0 && errors.As(waitErr, &exit) && exit.ExitCode() == probeTunMissingExit {
+			return errProbeTunMissing
+		}
 		return fmt.Errorf("probe worker: %w", waitErr)
 	}
 	if received != count {
@@ -220,6 +248,9 @@ func readProbeResults(results *bufio.Reader, count int, report func(probeResult)
 func serveProbe(input io.Reader, output io.Writer) error {
 	var req probeRequest
 	if err := json.NewDecoder(io.LimitReader(input, maxProbeInput)).Decode(&req); err != nil {
+		return err
+	}
+	if err := configureProbeInterface(req.Options.TunName); err != nil {
 		return err
 	}
 	if len(req.Probes) > maxProbeBatch {
