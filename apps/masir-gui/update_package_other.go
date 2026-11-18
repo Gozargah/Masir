@@ -20,3 +20,5 @@ func platformFetchPackage(context.Context, packageFetch, func(done, total int64)
 func platformHelperTrusted() (string, error) { return "", errNoPackageUpdates }
 
 func platformInstallPackage(string, packageFiles, int, func()) error { return errNoPackageUpdates }
+
+func retryPackagedServiceUnit() error { return errNoPackageUpdates }

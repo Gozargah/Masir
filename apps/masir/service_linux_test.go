@@ -66,3 +66,28 @@ func TestWriteServiceDefinitionOnlyWritesChanges(t *testing.T) {
 		t.Fatalf("file = %q", got)
 	}
 }
+
+func TestRetryServiceDefinitionReloadsAnUnchangedUnit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "masird.service")
+	if err := os.WriteFile(path, []byte("current unit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "commands")
+	t.Setenv("PATH", dir)
+	t.Setenv("SYSTEMCTL_LOG", logPath)
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SYSTEMCTL_LOG\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if restarted, err := applyLinuxServiceDefinition(path, "current unit", false); err != nil || restarted {
+		t.Fatalf("ordinary sync: restarted=%v err=%v", restarted, err)
+	}
+	if restarted, err := applyLinuxServiceDefinition(path, "current unit", true); err != nil || !restarted {
+		t.Fatalf("retry: restarted=%v err=%v", restarted, err)
+	}
+	want := "daemon-reload\nis-active --quiet masird.service\nrestart masird.service\n"
+	if got, err := os.ReadFile(logPath); err != nil || string(got) != want {
+		t.Fatalf("systemctl commands = %q, err=%v", got, err)
+	}
+}

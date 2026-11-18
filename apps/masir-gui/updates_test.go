@@ -774,8 +774,12 @@ func TestPreparedDesktopUpdateWaitsForInstall(t *testing.T) {
 			a.confirmInstall()
 		} else {
 			a.cancelUpdate()
+			a.applyJob(&pb.UpdateJob{State: pb.UpdateState_UPDATE_STATE_DOWNLOADING})
 		}
 		(<-posts)() // installer result
+		if !confirm && a.updates.state.phase != updateDownloading {
+			t.Errorf("late app result displaced the daemon download")
+		}
 		confirmPreparedUpdates, installPreparedAppUpdate, relaunchApp = oldConfirm, oldInstall, oldRelaunch
 
 		if relaunched != confirm {

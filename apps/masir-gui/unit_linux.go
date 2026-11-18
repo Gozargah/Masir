@@ -24,3 +24,12 @@ func applyServiceUnit() error {
 	_, err = pkexec(abs, "daemon", "sync-unit", "--user", strconv.Itoa(os.Getuid()))
 	return err
 }
+
+func retryPackagedServiceUnit() error {
+	bin, err := helperTrusted()
+	if err != nil {
+		return err
+	}
+	_, err = pkexec(bin, "daemon", "sync-unit", "--user", strconv.Itoa(os.Getuid()), "--retry")
+	return err
+}

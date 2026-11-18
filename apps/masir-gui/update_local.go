@@ -13,6 +13,7 @@ import (
 var (
 	installedComponents  = installedComponentDirectory
 	installBundledDaemon = importLegacyDesktop
+	retryServiceUnit     = retryPackagedServiceUnit
 )
 
 // installedComponentDirectory runs off the UI thread. Only release bundles carry
@@ -46,7 +47,7 @@ func (a *app) offerBundledDaemonUpdate(st *pb.Status) bool {
 	if a.updates.state.bundleSync {
 		return true
 	}
-	eligible := st.GetServiceInstalled() && st.GetPrivileged() && !a.daemonIsBundled() && newerRelease(a.version, st.GetVersion())
+	eligible := st.GetServiceInstalled() && st.GetPrivileged() && !a.daemonIsBundled() && (a.updates.state.unitPending || newerRelease(a.version, st.GetVersion()))
 	if !eligible {
 		if a.updates.state.bundleOffer {
 			a.updates.state.bundleOffer = false
@@ -80,9 +81,17 @@ func (a *app) startBundledDaemonUpdate() {
 	a.updates.state.err = ""
 	a.updates.state.tunWasOn = a.status.GetTunRunning()
 	version := a.version
+	unitOnly := a.updates.state.unitPending
+	if unitOnly && newerRelease(a.status.GetVersion(), version) {
+		version = a.status.GetVersion()
+	}
 	a.async(func() {
-		dir, err := installedComponents()
-		if err == nil {
+		var err error
+		if unitOnly {
+			err = retryServiceUnit()
+		} else if dir, checkErr := installedComponents(); checkErr != nil {
+			err = checkErr
+		} else {
 			err = installBundledDaemon(dir, func() {
 				a.post(func() {
 					if a.updates.state.phase == updateAuthorizing {
@@ -104,6 +113,10 @@ func (a *app) startBundledDaemonUpdate() {
 				a.updates.state.err = describe(err)
 				a.notifyError("Couldn't update the daemon: " + a.updates.state.err)
 				return
+			}
+			if unitOnly {
+				a.updates.state.unitPending = false
+				a.saveGUISettings()
 			}
 			a.followDaemonRestart(version, false)
 		})

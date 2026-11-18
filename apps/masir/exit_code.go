@@ -8,6 +8,7 @@ const (
 	exitServicePending         = 13 // the installed service hasn't taken the new version
 	exitNotNewer               = 14 // the package isn't newer than what is installed
 	exitAuthorizationCancelled = 15 // the administrator dismissed the prompt
+	exitUnitPending            = 16 // the installed service unit needs reconciliation
 	exitUnreachable            = 20 // the release host couldn't be reached
 )
 

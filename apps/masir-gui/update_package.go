@@ -37,6 +37,7 @@ const (
 	pkgExitBusy           = 11
 	pkgExitServicePending = 13
 	pkgExitNotNewer       = 14
+	pkgExitUnitPending    = 16
 	pkgExitUnreachable    = 20
 )
 
@@ -133,13 +134,11 @@ func (a *app) startPackageUpdate() {
 	}
 	st.pkgSync = true
 	st.pkgVersion = version
-	// Before the root command restarts the service, which may report the tunnel down.
-	st.tunWasOn = a.status.GetTunRunning()
 	st.parts = 1
 	st.err = ""
 	st.phase = updateAppDownloading
 	st.progress, st.total = 0, 0
-	st.appPaused, st.appCancelled = false, false
+	st.appPaused = false
 	st.appRun++
 	run := st.appRun
 	ctx, cancel := context.WithCancel(context.Background())
@@ -180,8 +179,6 @@ func (a *app) startPackageUpdate() {
 			st.appCancel = nil
 			st.pkgDir = dir
 			switch {
-			case st.appCancelled:
-				// cancelUpdate queued the deletion.
 			case st.appPaused:
 				st.phase = updateAppPaused
 			case err != nil:
@@ -223,6 +220,7 @@ func (a *app) offerPackageInstall(version, format string, files packageFiles) {
 // installPackageFiles checks the helper, then asks for the password once.
 func (a *app) installPackageFiles(version, format string, files packageFiles) {
 	st := &a.updates.state
+	st.tunWasOn = a.status.GetTunRunning()
 	a.async(func() {
 		bin, err := helperTrusted()
 		if err != nil {
@@ -246,7 +244,13 @@ func (a *app) installPackageFiles(version, format string, files packageFiles) {
 func (a *app) packageInstalled(version string, files packageFiles, format string, err error) {
 	st := &a.updates.state
 	_, code, _ := elevationKindOf(err)
-	pending := err != nil && code == pkgExitServicePending
+	pending := err != nil && (code == pkgExitServicePending || code == pkgExitUnitPending)
+	if code == pkgExitUnitPending {
+		// The quit handler saves GUI settings before the new app starts.
+		st.unitPending = true
+	} else if err == nil {
+		st.unitPending = false
+	}
 	if err != nil && !pending {
 		a.packageFailed(err, files, format)
 		return

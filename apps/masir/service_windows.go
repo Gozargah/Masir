@@ -194,6 +194,6 @@ func (h *serviceHandler) Execute(_ []string, req <-chan svc.ChangeRequest, statu
 // configuration, not a file this can rewrite.
 func serviceDefinition(string, int) string { return "" }
 
-func applyServiceDefinition(string, string) error { return nil }
+func applyServiceDefinition(string, string, bool) error { return nil }
 
 func serviceDefinitionPath() string { return "" }

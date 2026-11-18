@@ -81,7 +81,6 @@ type updateState struct {
 	// download progress for the app update; the daemon job has its own bytes.
 	progress, total int64
 	appPaused       bool
-	appCancelled    bool
 	appCancel       context.CancelFunc
 	appRun          int
 	appSync         bool
@@ -102,6 +101,7 @@ type updateState struct {
 	// Local discovery offers an explicit action; only a click enters bundleSync.
 	// bundleGap remembers a dismissed version pair without contacting the service.
 	bundleOffer bool
+	unitPending bool
 	bundleSync  bool
 	bundleGap   string
 	// block says why MyGo can't replace this app; a .deb or .rpm is updated by its
@@ -808,7 +808,6 @@ func (a *app) startAppUpdate() {
 	a.updates.state.phase = updateAppDownloading
 	a.updates.state.progress, a.updates.state.total = 0, 0
 	a.updates.state.appPaused = false
-	a.updates.state.appCancelled = false
 	a.updates.state.appRun++
 	run := a.updates.state.appRun
 	ctx, cancel := context.WithCancel(context.Background())
@@ -847,7 +846,7 @@ func (a *app) startAppUpdate() {
 				if waitForInstall {
 					approved := make(chan struct{})
 					a.post(func() {
-						if run == a.updates.state.appRun && !a.updates.state.appPaused && !a.updates.state.appCancelled {
+						if run == a.updates.state.appRun && !a.updates.state.appPaused {
 							a.updates.state.installReady = func() { close(approved) }
 							a.updates.state.phase = updateReady
 						}
@@ -876,9 +875,6 @@ func (a *app) startAppUpdate() {
 			a.updates.state.appInstallDone = nil
 			a.updates.state.appSync = false
 			switch {
-			case a.updates.state.appCancelled:
-				a.updates.state.phase = updateAvailable
-				a.updates.state.progress, a.updates.state.total = 0, 0
 			case a.updates.state.appPaused:
 				a.updates.state.phase = updateAppPaused
 			case err != nil:
@@ -992,7 +988,8 @@ func (a *app) cancelUpdate() {
 		})
 	case updateAppDownloading, updateAppPaused, updateReady:
 		a.updates.state.installReady = nil
-		a.updates.state.appCancelled = true
+		a.updates.state.appRun++
+		a.updates.state.appInstallDone = nil
 		if a.updates.state.appCancel != nil {
 			a.updates.state.appCancel()
 			a.updates.state.appCancel = nil
@@ -1139,6 +1136,9 @@ func (a *app) updateTooltip() string {
 	}
 	if a.updates.state.phase == updateFailed && a.updates.state.err != "" {
 		return a.updates.state.err
+	}
+	if a.updates.state.bundleOffer && a.updates.state.unitPending {
+		return "Apply the background service configuration. Administrator permission is required."
 	}
 	if a.updates.state.bundleOffer {
 		return "Finish the update: daemon " + a.status.GetVersion() + " to " + a.version + " from this app. Administrator permission is required; the connection will briefly restart."
