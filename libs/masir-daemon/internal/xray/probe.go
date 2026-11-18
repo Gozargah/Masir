@@ -218,11 +218,11 @@ func readProbeResults(results *bufio.Reader, count int, report func(probeResult)
 }
 
 func serveProbe(input io.Reader, output io.Writer) error {
-	if err := configureProbeInterface(); err != nil {
-		return err
-	}
 	var req probeRequest
 	if err := json.NewDecoder(io.LimitReader(input, maxProbeInput)).Decode(&req); err != nil {
+		return err
+	}
+	if err := configureProbeInterface(req.Options.TunName); err != nil {
 		return err
 	}
 	if len(req.Probes) > maxProbeBatch {

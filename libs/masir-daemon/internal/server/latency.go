@@ -29,7 +29,7 @@ func (s *Server) TestLatency(ctx context.Context, req *pb.TestLatencyRequest) (*
 	}
 
 	started := time.Now()
-	d, err := xray.MeasureDelay(ctx, []byte(req.XrayConfigJson), xray.LatencyOptions{URL: req.ProbeUrl})
+	d, err := xray.MeasureDelay(ctx, []byte(req.XrayConfigJson), xray.LatencyOptions{URL: req.ProbeUrl, TunName: s.probeTunName()})
 
 	if ctx.Err() != nil { // cancelled or timed out: this is an RPC-level outcome
 		return nil, status.FromContextError(ctx.Err()).Err()
@@ -50,4 +50,13 @@ func (s *Server) CancelLatencyTest(ctx context.Context, req *pb.CancelLatencyTes
 	}
 	cancel() // the running handler sees ctx.Err() and returns Canceled
 	return &pb.CancelLatencyTestResponse{}, nil
+}
+
+func (s *Server) probeTunName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running.tun {
+		return s.running.tunName
+	}
+	return ""
 }

@@ -4,15 +4,15 @@
 pinned in `libs/masir-daemon/go.mod` (`676eaf66f8f0`). Like the MyGo patches, it is
 applied to a downloaded source copy; the upstream module is not vendored.
 
-The patch applies outbound socket controllers to XICMP's IPv4/IPv6 datagram and
-raw ICMP sockets using the actual configured peers. Each peer gets its own socket on first use, so peers with different egress
-interfaces retain independent bindings without allocating sockets for unused
-peers. Failed setup closes the rejected socket, and connection shutdown reaps
-all cached sockets. On macOS, binding selects the longest matching non-TUN route for the peer
-address, including connected LAN routes without a default gateway and exempts loopback before any route lookup. Host-address routes through
-loopback also bypass interface binding. The patch exposes
-the TUN interface binding as `InterfaceUpdater.BindSocket`. It includes regression tests
-for controller invocation and failed socket cleanup.
+The patch applies outbound socket controllers to XICMP's IPv4 and IPv6
+sockets. Each peer, including its IPv6 zone, gets its own socket on first use.
+Bindings refresh on the first write after ten seconds, or on the next write
+after a send fails. Reads honor deadlines even before a socket opens.
+
+On macOS, binding uses the longest matching route outside Masir's TUN,
+including connected LAN and local host routes. Probe helpers receive the
+active Masir TUN name from the daemon. With Masir's TUN off, probes use normal
+system routing, including routes owned by other VPNs.
 
 `scripts/with-xray.sh` prepares an ignored `.xray-patched.*` directory and runs a
 command with a private Go workspace replacing only Xray-core. It preserves the

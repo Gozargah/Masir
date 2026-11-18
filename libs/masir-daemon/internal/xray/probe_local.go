@@ -23,6 +23,7 @@ import (
 const DefaultProbeURL = "https://www.google.com/generate_204"
 
 type LatencyOptions struct {
+	TunName  string        // active Masir TUN to exclude from the probe route
 	URL      string        // probe URL; empty means DefaultProbeURL
 	Attempts int           // requests per config; the fastest wins (default 2)
 	Timeout  time.Duration // limit for one request (default 12s)
