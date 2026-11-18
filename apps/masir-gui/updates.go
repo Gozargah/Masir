@@ -576,7 +576,7 @@ func (a *app) watchDaemonUpdate() {
 			a.post(func() {
 				attaching := a.updates.state.attaching
 				a.updates.state.attaching = false
-				if a.updates.state.bundleSync {
+				if a.updates.state.bundleSync || a.updates.state.pkgSync {
 					return
 				}
 				if attaching {
@@ -674,6 +674,9 @@ func (a *app) daemonWatchEnded() {
 	if a.updates.state.sawJob {
 		a.updates.state.sawJob = false
 		a.updates.state.attached = false
+	}
+	if a.updates.state.pkgSync {
+		return // the package flow owns the control and follows the restart itself
 	}
 	if a.offerBundledDaemonUpdate(a.status) {
 		return
