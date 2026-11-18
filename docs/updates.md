@@ -203,7 +203,8 @@ can't be asked.
    so the person types their password every time. The root command trusts nothing the
    person can still write, and works in this order:
    - take `/var/lib/masir-desktop.update.lock` (`flock`), so a second install fails
-     as a busy installer instead of deleting the first one's staging;
+     as a busy installer instead of deleting the first one's staging. apt, dpkg and
+     the service import inherit the lock, so it holds until they end too;
    - copy the three files, as regular files opened with `O_NOFOLLOW` and capped in
      size, into a fresh 0700 directory under `/var/lib/masir-desktop.update-*`
      (left-over ones from a killed run are removed first);

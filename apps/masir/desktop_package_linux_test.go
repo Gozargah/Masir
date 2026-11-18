@@ -222,6 +222,32 @@ func TestInstallPackageWaitsForTheRunningInstall(t *testing.T) {
 	}
 }
 
+// A child the install started keeps the lock after the install process lets go.
+func TestInstallLockOutlivesTheInstallInItsChildren(t *testing.T) {
+	dir := t.TempDir()
+	held, err := lockPackageInstall(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installLock = held
+	child := rootCommand("/bin/sleep", "30")
+	installLock = nil
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	held.Close() // install-package is gone; its package manager isn't
+	if _, err := lockPackageInstall(dir); exitOf(err) != exitInstallerBusy {
+		t.Fatalf("lock taken while the child runs: %v", err)
+	}
+	child.Process.Kill()
+	child.Wait()
+	again, err := lockPackageInstall(dir)
+	if err != nil {
+		t.Fatalf("lock not released after the child: %v", err)
+	}
+	again.Close()
+}
+
 // A package dpkg left half-configured at the target version is repaired, not refused.
 func TestInstallPackageRepairsAnIncompleteInstall(t *testing.T) {
 	f := newInstallFake(t)

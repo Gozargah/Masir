@@ -162,7 +162,8 @@ func installDesktopPackage(pkg, sums, sig, user string, out io.Writer) (err erro
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	installLock = lock
+	defer func() { installLock = nil; lock.Close() }()
 	// A killed run leaves its staging directory behind; the parent is root's alone.
 	if old, _ := filepath.Glob(filepath.Join(packageStagingParent, "masir-desktop.update-*")); len(old) > 0 {
 		for _, d := range old {
@@ -430,5 +431,14 @@ func lastLine(s string) string {
 func rootCommand(name string, args ...string) *exec.Cmd {
 	cmd := exec.Command(name, args...)
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root", "LC_ALL=C"}
+	if installLock != nil {
+		// apt, dpkg and the service import hold the install lock too: flock lasts
+		// until every copy of the descriptor closes, so a killed install-package
+		// can't let the next one delete staging they still use.
+		cmd.ExtraFiles = []*os.File{installLock}
+	}
 	return cmd
 }
+
+// installLock is the lock install-package holds while it runs, nil otherwise.
+var installLock *os.File
