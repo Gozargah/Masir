@@ -63,6 +63,7 @@ type app struct {
 	// stores
 	subscriptions        subscriptionStore
 	ruleDestinationQuery string
+	ruleServerFolds      serverSearchFolds
 	ruleDestinations     ui.ListState
 	ruleReview           rulePageState
 	rulePage             rulePageState
@@ -93,7 +94,7 @@ type app struct {
 	connection             connectionState
 	busy                   string          // what a running action is called, e.g. "Connecting…"
 	query                  string          // search in the server list
-	collapsedSubs          map[string]bool // subscription group IDs collapsed in server picker
+	collapsedSubs          map[string]bool // subscription group IDs collapsed in server lists
 	collapsedRules         map[string]bool // rule section titles collapsed in rules panel
 	ruleQuery              string
 	notices                []string // toasts waiting for the next frame
@@ -133,6 +134,7 @@ type app struct {
 	serverScrollRestored bool
 	lastServerTop        int
 	lastServerQuery      string
+	mainServerFolds      serverSearchFolds
 	scrollToSubID        string
 
 	ruleScrollKey      string
