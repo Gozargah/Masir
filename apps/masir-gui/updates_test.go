@@ -64,11 +64,11 @@ func TestUpdatePercentAndLabels(t *testing.T) {
 		t.Fatalf("percent = %d", got)
 	}
 	// One download (a bundled daemon, or an app that is current): no part marker.
-	if got := a.updateLabel(); got != "Part 1/1 · 42%" {
+	if got := a.updateLabel(); got != "Downloading 42%" {
 		t.Fatalf("label = %q", got)
 	}
 	a.updates.state.phase = updatePaused
-	if got := a.updateLabel(); got != "Paused 1/1 · 42%" {
+	if got := a.updateLabel(); got != "Paused · 42%" {
 		t.Fatalf("paused label = %q", got)
 	}
 }
@@ -110,7 +110,7 @@ func TestTwoPartUpdateLabels(t *testing.T) {
 	for phase, want := range map[updatePhase]string{
 		updateAvailable:     "New Update",
 		updateVerifying:     "Verifying...",
-		updateInstalling:    "Installing..",
+		updateInstalling:    "Installing...",
 		updateRestarting:    "Restarting...",
 		updateAppInstalling: "Installing...",
 	} {
@@ -627,13 +627,13 @@ func TestSharedDesktopUpdateUsesOneDownloadAndImportsBeforeCommit(t *testing.T) 
 	a.updates.state.rel.DesktopImportSupported = true
 	a.updates.state.app = &mygo.Update{Version: "0.2.0"}
 	a.updates.state.phase = updateAvailable
-	oldEnabled, oldInstall, oldImport, oldRelaunch := preparedUpdatesEnabled, installSharedAppUpdate, importSharedComponents, relaunchApp
+	oldEnabled, oldInstall, oldImport, oldRelaunch := preparedUpdatesEnabled, installPreparedAppUpdate, importSharedComponents, relaunchApp
 	defer func() {
-		preparedUpdatesEnabled, installSharedAppUpdate, importSharedComponents, relaunchApp = oldEnabled, oldInstall, oldImport, oldRelaunch
+		preparedUpdatesEnabled, installPreparedAppUpdate, importSharedComponents, relaunchApp = oldEnabled, oldInstall, oldImport, oldRelaunch
 	}()
 	preparedUpdatesEnabled = func() bool { return true }
 	imported, committed, relaunched := false, false, false
-	installSharedAppUpdate = func(_ context.Context, _ *mygo.Update, _ func(int64, int64), prepare func(string) error) error {
+	installPreparedAppUpdate = func(_ context.Context, _ *mygo.Update, _ func(int64, int64), prepare func(string) error) error {
 		if err := prepare("verified staged app"); err != nil {
 			return err
 		}
@@ -693,13 +693,13 @@ func TestSharedDesktopImportFailureStopsAppCommit(t *testing.T) {
 	a.updates.state.rel.DesktopImportSupported = true
 	a.updates.state.app = &mygo.Update{Version: "0.2.0"}
 	a.updates.state.phase = updateAvailable
-	oldEnabled, oldInstall, oldImport, oldRelaunch := preparedUpdatesEnabled, installSharedAppUpdate, importSharedComponents, relaunchApp
+	oldEnabled, oldInstall, oldImport, oldRelaunch := preparedUpdatesEnabled, installPreparedAppUpdate, importSharedComponents, relaunchApp
 	defer func() {
-		preparedUpdatesEnabled, installSharedAppUpdate, importSharedComponents, relaunchApp = oldEnabled, oldInstall, oldImport, oldRelaunch
+		preparedUpdatesEnabled, installPreparedAppUpdate, importSharedComponents, relaunchApp = oldEnabled, oldInstall, oldImport, oldRelaunch
 	}()
 	preparedUpdatesEnabled = func() bool { return true }
 	committed := false
-	installSharedAppUpdate = func(_ context.Context, _ *mygo.Update, _ func(int64, int64), prepare func(string) error) error {
+	installPreparedAppUpdate = func(_ context.Context, _ *mygo.Update, _ func(int64, int64), prepare func(string) error) error {
 		if err := prepare("staged"); err != nil {
 			return err
 		}
@@ -719,17 +719,77 @@ func TestSharedDesktopImportFailureStopsAppCommit(t *testing.T) {
 	}
 }
 
-func TestSharedDesktopProgressLabelsUsePartOne(t *testing.T) {
+func TestSingleDesktopDownloadUsesUnnumberedLabels(t *testing.T) {
 	a := newTestApp(ukServers())
 	a.updates.state.parts = 1
 	a.updates.state.progress = 42
 	a.updates.state.total = 100
 	a.updates.state.phase = updateAppDownloading
-	if got := a.updateLabel(); got != "Part 1/1 · 42%" {
+	if got := a.updateLabel(); got != "Downloading 42%" {
 		t.Fatalf("label=%s", got)
 	}
 	a.updates.state.phase = updateAppPaused
-	if got := a.updateLabel(); got != "Paused 1/1 · 42%" {
+	if got := a.updateLabel(); got != "Paused · 42%" {
 		t.Fatalf("label=%s", got)
+	}
+}
+
+func TestPreparedDesktopUpdateWaitsForInstall(t *testing.T) {
+	for _, confirm := range []bool{false, true} {
+		a := newTestApp(ukServers())
+		a.updates.state.app = &mygo.Update{Version: "0.2.0"}
+		posts := make(chan func(), 4)
+		a.post = func(fn func()) { posts <- fn }
+		a.async = func(fn func()) { go fn() }
+
+		oldConfirm, oldInstall, oldRelaunch := confirmPreparedUpdates, installPreparedAppUpdate, relaunchApp
+		confirmPreparedUpdates = func() bool { return true }
+		committed := make(chan struct{})
+		installPreparedAppUpdate = func(_ context.Context, _ *mygo.Update, progress func(int64, int64), prepare func(string) error) error {
+			progress(100, 100)
+			if err := prepare("verified app"); err != nil {
+				return err
+			}
+			close(committed)
+			return nil
+		}
+		relaunched := false
+		relaunchApp = func() { relaunched = true }
+
+		a.startAppUpdate()
+		(<-posts)() // download progress
+		(<-posts)() // verified payload
+		a.applyJob(&pb.UpdateJob{State: pb.UpdateState_UPDATE_STATE_INSTALLING})
+		a.daemonWatchEnded()
+		if label := a.updateLabel(); label != "Install Update" {
+			t.Errorf("ready label %q", label)
+		}
+		select {
+		case <-committed:
+			t.Error("the installer committed before confirmation")
+		default:
+		}
+
+		if confirm {
+			a.confirmInstall()
+		} else {
+			a.cancelUpdate()
+		}
+		(<-posts)() // installer result
+		confirmPreparedUpdates, installPreparedAppUpdate, relaunchApp = oldConfirm, oldInstall, oldRelaunch
+
+		if relaunched != confirm {
+			t.Errorf("confirmed %v, relaunched %v", confirm, relaunched)
+		}
+		select {
+		case <-committed:
+			if !confirm {
+				t.Error("the installer committed after cancellation")
+			}
+		default:
+			if confirm {
+				t.Error("the installer did not commit")
+			}
+		}
 	}
 }

@@ -654,6 +654,10 @@ func daemonSyncUnit(a args) error {
 // syncServiceUnit is sync-unit with root rights. It does nothing when the installed
 // definition already matches what the service's binary carries.
 func syncServiceUnit(user string) error {
+	return syncServiceUnitWith(user, applyServiceDefinition)
+}
+
+func syncServiceUnitWith(user string, apply func(string, string) error) error {
 	path := serviceDefinitionPath()
 	if path == "" {
 		return nil // this OS keeps no definition file
@@ -680,7 +684,7 @@ func syncServiceUnit(user string) error {
 	if len(out) == 0 {
 		return nil
 	}
-	if err := applyServiceDefinition(path, string(out)); err != nil {
+	if err := apply(path, string(out)); err != nil {
 		return err
 	}
 	ui.Success("The masir service definition is up to date.")

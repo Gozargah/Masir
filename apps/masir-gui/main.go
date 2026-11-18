@@ -157,6 +157,12 @@ func (s *shell) ready() {
 	// and Linux. macOS has no such window, which is why it worked there.
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) {
 		s.quitting = true
+		st := &s.a.updates.state
+		if st.phase == updateReady && st.appSync {
+			// Discard the verified, uncommitted MyGo payload before the process exits.
+			st.appCancel()
+			<-st.appInstallDone
+		}
 		s.a.flushPanelHeight()
 		s.a.flushGUISettings()
 	})

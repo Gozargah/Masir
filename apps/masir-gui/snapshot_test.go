@@ -247,6 +247,9 @@ func TestSnapshots(t *testing.T) {
 			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
 			a.updates.state.phase = updateVerifying
 		}},
+		{"update-ready", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.phase = updateReady
+		}},
 		{"update-package-password", true, func(a *app, tt *ui.Tester) {
 			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
 			a.updates.state.phase = updateAuthorizing
