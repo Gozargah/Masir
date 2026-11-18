@@ -133,6 +133,7 @@ func (a *app) startPackageUpdate() {
 		proxy = fmt.Sprintf("http://127.0.0.1:%d", a.status.GetSettings().GetProxyPort())
 	}
 	st.pkgSync = true
+	st.pkgVersion = version
 	// Before the root command restarts the service, which may report the tunnel down.
 	st.tunWasOn = a.status.GetTunRunning()
 	st.parts = 1
@@ -181,9 +182,7 @@ func (a *app) startPackageUpdate() {
 			st.pkgDir = dir
 			switch {
 			case st.appCancelled:
-				if dir != "" {
-					a.pkgSerial(func() func() { os.RemoveAll(dir); return nil })
-				}
+				// cancelUpdate queued the deletion.
 			case st.appPaused:
 				st.phase = updateAppPaused
 			case err != nil:

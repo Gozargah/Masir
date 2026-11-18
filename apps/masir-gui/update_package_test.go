@@ -452,6 +452,39 @@ func TestCancelledCleanupWaitsBeforeTheNextDownload(t *testing.T) {
 	}
 }
 
+// Cancel, then retry before the cancelled download's result arrives: the retry starts
+// clean instead of resuming the partial the cancel deleted.
+func TestARetryRightAfterCancelStartsClean(t *testing.T) {
+	a, _, _ := packageApp(t, blockPackageDeb)
+	var queue []func()
+	a.async = func(fn func()) { queue = append(queue, fn) }
+	attempts := 0
+	resumed := false
+	fetchPackage = func(ctx context.Context, r packageFetch, progress func(int64, int64)) (packageFiles, error) {
+		attempts++
+		part := filepath.Join(r.dir, "part")
+		if attempts == 1 {
+			os.MkdirAll(r.dir, 0o700)
+			os.WriteFile(part, []byte("old"), 0o600)
+			return packageFiles{}, ctx.Err()
+		}
+		_, err := os.Stat(part)
+		resumed = err == nil
+		return packageFiles{}, errors.New("stop here")
+	}
+	a.startUpdate()
+	a.cancelUpdate()
+	a.startUpdate() // before the cancelled download's worker has run
+	for len(queue) > 0 {
+		fn := queue[0]
+		queue = queue[1:]
+		fn()
+	}
+	if attempts != 2 || resumed {
+		t.Fatalf("attempts %d, resumed the cancelled partial: %v", attempts, resumed)
+	}
+}
+
 func TestIgnoringAPackageUpdateHidesIt(t *testing.T) {
 	a, f, _ := packageApp(t, blockPackageDeb)
 	f.release = releaseInfo("0.1.7", "0.1.7")
