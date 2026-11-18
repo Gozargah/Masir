@@ -10,14 +10,17 @@ required peer opens at dial time so setup errors reach the caller. Optional
 peers open on first use. Bindings refresh on the first write after ten seconds
 or on the next write after a send fails. A failed periodic refresh can reuse
 the live socket. Retired sockets drain replies for two seconds after their last
-active send. Reads honor deadlines before a socket opens and return EOF after
-the connection closes.
+active send. Raw ICMP IDs remain reserved until their sockets close, then
+become available for reuse. Reads honor deadlines before a socket opens and
+return EOF after the connection closes.
 
 On macOS, binding selects a matching non-TUN route, respecting interface scope
 and including connected LAN and local host routes. The daemon snapshots its
 active TUN after the probe acquires a worker slot. If that interface disappears
 before setup, the helper retries once with the new state. With Masir's TUN off,
-probes use normal system routing, including routes owned by other VPNs.
+probes use normal system routing, including routes owned by other VPNs. On
+Linux, automatic binding uses the peer family’s default route when available.
+Explicit interface settings take precedence.
 
 `scripts/with-xray.sh` prepares an ignored `.xray-patched.*` directory and runs a
 command with a private Go workspace replacing only Xray-core. It preserves the

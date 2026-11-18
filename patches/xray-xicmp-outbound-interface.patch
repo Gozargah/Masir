@@ -217,12 +217,93 @@ new file mode 100644
 +		t.Fatal("scoped reject route was ignored")
 +	}
 +}
+diff --git a/proxy/tun/bind_socket_linux.go b/proxy/tun/bind_socket_linux.go
+new file mode 100644
+--- /dev/null
++++ b/proxy/tun/bind_socket_linux.go
+@@ -0,0 +1,46 @@
++//go:build linux && !android
++
++package tun
++
++import (
++	"net"
++	"net/netip"
++
++	"github.com/vishvananda/netlink"
++)
++
++func (updater *InterfaceUpdater) socketInterface(network, address string) (*net.Interface, bool, error) {
++	updater.Lock()
++	tunIndex, fixedName, cached := updater.tunIndex, updater.fixedName, updater.iface
++	updater.Unlock()
++	if fixedName != "" {
++		return cached, false, nil
++	}
++	family := linuxSocketFamily(network, address)
++	if family == 0 {
++		return cached, false, nil
++	}
++	iface, err := findDefaultInterface(family, tunIndex)
++	if err != nil && cached != nil {
++		// Preserve connected routes on hosts without a default for this family.
++		return cached, false, nil
++	}
++	return iface, false, err
++}
++
++func linuxSocketFamily(network, address string) int {
++	if peer, err := netip.ParseAddrPort(address); err == nil {
++		if peer.Addr().Unmap().Is4() {
++			return netlink.FAMILY_V4
++		}
++		return netlink.FAMILY_V6
++	}
++	switch network {
++	case "ip4", "tcp4", "udp4":
++		return netlink.FAMILY_V4
++	case "ip6", "tcp6", "udp6":
++		return netlink.FAMILY_V6
++	default:
++		return 0
++	}
++}
+diff --git a/proxy/tun/bind_socket_linux_test.go b/proxy/tun/bind_socket_linux_test.go
+new file mode 100644
+--- /dev/null
++++ b/proxy/tun/bind_socket_linux_test.go
+@@ -0,0 +1,25 @@
++//go:build linux && !android
++
++package tun
++
++import (
++	"testing"
++
++	"github.com/vishvananda/netlink"
++)
++
++func TestLinuxSocketFamilyUsesPeer(t *testing.T) {
++	for _, tc := range []struct {
++		network, address string
++		want             int
++	}{
++		{"udp4", "192.0.2.1:80", netlink.FAMILY_V4},
++		{"udp6", "[2001:db8::1]:80", netlink.FAMILY_V6},
++		{"udp6", "[::ffff:192.0.2.1]:53", netlink.FAMILY_V4},
++		{"ip6", "example.invalid:0", netlink.FAMILY_V6},
++	} {
++		if got := linuxSocketFamily(tc.network, tc.address); got != tc.want {
++			t.Errorf("%s %s: got family %d, want %d", tc.network, tc.address, got, tc.want)
++		}
++	}
++}
 diff --git a/proxy/tun/bind_socket_other.go b/proxy/tun/bind_socket_other.go
 new file mode 100644
 --- /dev/null
 +++ b/proxy/tun/bind_socket_other.go
 @@ -0,0 +1,9 @@
-+//go:build !darwin
++//go:build !darwin && (!linux || android)
 +
 +package tun
 +
@@ -533,7 +614,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  	"github.com/xtls/xray-core/transport/internet/finalmask"
  	"golang.org/x/net/icmp"
  	"golang.org/x/net/ipv4"
-@@ -35,68 +38,183 @@
+@@ -35,68 +38,199 @@
  	err  error
  }
 
@@ -565,7 +646,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	port                        string
 +	clientID                    [8]byte
 +	nextID, seq                 int
-+	initialID                   int
++	rawIDs                      map[int]bool
 +	peers                       map[netip.Addr]*icmpPeerSocket
 +	draining                    map[*icmpPeerSocket]bool
 +	readDeadline, writeDeadline time.Time
@@ -640,9 +721,12 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 -	go conn.recv6()
 -
 +		udp: c.DGRAM, ips: ips, ip: ip, port: dest.Port.String(), clientID: clientID,
-+		initialID: mrand.Intn(65536), seq: 1,
++		nextID: mrand.Intn(65536), seq: 1,
 +		peers: make(map[netip.Addr]*icmpPeerSocket), draining: make(map[*icmpPeerSocket]bool),
 +		deadlineChanged: make(chan struct{}), readCh: make(chan packet), closeCh: make(chan struct{}),
++	}
++	if !conn.udp {
++		conn.rawIDs = make(map[int]bool)
 +	}
 +	if len(ips) <= 1 {
 +		if _, err := conn.socketForPeer(ip); err != nil {
@@ -674,7 +758,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	if previous != nil && !previous.closed() && !c.draining[previous] && time.Now().Before(previous.refreshAt) {
 +		return previous, nil
 +	}
-+	if !c.udp && c.nextID >= 65536 && (previous == nil || !previous.closed()) {
++	if len(c.rawIDs) == 65536 {
 +		if previous != nil && !previous.closed() && !c.draining[previous] {
 +			return previous, nil
 +		}
@@ -704,14 +788,17 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +		}
 +		return nil, err
 +	}
-+	id := (c.initialID + c.nextID) % 65536
-+	if previous != nil && (c.udp || previous.closed()) {
-+		id = previous.id
++	id := c.nextID
++	if c.udp {
++		if previous != nil {
++			id = previous.id
++		} else {
++			c.nextID = (id + 1) % 65536
++		}
 +	} else {
-+		// Raw sockets can observe each other's replies while draining. Do not
-+		// assign the same ID to two live sockets on this connection.
-+		c.nextID++
++		id = c.reserveRawID()
 +	}
++
 +	socket := &icmpPeerSocket{conn: conn, id: id, refreshAt: time.Now().Add(peerSocketRefresh), done: make(chan struct{})}
 +	if previous != nil && !previous.closed() && !c.draining[previous] {
 +		c.retire(previous)
@@ -727,6 +814,17 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	return socket, nil
 +}
 +
++// The caller checks capacity and holds the client lock.
++func (c *xicmpConnClient) reserveRawID() int {
++	id := c.nextID
++	for c.rawIDs[id] {
++		id = (id + 1) % 65536
++	}
++	c.rawIDs[id] = true
++	c.nextID = (id + 1) % 65536
++	return id
++}
++
 +// The client lock protects borrowing, retirement and timer state.
 +func (c *xicmpConnClient) retire(socket *icmpPeerSocket) {
 +	c.draining[socket] = true
@@ -740,7 +838,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	socket.drain = time.AfterFunc(peerSocketDrain, func() {
 +		c.mu.Lock()
 +		defer c.mu.Unlock()
-+		socket.close()
++		c.closeSocket(socket)
 +		delete(c.draining, socket)
 +	})
 +}
@@ -754,22 +852,21 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	}
 +}
 +
-+// Caller holds the client lock when retiring a socket.
-+func (s *icmpPeerSocket) close() {
-+	select {
-+	case <-s.done:
++// The ID stays reserved until the underlying socket is closed.
++func (c *xicmpConnClient) closeSocket(socket *icmpPeerSocket) {
++	if socket.closed() {
 +		return
-+	default:
-+		close(s.done)
-+		if s.drain != nil {
-+			s.drain.Stop()
-+		}
-+		s.conn.Close()
 +	}
++	close(socket.done)
++	if socket.drain != nil {
++		socket.drain.Stop()
++	}
++	socket.conn.Close()
++	delete(c.rawIDs, socket.id)
  }
 
  func (c *xicmpConnClient) closed() bool {
-@@ -108,26 +226,17 @@
+@@ -108,26 +242,17 @@
  	}
  }
 
@@ -801,7 +898,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  			}
  			errors.LogErrorInner(context.Background(), err, "recv err 4")
  			return
-@@ -149,7 +258,7 @@
+@@ -149,7 +274,7 @@
 
  		// errors.LogDebug(context.Background(), "id ", echo.ID, " seq ", echo.Seq, " addr ", addr)
 
@@ -810,7 +907,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  			continue
  		}
 
-@@ -161,7 +270,8 @@
+@@ -161,7 +286,8 @@
  		copy(p, echo.Data)
 
  		if !c.udp {
@@ -820,7 +917,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  		}
 
  		select {
-@@ -169,33 +279,24 @@
+@@ -169,33 +295,24 @@
  			p:    p,
  			addr: addr,
  		}:
@@ -860,7 +957,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  			}
  			errors.LogErrorInner(context.Background(), err, "recv err 6")
  			return
-@@ -217,7 +318,7 @@
+@@ -217,7 +334,7 @@
 
  		// errors.LogDebug(context.Background(), "id ", echo.ID, " seq ", echo.Seq, " addr ", addr)
 
@@ -869,7 +966,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  			continue
  		}
 
-@@ -229,7 +330,8 @@
+@@ -229,7 +346,8 @@
  		copy(p, echo.Data)
 
  		if !c.udp {
@@ -879,7 +976,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  		}
 
  		select {
-@@ -237,23 +339,58 @@
+@@ -237,23 +355,58 @@
  			p:    p,
  			addr: addr,
  		}:
@@ -948,7 +1045,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  }
 
  func (c *xicmpConnClient) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-@@ -268,15 +405,14 @@
+@@ -268,15 +421,14 @@
  	c.seq %= 65536
  	c.mu.Unlock()
 
@@ -969,7 +1066,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  	}
 
  	b := pool.Get().([]byte)[:finalmask.UDPSize]
-@@ -285,14 +421,33 @@
+@@ -285,14 +437,33 @@
  	copy(b[8:], c.clientID[:])
  	copy(b[16:], p)
 
@@ -1010,7 +1107,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  	if err != nil {
  		errors.LogErrorInner(context.Background(), err, "send err")
  		return 0, err
-@@ -302,13 +457,19 @@
+@@ -302,13 +473,19 @@
 
  func (c *xicmpConnClient) Close() error {
  	c.mu.Lock()
@@ -1023,17 +1120,17 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 -	_ = c.icmp4.Close()
 -	_ = c.icmp6.Close()
 +	for _, socket := range c.peers {
-+		socket.close()
++		c.closeSocket(socket)
 +	}
 +	for socket := range c.draining {
-+		socket.close()
++		c.closeSocket(socket)
 +	}
 +	clear(c.draining)
 +	c.mu.Unlock()
  	c.wg.Wait()
  	close(c.readCh)
  	return nil
-@@ -319,20 +480,42 @@
+@@ -319,20 +496,42 @@
  }
 
  func (c *xicmpConnClient) SetDeadline(t time.Time) error {
@@ -1082,7 +1179,7 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  	return nil
  }
 
-@@ -360,3 +543,38 @@
+@@ -360,3 +559,38 @@
  	}
  	return b[:8+dataLen]
  }
@@ -1125,7 +1222,7 @@ diff --git a/transport/internet/finalmask/xicmp/client_control_test.go b/transpo
 new file mode 100644
 --- /dev/null
 +++ b/transport/internet/finalmask/xicmp/client_control_test.go
-@@ -0,0 +1,286 @@
+@@ -0,0 +1,309 @@
 +//go:build darwin || linux
 +
 +package xicmp
@@ -1410,5 +1507,28 @@ new file mode 100644
 +	case <-old.done:
 +	case <-time.After(peerSocketDrain + time.Second):
 +		t.Fatal("old socket did not finish draining")
++	}
++}
++
++func TestRawIDsRemainReservedUntilSocketCloses(t *testing.T) {
++	requireICMPSockets(t)
++	conn, err := icmp.ListenPacket("udp4", "0.0.0.0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer conn.Close()
++	c := &xicmpConnClient{nextID: 65535, rawIDs: map[int]bool{0: true}}
++	old := &icmpPeerSocket{conn: conn, id: c.reserveRawID(), done: make(chan struct{})}
++	if old.id != 65535 || c.reserveRawID() != 1 {
++		t.Fatal("allocator did not wrap past live IDs")
++	}
++	c.nextID = old.id
++	if c.reserveRawID() == old.id {
++		t.Fatal("reused ID of a socket still open")
++	}
++	c.closeSocket(old)
++	c.nextID = old.id
++	if c.reserveRawID() != old.id {
++		t.Fatal("closed socket's ID was not reusable")
 +	}
 +}
