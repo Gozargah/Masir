@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -375,6 +376,41 @@ func TestCancellingAPackageDownloadDeletesIt(t *testing.T) {
 	}
 	if left, _ := os.ReadDir(p.cache); len(left) != 0 {
 		t.Fatalf("download kept: %v", left)
+	}
+}
+
+// A cancelled download's cleanup can't delete the next attempt's download, even when
+// the goroutines would run the new download first.
+func TestCancelledCleanupWaitsBeforeTheNextDownload(t *testing.T) {
+	a, _, _ := packageApp(t, blockPackageDeb)
+	var queue []func()
+	a.async = func(fn func()) { queue = append(queue, fn) }
+	attempts := 0
+	fetchPackage = func(ctx context.Context, r packageFetch, progress func(int64, int64)) (packageFiles, error) {
+		attempts++
+		os.MkdirAll(r.dir, 0o700)
+		if attempts == 1 {
+			return packageFiles{}, ctx.Err() // cancelled
+		}
+		os.WriteFile(filepath.Join(r.dir, "part"), []byte("new"), 0o600)
+		return packageFiles{}, errors.New("stop here")
+	}
+	a.startUpdate()
+	a.cancelUpdate()
+	queue[0]() // the cancelled download ends and queues its cleanup
+	a.startUpdate()
+	if len(queue) != 3 {
+		t.Fatalf("queued %d, want the cleanup and the new download", len(queue))
+	}
+	cleanup, next := queue[1], queue[2]
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); next() }()
+	time.Sleep(50 * time.Millisecond) // the new download is waiting for the cleanup
+	go func() { defer wg.Done(); cleanup() }()
+	wg.Wait()
+	if _, err := os.Stat(filepath.Join(a.updates.state.pkgDir, "part")); err != nil {
+		t.Fatalf("the new download was deleted: %v", err)
 	}
 }
 

@@ -144,7 +144,8 @@ func (a *app) startPackageUpdate() {
 	run := st.appRun
 	ctx, cancel := context.WithCancel(context.Background())
 	st.appCancel = cancel
-	a.async(func() {
+	// After a cancelled attempt's cleanup, which would otherwise delete this download.
+	a.pkgSerial(func() func() {
 		root, err := packageCacheDir()
 		dir := ""
 		var files packageFiles
@@ -172,7 +173,7 @@ func (a *app) startPackageUpdate() {
 				})
 			})
 		}
-		a.post(func() {
+		return func() {
 			if run != st.appRun {
 				return // a pause and resume started a newer attempt
 			}
@@ -181,7 +182,7 @@ func (a *app) startPackageUpdate() {
 			switch {
 			case st.appCancelled:
 				if dir != "" {
-					a.async(func() { os.RemoveAll(dir) })
+					a.pkgSerial(func() func() { os.RemoveAll(dir); return nil })
 				}
 			case st.appPaused:
 				st.phase = updateAppPaused
@@ -191,7 +192,28 @@ func (a *app) startPackageUpdate() {
 				st.phase = updateVerifying
 				a.installPackageFiles(version, format, files)
 			}
-		})
+		}
+	})
+}
+
+// pkgSerial runs fn off the main thread after every earlier pkgSerial call has ended,
+// then posts what fn returns. The package cache's download and cleanups go through it
+// in click order: a goroutine each, unordered, let a cancelled attempt's cleanup delete
+// the next attempt's download. Call it on the main thread.
+func (a *app) pkgSerial(fn func() (then func())) {
+	st := &a.updates.state
+	prev := st.pkgLast
+	done := make(chan struct{})
+	st.pkgLast = done
+	a.async(func() {
+		if prev != nil {
+			<-prev
+		}
+		then := fn()
+		close(done) // before then: it may queue the next step
+		if then != nil {
+			a.post(then)
+		}
 	})
 }
 
@@ -227,7 +249,7 @@ func (a *app) packageInstalled(version string, files packageFiles, format string
 		return
 	}
 	if dir := st.pkgDir; dir != "" {
-		a.async(func() { os.RemoveAll(dir) })
+		a.pkgSerial(func() func() { os.RemoveAll(dir); return nil })
 	}
 	switch {
 	case pending || a.status == nil || !a.reachable:
@@ -257,7 +279,7 @@ func (a *app) packageFailed(err error, files packageFiles, format string) {
 		return
 	}
 	if remove && files.pkg != "" {
-		a.async(func() { os.Remove(files.pkg) })
+		a.pkgSerial(func() func() { os.Remove(files.pkg); return nil })
 	}
 	st.phase = updateFailed
 	st.err = text
