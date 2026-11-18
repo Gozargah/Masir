@@ -353,6 +353,30 @@ func TestPackageUpdateUntrustedHelperFailsBeforeThePrompt(t *testing.T) {
 	}
 }
 
+// The app relaunches only after the installed download was deleted: quitting first
+// would leave it in the cache.
+func TestAPackageRelaunchWaitsForItsCleanup(t *testing.T) {
+	a, _, p := packageApp(t, blockPackageDeb)
+	p.installErr = elevationExit(pkgExitServicePending)
+	var queue []func()
+	a.async = func(fn func()) { queue = append(queue, fn) }
+	left := -1
+	relaunchApp = func() {
+		p.relaunches++
+		entries, _ := os.ReadDir(p.cache)
+		left = len(entries)
+	}
+	a.startUpdate()
+	for len(queue) > 0 {
+		fn := queue[0]
+		queue = queue[1:]
+		fn()
+	}
+	if p.relaunches != 1 || left != 0 {
+		t.Fatalf("relaunches %d with %d download(s) still in the cache", p.relaunches, left)
+	}
+}
+
 func TestPackageInstalledButServicePendingRelaunches(t *testing.T) {
 	a, _, p := packageApp(t, blockPackageDeb)
 	p.installErr = elevationExit(pkgExitServicePending)
