@@ -25,3 +25,6 @@ apps/masir-gui/resources/windows-*/
 .mygo-patched.go.mod
 .mygo-patched.go.sum
 .mygo-patched.lock
+
+# temporary patched Xray source and workspace
+.xray-patched.*

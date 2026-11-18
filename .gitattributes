@@ -1,3 +1,2 @@
-# Shell scripts and patches are read by tools on Windows too: keep their line endings LF.
-*.sh text eol=lf
-*.patch text eol=lf
+# Unified patches contain context prefixes before tabs and blank lines.
+patches/*.patch -whitespace

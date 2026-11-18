@@ -31,7 +31,9 @@ jobs:
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
-          args: release --clean
+          install-only: true
+      - name: Build and release with patched Xray
+        run: sh scripts/with-xray.sh goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # The minisign public key(s) the built masir checks releases against.

@@ -1,0 +1,263 @@
+diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/finalmask/xicmp/client.go
+--- a/transport/internet/finalmask/xicmp/client.go
++++ b/transport/internet/finalmask/xicmp/client.go
+@@ -10,13 +10,16 @@
+ 	"io"
+ 	mrand "math/rand"
+ 	"net/netip"
++	"strings"
+ 	"sync"
++	"syscall"
+ 	"time"
+ 	_ "unsafe"
+
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/errors"
+ 	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/transport/internet"
+ 	"github.com/xtls/xray-core/transport/internet/finalmask"
+ 	"golang.org/x/net/icmp"
+ 	"golang.org/x/net/ipv4"
+@@ -54,13 +57,19 @@
+ 	var icmp4, icmp6 *icmp.PacketConn
+ 	var err4, err6 error
+ 	if c.DGRAM {
+-		icmp4, err4 = icmp.ListenPacket("udp4", "0.0.0.0")
+-		icmp6, err6 = icmp.ListenPacket("udp6", "::")
++		icmp4, err4 = listenControlledICMP("udp4", "0.0.0.0", dest.NetAddr())
++		icmp6, err6 = listenControlledICMP("udp6", "::", dest.NetAddr())
+ 	} else {
+-		icmp4, err4 = icmp.ListenPacket("ip4:icmp", "0.0.0.0")
+-		icmp6, err6 = icmp.ListenPacket("ip6:ipv6-icmp", "::")
++		icmp4, err4 = listenControlledICMP("ip4:icmp", "0.0.0.0", dest.NetAddr())
++		icmp6, err6 = listenControlledICMP("ip6:ipv6-icmp", "::", dest.NetAddr())
+ 	}
+ 	if err4 != nil || err6 != nil {
++		if icmp4 != nil {
++			icmp4.Close()
++		}
++		if icmp6 != nil {
++			icmp6.Close()
++		}
+ 		return nil, errors.Combine(err4, err6)
+ 	}
+
+@@ -360,3 +369,38 @@
+ 	}
+ 	return b[:8+dataLen]
+ }
++
++// ICMP opens its sockets outside the system dialer. Apply the same controllers
++// so transports such as TUN can bind these sockets to the outbound interface.
++func listenControlledICMP(network, address, destination string) (*icmp.PacketConn, error) {
++	conn, err := icmp.ListenPacket(network, address)
++	if err != nil {
++		return nil, err
++	}
++	var underlying net.PacketConn
++	if p := conn.IPv4PacketConn(); p != nil {
++		underlying = p.PacketConn
++	} else {
++		underlying = conn.IPv6PacketConn().PacketConn
++	}
++	sc, ok := underlying.(syscall.Conn)
++	if !ok {
++		conn.Close()
++		return nil, fmt.Errorf("ICMP socket does not expose syscall connection")
++	}
++	raw, err := sc.SyscallConn()
++	if err != nil {
++		conn.Close()
++		return nil, err
++	}
++	internet.ControllersLock.Lock()
++	controllers := append([]func(string, string, syscall.RawConn) error(nil), internet.Controllers...)
++	internet.ControllersLock.Unlock()
++	for _, control := range controllers {
++		if err := control(strings.SplitN(network, ":", 2)[0], destination, raw); err != nil {
++			conn.Close()
++			return nil, err
++		}
++	}
++	return conn, nil
++}
+diff --git a/transport/internet/finalmask/xicmp/client_control_test.go b/transport/internet/finalmask/xicmp/client_control_test.go
+new file mode 100644
+--- /dev/null
++++ b/transport/internet/finalmask/xicmp/client_control_test.go
+@@ -0,0 +1,87 @@
++//go:build darwin || linux
++
++package xicmp
++
++import (
++	"errors"
++	"syscall"
++	"testing"
++
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/transport/internet"
++)
++
++func withControllers(t *testing.T, controllers ...func(string, string, syscall.RawConn) error) {
++	t.Helper()
++	internet.ControllersLock.Lock()
++	old := internet.Controllers
++	internet.Controllers = controllers
++	internet.ControllersLock.Unlock()
++	t.Cleanup(func() {
++		internet.ControllersLock.Lock()
++		internet.Controllers = old
++		internet.ControllersLock.Unlock()
++	})
++}
++
++func TestICMPDialerControllers(t *testing.T) {
++	var networks []string
++	destination := net.Destination{Address: net.LocalHostIP, Port: 1234, Network: net.Network_UDP}
++	withControllers(t, func(network, address string, c syscall.RawConn) error {
++		if address != destination.NetAddr() {
++			t.Errorf("address = %q, want %q", address, destination.NetAddr())
++		}
++		networks = append(networks, network)
++		return nil
++	})
++	c, err := NewConnClient(&Config{DGRAM: true}, &destination)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer c.Close()
++	if len(networks) != 2 || networks[0] != "udp4" || networks[1] != "udp6" {
++		t.Fatalf("controllers saw %v, want udp4 and udp6", networks)
++	}
++}
++
++func TestICMPControllerFailureClosesSocket(t *testing.T) {
++	rejected := errors.New("interface unavailable")
++	var socket syscall.RawConn
++	withControllers(t, func(network, address string, c syscall.RawConn) error {
++		socket = c
++		return rejected
++	})
++	c, err := listenControlledICMP("udp4", "0.0.0.0", "127.0.0.1:1234")
++	if !errors.Is(err, rejected) || c != nil {
++		t.Fatalf("got %v, %v; want nil and controller error", c, err)
++	}
++	if socket == nil {
++		t.Fatal("controller was not called")
++	}
++	if err := socket.Control(func(uintptr) {}); err == nil {
++		t.Fatal("rejected socket is still open")
++	}
++}
++
++func TestICMPPartialSetupClosesBothSockets(t *testing.T) {
++	var sockets []syscall.RawConn
++	withControllers(t, func(network, address string, c syscall.RawConn) error {
++		sockets = append(sockets, c)
++		if network == "udp6" {
++			return errors.New("IPv6 binding failed")
++		}
++		return nil
++	})
++	c, err := NewConnClient(&Config{DGRAM: true}, &net.Destination{Address: net.LocalHostIP, Network: net.Network_UDP})
++	if err == nil || c != nil {
++		t.Fatalf("got %v, %v; want failed setup", c, err)
++	}
++	if len(sockets) != 2 {
++		t.Fatalf("controllers saw %d sockets, want two", len(sockets))
++	}
++	for i, socket := range sockets {
++		if err := socket.Control(func(uintptr) {}); err == nil {
++			t.Errorf("socket %d is still open", i)
++		}
++	}
++}
+diff --git a/proxy/tun/config.go b/proxy/tun/config.go
+--- a/proxy/tun/config.go
++++ b/proxy/tun/config.go
+@@ -3,7 +3,10 @@
+ import (
+ 	"context"
+ 	"net"
++	"net/netip"
++	"strings"
+ 	"sync"
++	"syscall"
+
+ 	"github.com/xtls/xray-core/common/errors"
+ )
+@@ -49,3 +52,29 @@
+ 	updater.iface = got
+ 	errors.LogInfo(context.Background(), "[tun] update interface ", got.Name, " ", got.Index)
+ }
++
++// BindSocket applies the selected outbound interface to a socket. Call Update
++// before using an updater outside a running TUN, which normally refreshes it.
++func (updater *InterfaceUpdater) BindSocket(network, address string, c syscall.RawConn) error {
++	iface := updater.Get()
++	if iface == nil {
++		errors.LogInfo(context.Background(), "[tun] falied to set interface > iface == nil")
++		return errors.New("iface not found")
++	}
++	var controlErr, sockErr error
++	controlErr = c.Control(func(fd uintptr) {
++		addrPort, _ := netip.ParseAddrPort(address)
++		// skip loopback
++		if addrPort.Addr().IsLoopback() || strings.HasPrefix(strings.ToLower(address), "localhost:") {
++			return
++		}
++		err := setinterface(network, address, fd, iface)
++		if err != nil {
++			sockErr = errors.New("[tun] falied to set interface").Base(err)
++		}
++	})
++	if sockErr != nil {
++		return sockErr
++	}
++	return controlErr
++}
+diff --git a/proxy/tun/handler.go b/proxy/tun/handler.go
+--- a/proxy/tun/handler.go
++++ b/proxy/tun/handler.go
+@@ -2,9 +2,6 @@
+
+ import (
+ 	"context"
+-	"net/netip"
+-	"strings"
+-	"syscall"
+
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/buf"
+@@ -138,29 +135,7 @@
+ 		}
+ 		updater = &InterfaceUpdater{tunIndex: tunIndex, fixedName: t.config.AutoOutboundsInterface}
+ 		updater.Update()
+-		internet.RegisterDialerController(func(network, address string, c syscall.RawConn) error {
+-			iface := updater.Get()
+-			if iface == nil {
+-				errors.LogInfo(context.Background(), "[tun] falied to set interface > iface == nil")
+-				return errors.New("iface not found")
+-			}
+-			var controlErr, sockErr error
+-			controlErr = c.Control(func(fd uintptr) {
+-				addrPort, _ := netip.ParseAddrPort(address)
+-				// skip loopback
+-				if addrPort.Addr().IsLoopback() || strings.HasPrefix(strings.ToLower(address), "localhost:") {
+-					return
+-				}
+-				err := setinterface(network, address, fd, iface)
+-				if err != nil {
+-					sockErr = errors.New("[tun] falied to set interface").Base(err)
+-				}
+-			})
+-			if sockErr != nil {
+-				return sockErr
+-			}
+-			return controlErr
+-		})
++		internet.RegisterDialerController(updater.BindSocket)
+ 	}
+
+ 	errors.LogInfo(t.ctx, tunName, " created")

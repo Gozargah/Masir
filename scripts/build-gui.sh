@@ -15,6 +15,9 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -z "${MASIR_XRAY_SOURCE:-}" ]; then
+ exec sh "$root/scripts/with-xray.sh" sh "$root/scripts/build-gui.sh" "$@"
+fi
 cd "$root"
 
 os_list=$(printf '%s' "${GUI_OS:-darwin linux windows}" | tr ',' ' ' | tr -d '\r')
