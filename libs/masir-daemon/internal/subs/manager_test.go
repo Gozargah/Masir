@@ -286,8 +286,18 @@ func TestTestLatency(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	reader, err := NewManager(m.dir, m.activePath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := map[string]Latency{}
-	if err := m.TestLatency(ctx, s.ID, nil, target.URL, nil, func(id string, l Latency) { got[id] = l }); err != nil {
+	if err := m.TestLatency(ctx, s.ID, nil, target.URL, nil, func(id string, l Latency) {
+		got[id] = l
+		c, err := reader.Config(s.ID, id)
+		if err != nil || c.Latency == nil || c.Latency.Ms != l.Ms || c.Latency.Error != l.Error || !c.Latency.TestedAt.Equal(l.TestedAt) {
+			t.Errorf("probe %s reported before its result was saved (read error: %v)", id, err)
+		}
+	}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := byName(t, s.Configs)
