@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -94,8 +96,9 @@ func (a *app) testServers(only ...server) {
 			done := map[string]bool{}
 			if err == nil {
 				for {
-					res, err := stream.Recv()
-					if err != nil {
+					res, recvErr := stream.Recv()
+					if recvErr != nil {
+						err = recvErr
 						break
 					}
 					k := serverKey{id, res.ConfigId}
@@ -111,6 +114,9 @@ func (a *app) testServers(only ...server) {
 					if !done[cfg] {
 						delete(a.testing, serverKey{id, cfg})
 					}
+				}
+				if err != nil && !errors.Is(err, io.EOF) {
+					a.fail("Couldn't complete the latency test: ", err)
 				}
 			})
 		})
