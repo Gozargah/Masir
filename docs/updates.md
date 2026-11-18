@@ -212,8 +212,8 @@ can't be asked.
      CLI. The version comes from the signed line, never from the file name;
    - read the package's own metadata (`dpkg-deb`/`rpm`): it must be `masir-desktop`
      at the signed version, and newer than the installed package. A package dpkg
-     holds unpacked or half-configured doesn't count as installed, so apt can finish
-     it;
+     holds unpacked or half-configured may be finished at its own version, but never
+     replaced by an older one;
    - install the copy with `apt-get install -y` (dpkg lock timeout 0, so a busy
      installer fails at once) or `dnf install -y`;
    - with a service installed and older than the package, run the *new* bundle's
