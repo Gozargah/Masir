@@ -218,7 +218,10 @@ can't be asked.
      installer fails at once) or `dnf install -y`;
    - with a service installed and older than the package, run the *new* bundle's
      `daemon import-desktop` and `daemon sync-unit`. The service and its unit are
-     updated with the same password.
+     updated with the same password. When the service binary is already current but
+     the running service reports an older version (an earlier update replaced the
+     binary without a restart), `systemctl try-restart` it once instead. A stopped
+     service stays stopped.
 
 Then the app follows the service restart, deletes its download and relaunches. Without a
 service, the app restarts its bundled daemon as an app update does.
