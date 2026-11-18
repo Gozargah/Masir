@@ -199,6 +199,30 @@ func TestInstallPackageRejectsADowngrade(t *testing.T) {
 	}
 }
 
+// A package dpkg left half-configured at the target version is repaired, not refused.
+func TestInstallPackageRepairsAnIncompleteInstall(t *testing.T) {
+	f := newInstallFake(t)
+	installedPackageVersion = func(string) (string, error) { return "", nil }
+	if err := f.install(io.Discard); err != nil || len(f.pm) != 1 {
+		t.Fatalf("err = %v, package manager runs = %d", err, len(f.pm))
+	}
+}
+
+func TestDebInstalledVersion(t *testing.T) {
+	for out, want := range map[string]string{
+		"0.1.7\tinstalled\n":      "0.1.7",
+		"0.1.7\ttriggers-pending": "0.1.7",
+		"0.1.7\thalf-configured":  "",
+		"0.1.7\tunpacked":         "",
+		"0.1.7\thalf-installed":   "",
+		"0.1.7":                   "",
+	} {
+		if got := debInstalledVersion(out); got != want {
+			t.Errorf("%q: got %q, want %q", out, got, want)
+		}
+	}
+}
+
 func TestInstallPackageStagingIsPrivate(t *testing.T) {
 	f := newInstallFake(t)
 	runPackageManager = func(_, path string) (string, error) {
