@@ -143,7 +143,11 @@ func FetchDesktopPackage(ctx context.Context, r PackageRequest, progress func(do
 		}, func(n int64) { total = n }); err != nil {
 			return files, unreachable(ctx, err)
 		}
-		_, _, err := VerifyDesktopPackage(list, sig, files.Package, r.Arch)
+		v, f, err := VerifyDesktopPackage(list, sig, files.Package, r.Arch)
+		if err == nil && (v != strings.TrimPrefix(r.Version, "v") || f != r.Format) {
+			// Signed, but another release: the caller would install it as this one.
+			err = fmt.Errorf("%w: the server sent masir-desktop %s (%s), not %s (%s)", ErrPackageMismatch, v, f, r.Version, r.Format)
+		}
 		if err == nil {
 			return files, nil
 		}

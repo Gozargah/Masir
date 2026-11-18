@@ -91,9 +91,16 @@ const fetchName = "masir-desktop-linux-0.1.7-amd64.deb"
 // the Range header of each package request.
 func releaseServer(t *testing.T, pkg, body []byte) (base string, ranges *[]string) {
 	t.Helper()
+	return releaseServerListing(t, pkg, body, fetchName)
+}
+
+// releaseServerListing serves body at fetchName's URL, with a signed list that gives
+// pkg's hash the name listed.
+func releaseServerListing(t *testing.T, pkg, body []byte, listed string) (base string, ranges *[]string) {
+	t.Helper()
 	pub, priv := newKey(t)
 	trust(t, pub)
-	list := []byte(fmt.Sprintf("%s  %s\n", sum(pkg), fetchName))
+	list := []byte(fmt.Sprintf("%s  %s\n", sum(pkg), listed))
 	sig := minisign.Sign(priv, list)
 	var mu sync.Mutex
 	seen := &[]string{}
@@ -224,15 +231,29 @@ func TestFetchDesktopPackageTruncatedPartialIsNotAccepted(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, fetchName), stale, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The stale partial fails the hash, so the fetch starts clean once and succeeds.
 	files, err := FetchDesktopPackage(context.Background(), fetchReq(base, dir), func(int64, int64) {})
 	if err != nil {
-		if !errors.Is(err, ErrPackageMismatch) {
-			t.Fatal(err)
-		}
-		return
+		t.Fatalf("err = %v, want a clean retry to succeed", err)
 	}
 	if got, _ := os.ReadFile(files.Package); !bytes.Equal(got, pkg) {
 		t.Fatal("accepted wrong bytes")
+	}
+}
+
+// Another signed release served under this version's name is not this version.
+func TestFetchDesktopPackageRefusesAnotherSignedRelease(t *testing.T) {
+	pkg := []byte("a masir package")
+	for _, listed := range []string{"masir-desktop-linux-0.1.6-amd64.deb", "masir-desktop-linux-0.1.7-amd64.rpm"} {
+		base, _ := releaseServerListing(t, pkg, pkg, listed)
+		dir := t.TempDir()
+		_, err := FetchDesktopPackage(context.Background(), fetchReq(base, dir), func(int64, int64) {})
+		if !errors.Is(err, ErrPackageMismatch) {
+			t.Fatalf("%s: err = %v, want ErrPackageMismatch", listed, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, fetchName)); !os.IsNotExist(err) {
+			t.Fatalf("%s: the package is still there: %v", listed, err)
+		}
 	}
 }
 
