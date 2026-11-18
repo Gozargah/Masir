@@ -346,8 +346,8 @@ func (m *Manager) Update(ctx context.Context, id string) (*Subscription, error) 
 	return s, nil
 }
 
-// TestLatency probes the subscription's configs (all, or just configIDs), calls report
-// as each finishes, and saves the results. Probes cut short by ctx aren't saved.
+// TestLatency probes the subscription's configs (all, or just configIDs) and
+// saves each result before reporting it. Probes cut short by ctx aren't saved.
 func (m *Manager) TestLatency(ctx context.Context, subID string, configIDs []string, probeURL string, currentTunName func() string, report func(configID string, l Latency)) error {
 	s, err := m.Get(subID)
 	if err != nil {
@@ -368,9 +368,14 @@ func (m *Manager) TestLatency(ctx context.Context, subID string, configIDs []str
 		}
 	}
 
-	results := map[string]Latency{}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var saveErr error
 	opt := xray.LatencyOptions{URL: probeURL, Timeout: latencyTimeout, CurrentTunName: currentTunName}
 	xray.MeasureEach(ctx, probes, opt, latencyWorkers, func(id string, d time.Duration, err error) {
+		if saveErr != nil {
+			return
+		}
 		l := Latency{Ms: d.Milliseconds(), TestedAt: m.now()}
 		if err != nil {
 			if ctx.Err() != nil {
@@ -378,22 +383,38 @@ func (m *Manager) TestLatency(ctx context.Context, subID string, configIDs []str
 			}
 			l = Latency{Error: err.Error(), TestedAt: l.TestedAt}
 		}
-		results[id] = l
-		report(id, l)
+		var saved bool
+		saved, saveErr = m.saveLatency(subID, id, l)
+		if saveErr != nil {
+			cancel()
+		} else if saved {
+			report(id, l)
+		}
 	})
+	return saveErr
+}
 
+func (m *Manager) saveLatency(subID, configID string, result Latency) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, err := m.load(subID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	for i := range cur.Configs {
-		if l, ok := results[cur.Configs[i].ID]; ok {
-			cur.Configs[i].Latency = &l
+		cfg := &cur.Configs[i]
+		if cfg.ID == configID {
+			if cfg.Latency != nil && cfg.Latency.TestedAt.After(result.TestedAt) {
+				return false, nil
+			}
+			cfg.Latency = &result
+			if err := m.save(cur); err != nil {
+				return false, fmt.Errorf("save latency: %w", err)
+			}
+			return true, nil
 		}
 	}
-	return m.save(cur)
+	return false, nil // the provider dropped or replaced this config during the probe
 }
 
 func (m *Manager) Active() (Active, error) {

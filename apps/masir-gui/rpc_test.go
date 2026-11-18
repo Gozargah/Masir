@@ -95,3 +95,28 @@ func TestCallRPCContextStopsRetryOnCancellation(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, calls)
 	}
 }
+
+type startupLatencyDaemon struct {
+	*fakeDaemon
+	unavailable bool
+}
+
+func (d *startupLatencyDaemon) ListSubscriptions(ctx context.Context, req *pb.ListSubscriptionsRequest, opts ...grpc.CallOption) (*pb.ListSubscriptionsResponse, error) {
+	if d.unavailable {
+		return nil, status.Error(codes.Unavailable, "startup outage")
+	}
+	return d.fakeDaemon.ListSubscriptions(ctx, req, opts...)
+}
+
+func TestStartupRetriesLoadingSavedLatencyAtSameRevision(t *testing.T) {
+	d := &startupLatencyDaemon{fakeDaemon: ukServers(), unavailable: true}
+	a := newApp(d, "")
+	a.async = func(fn func()) { fn() }
+	a.applyStatus(d.status)
+
+	d.unavailable = false
+	a.applyStatus(d.status)
+	if got := a.latency[serverKey{"s1", "c1"}]; got != 2048 {
+		t.Fatalf("active latency after recovery = %d ms, want 2048 ms", got)
+	}
+}

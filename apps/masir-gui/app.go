@@ -73,10 +73,11 @@ type app struct {
 	updates              updateStore
 
 	// What the daemon last said.
-	reachable  bool
-	status     *pb.Status
-	refreshRev uint64
-	down, up   uint64 // bytes per second
+	reachable   bool
+	status      *pb.Status
+	refreshRev  uint64
+	listRefresh uint64
+	down, up    uint64 // bytes per second
 
 	// latency is the last result per server, in milliseconds; negative means a failed probe.
 	latency map[serverKey]int64
@@ -345,6 +346,8 @@ func (a *app) setUnreachable() {
 
 // refreshLists fetches subscriptions with their configs, and the rules.
 func (a *app) refreshLists() {
+	a.listRefresh++
+	refresh := a.listRefresh
 	a.async(func() {
 		ctx, cancel := rpc()
 		defer cancel()
@@ -352,7 +355,12 @@ func (a *app) refreshLists() {
 			return a.d.ListSubscriptions(ctx, &pb.ListSubscriptionsRequest{IncludeConfigs: true})
 		})
 		if err != nil {
-			return // the next status tries again
+			a.post(func() {
+				if refresh == a.listRefresh {
+					a.refreshRev = 0 // let the next status retry even at the same revision
+				}
+			})
+			return
 		}
 		var servers []server
 		for _, s := range subsRes.GetSubscriptions() {
