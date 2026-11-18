@@ -263,19 +263,24 @@ func (pk *Picker) moreRows(q []string, listed map[string]bool) []row {
 }
 
 func (pk *Picker) rows() []row {
+	return pk.rowsWith(pk.buildRows)
+}
+
+func (pk *Picker) rowsWith(build func() []row) []row {
 	pk.mu.Lock()
 	if !pk.rowsDirty && pk.cachedRows != nil {
 		r := pk.cachedRows
 		pk.mu.Unlock()
 		return r
 	}
+	// Preserve any invalidation raised while rows are being built.
+	pk.rowsDirty = false
 	pk.mu.Unlock()
 
-	rows := pk.buildRows()
+	rows := build()
 
 	pk.mu.Lock()
 	pk.cachedRows = rows
-	pk.rowsDirty = false
 	pk.mu.Unlock()
 
 	return rows
