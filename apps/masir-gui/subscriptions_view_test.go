@@ -97,7 +97,7 @@ func TestGroupHeaderOpensItsSubscriptionAndKeepsSameNamesSeparate(t *testing.T) 
 	a := newTestApp(f)
 	a.toggle(sectionServers)
 	tt := tester(a)
-	if err := tt.Click("\u200eMARZBAN"); err != nil {
+	if err := tt.Click("Open marzban subscription"); err != nil {
 		t.Fatal(err)
 	}
 	if a.path != subscriptionDetailsPath || a.subscriptionPage.id != "s1" {
@@ -373,7 +373,7 @@ func TestSubscriptionDetailsTestsOnlyItsNodes(t *testing.T) {
 	a.d = f
 	a.openSubscription("s1")
 	tt := tester(a)
-	if err := tt.Click("Test all nodes"); err != nil {
+	if err := tt.Click("Test all " + subscriptionName(f.subs[0]) + " configs"); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.requests) != 1 || f.requests[0].SubscriptionId != "s1" || !reflect.DeepEqual(f.requests[0].ConfigIds, []string{"c1", "c2"}) {
@@ -450,7 +450,7 @@ func TestSubscriptionDetailsKeepsActiveRemarksAndRefreshSummary(t *testing.T) {
 			a.subscriptionPage.id = "s1"
 			tt := ui.NewTester(func(c *ui.Context) { a.subscriptionDetailsView(c, paletteFor(c)) }, int(panelWidth), 560)
 			if active {
-				for _, text := range []string{"Refresh: every 15 mins", ltr("England"), "·", "Active"} {
+				for _, text := range []string{"Refresh: every 15 mins", ltr("England"), "Active"} {
 					if !tt.HasText(text) {
 						t.Fatalf("missing %q: %q", text, tt.Texts())
 					}
@@ -532,5 +532,20 @@ func TestSubscriptionEditAutoFocusesName(t *testing.T) {
 			t.Fatal(err)
 		}
 		tt.Advance(time.Second)
+	}
+}
+
+func TestSubscriptionDetailsIgnoresPickerCollapse(t *testing.T) {
+	a := newTestApp(ukServers())
+	a.toggleGroupCollapse("s1")
+	a.openSubscription("s1")
+	tt := tester(a)
+	if !tt.HasText(ltr("Deutschland")) {
+		t.Fatal("subscription details hid servers because the picker group was collapsed")
+	}
+	for _, action := range []string{"Collapse marzban", "Expand marzban"} {
+		if _, ok := tt.Find(action); ok {
+			t.Fatalf("subscription details offered %q", action)
+		}
 	}
 }

@@ -116,3 +116,49 @@ func TestTargetListEdgeDoesNotScrollTheRuleForm(t *testing.T) {
 		t.Fatalf("list edge moved rule form: %v -> %v", before, a.rulePage.formScroll.Y)
 	}
 }
+
+func TestRuleTargetGroupCollapseAndLatencyActions(t *testing.T) {
+	f := &subscriptionLatencyDaemon{featureDaemon: &featureDaemon{fakeDaemon: ukServers()}}
+	a := newTestApp(f.fakeDaemon)
+	a.d = f
+	a.rulePage.target = "config:s1/c1"
+	tt := ui.NewTester(func(c *ui.Context) { a.ruleDestinationServers(c, paletteFor(c)) }, panelWidth, 200)
+	if err := tt.Click(ltr("MARZBAN")); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !a.isGroupCollapsed("s1") || tt.HasText(ltr("England")) {
+		t.Fatal("clicking the subscription name did not hide its configs")
+	}
+	if err := tt.Click("Expand marzban"); err != nil {
+		t.Fatal(err)
+	}
+	a.ruleDestinationQuery = "deutschland"
+	tt.Frame()
+	if err := tt.Click("Collapse marzban"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if tt.HasText(ltr("Deutschland")) || a.isGroupCollapsed("s1") {
+		t.Fatal("collapse during search should hide the matches for that search")
+	}
+	if err := tt.Click("Test all marzban configs"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.requests) != 1 || f.requests[0].SubscriptionId != "s1" || len(f.requests[0].ConfigIds) != 2 {
+		t.Fatalf("group test should include filtered-out configs: %v", f.requests)
+	}
+	if err := tt.Click("Expand marzban"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("Test latency"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.requests) != 2 || len(f.requests[1].ConfigIds) != 1 || f.requests[1].ConfigIds[0] != "c2" {
+		t.Fatalf("badge should retest only its config: %v", f.requests)
+	}
+	if a.rulePage.target != "config:s1/c1" {
+		t.Fatal("testing latency changed the rule target")
+	}
+}
