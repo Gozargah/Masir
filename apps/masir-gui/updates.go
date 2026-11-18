@@ -1137,7 +1137,7 @@ func (a *app) updateTooltip() string {
 	if a.updates.state.phase == updateFailed && a.updates.state.err != "" {
 		return a.updates.state.err
 	}
-	if a.updates.state.bundleOffer && a.updates.state.unitPending {
+	if a.updates.state.bundleOffer && a.updates.state.unitPending && !newerRelease(a.version, a.status.GetVersion()) {
 		return "Apply the background service configuration. Administrator permission is required."
 	}
 	if a.updates.state.bundleOffer {
