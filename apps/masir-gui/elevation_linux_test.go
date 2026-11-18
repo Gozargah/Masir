@@ -18,6 +18,7 @@ func TestClassifyPkexec(t *testing.T) {
 		{126, "", elevationCancelled},
 		{127, "Error executing command as another user: Not authorized", elevationDenied},
 		{127, "Error executing command as another user: No authentication agent found.", elevationUnavailable},
+		{127, "Error creating textual authentication agent: Error opening current controlling terminal for the process (`/dev/tty'): No such device or address", elevationUnavailable},
 		{1, "boom", elevationFailed},
 		{11, "installer busy", elevationFailed},
 		{13, "service pending", elevationFailed},
