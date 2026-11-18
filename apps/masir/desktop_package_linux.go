@@ -156,6 +156,13 @@ func installDesktopPackage(pkg, sums, sig, user string, out io.Writer) (err erro
 	if err := packageStagingOwned(packageStagingParent); err != nil {
 		return fmt.Errorf("refusing to stage the update in %s: %w", packageStagingParent, err)
 	}
+	// One install at a time: the cleanup below would delete a running one's staging.
+	// The kernel drops the lock when this process ends, however it ends.
+	lock, err := lockPackageInstall(packageStagingParent)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	// A killed run leaves its staging directory behind; the parent is root's alone.
 	if old, _ := filepath.Glob(filepath.Join(packageStagingParent, "masir-desktop.update-*")); len(old) > 0 {
 		for _, d := range old {
@@ -242,6 +249,23 @@ func installDesktopPackage(pkg, sums, sig, user string, out io.Writer) (err erro
 		return coded(exitServicePending, err)
 	}
 	return nil
+}
+
+// lockPackageInstall takes the install lock in parent, or fails as a busy installer
+// when another install-package holds it. Its name doesn't match the staging glob.
+func lockPackageInstall(parent string) (*os.File, error) {
+	f, err := os.OpenFile(filepath.Join(parent, "masir-desktop.update.lock"), os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, coded(exitInstallerBusy, errors.New("another Masir update is installing"))
+		}
+		return nil, err
+	}
+	return f, nil
 }
 
 // copyPrivate copies a regular file, not a link, device or pipe, into a new 0600 file,
