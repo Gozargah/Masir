@@ -108,6 +108,8 @@ type updateState struct {
 	block   installBlock
 	pkgSync bool
 	pkgDir  string
+	// pkgLast is closed when the last download or cleanup of the package cache ends.
+	pkgLast chan struct{}
 	// wantApp says the person asked for the update and the app feed hasn't answered yet.
 	// A bundled daemon is updated by the app, so the answer decides what runs.
 	wantApp bool
@@ -949,7 +951,7 @@ func (a *app) cancelUpdate() {
 		if a.updates.state.pkgSync {
 			a.updates.state.pkgSync = false
 			if dir := a.updates.state.pkgDir; dir != "" {
-				a.async(func() { os.RemoveAll(dir) })
+				a.pkgSerial(func() func() { os.RemoveAll(dir); return nil })
 			}
 		}
 	}
