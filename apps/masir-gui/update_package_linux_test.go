@@ -140,7 +140,7 @@ func TestRunFetchExitCodes(t *testing.T) {
 func TestRunFetchArgsAndFiles(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "args")
-	bin := fakeCLI(t, `printf '%s\n' "$@" > `+log+`
+	bin := fakeCLI(t, `printf '%s\n' "$@" > `+shellQuote(log)+`
 echo "progress 2 2"
 echo "package /d/p.deb"; echo "checksums /d/s"; echo "signature /d/s.minisig"`)
 	var progress int
