@@ -199,6 +199,29 @@ func TestInstallPackageRejectsADowngrade(t *testing.T) {
 	}
 }
 
+// A second install while one runs is a busy installer, and touches nothing of the first.
+func TestInstallPackageWaitsForTheRunningInstall(t *testing.T) {
+	f := newInstallFake(t)
+	running := filepath.Join(f.staging, "masir-desktop.update-running")
+	if err := os.Mkdir(running, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	held, err := lockPackageInstall(f.staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := exitOf(f.install(io.Discard)); code != exitInstallerBusy || len(f.pm) != 0 {
+		t.Fatalf("exit = %d, package manager runs = %d", code, len(f.pm))
+	}
+	if _, err := os.Stat(running); err != nil {
+		t.Fatalf("the running install's staging was removed: %v", err)
+	}
+	held.Close()
+	if err := f.install(io.Discard); err != nil || len(f.pm) != 1 {
+		t.Fatalf("after the first install: err = %v, package manager runs = %d", err, len(f.pm))
+	}
+}
+
 // A package dpkg left half-configured at the target version is repaired, not refused.
 func TestInstallPackageRepairsAnIncompleteInstall(t *testing.T) {
 	f := newInstallFake(t)
@@ -247,7 +270,8 @@ func TestInstallPackageStagingIsPrivate(t *testing.T) {
 	if len(f.pm) != 1 {
 		t.Fatalf("package manager runs = %d", len(f.pm))
 	}
-	if left, _ := os.ReadDir(f.staging); len(left) != 0 {
+	// Only the install lock stays: removing a lock file would race the next install.
+	if left, _ := os.ReadDir(f.staging); len(left) != 1 || left[0].Name() != "masir-desktop.update.lock" {
 		t.Fatalf("staging left behind: %v", left)
 	}
 }
