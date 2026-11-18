@@ -272,6 +272,19 @@ func TestADaemonWatchEndingDoesNotFailThePackageFlow(t *testing.T) {
 	}
 }
 
+// After an update the daemon may come back newer than the package (a service ahead of
+// the app): that is done, not a failed update. An older one still is.
+func TestWaitForDaemonAcceptsTheVersionOrNewer(t *testing.T) {
+	for running, ok := range map[string]bool{"0.1.7": true, "0.1.8": true, "0.1.6": false} {
+		a, f, _ := packageApp(t, blockPackageDeb)
+		f.status.Version = running
+		err := a.waitForDaemon("0.1.7", 100*time.Millisecond)
+		if (err == nil) != ok {
+			t.Errorf("running %s: err = %v, want ok=%v", running, err, ok)
+		}
+	}
+}
+
 func TestPackageUpdateCancelledDialogReturnsQuietly(t *testing.T) {
 	a, _, p := packageApp(t, blockPackageDeb)
 	p.installErr = &elevationError{kind: elevationCancelled, msg: "permission wasn't granted"}
