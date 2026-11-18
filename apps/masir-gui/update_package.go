@@ -116,9 +116,8 @@ func (a *app) packageFormat() string {
 	return "deb"
 }
 
-// startPackageUpdate downloads the package as the person, before any prompt, then
-// installs it as root. A pause stops the download (the partial file stays and the
-// next attempt resumes it); a cancel deletes it.
+// startPackageUpdate downloads and verifies the package before offering installation.
+// Pausing keeps the partial file for the next attempt; cancelling deletes it.
 func (a *app) startPackageUpdate() {
 	st := &a.updates.state
 	version := strings.TrimPrefix(packageTargetVersion(st.rel), "v")
@@ -188,8 +187,7 @@ func (a *app) startPackageUpdate() {
 			case err != nil:
 				a.packageFailed(err, files, format)
 			default:
-				st.phase = updateVerifying
-				a.installPackageFiles(version, format, files)
+				a.offerPackageInstall(version, format, files)
 			}
 		}
 	})
@@ -214,6 +212,12 @@ func (a *app) pkgSerial(fn func() (then func())) {
 			a.post(then)
 		}
 	})
+}
+
+func (a *app) offerPackageInstall(version, format string, files packageFiles) {
+	st := &a.updates.state
+	st.phase = updateReady
+	st.installReady = func() { a.installPackageFiles(version, format, files) }
 }
 
 // installPackageFiles checks the helper, then asks for the password once.
@@ -266,13 +270,15 @@ func (a *app) packageInstalled(version string, files packageFiles, format string
 		st.relaunching = true
 		cleanThen(relaunch)
 	case a.status.GetServiceInstalled() && newerRelease(version, a.status.GetVersion()):
-		cleanThen(nil)
-		st.relaunchAfterRestart = true
-		a.followDaemonRestart(version, false) // the root command restarted it
+		cleanThen(func() {
+			st.relaunchAfterRestart = true
+			a.followDaemonRestart(version, false) // the root command restarted it
+		})
 	case a.daemonIsBundled():
-		cleanThen(nil)
-		st.relaunchAfterRestart = true
-		a.restartDaemon(version)
+		cleanThen(func() {
+			st.relaunchAfterRestart = true
+			a.restartDaemon(version)
+		})
 	default:
 		st.relaunching = true
 		cleanThen(relaunch)
@@ -283,14 +289,16 @@ func (a *app) packageInstalled(version string, files packageFiles, format string
 func (a *app) packageFailed(err error, files packageFiles, format string) {
 	st := &a.updates.state
 	st.pkgSync = false
-	text, remove := packageFailure(err, files, format)
+	text, remove := packageFailure(err)
 	if text == "" {
-		st.phase = updateAvailable
+		st.pkgSync = true
 		st.err = ""
+		a.offerPackageInstall(st.pkgVersion, format, files)
 		return
 	}
-	if remove && files.pkg != "" {
-		a.pkgSerial(func() func() { os.Remove(files.pkg); return nil })
+	if remove && st.pkgDir != "" {
+		dir := st.pkgDir
+		a.pkgSerial(func() func() { os.RemoveAll(dir); return nil })
 	}
 	st.phase = updateFailed
 	st.err = text
@@ -299,7 +307,7 @@ func (a *app) packageFailed(err error, files packageFiles, format string) {
 
 // packageFailure is the text for a failed package update, "" for a dismissed dialog,
 // and whether the download must go (it didn't match the signed release).
-func packageFailure(err error, f packageFiles, format string) (text string, deleteDownload bool) {
+func packageFailure(err error) (text string, deleteDownload bool) {
 	kind, code, ok := elevationKindOf(err)
 	if !ok {
 		return describe(err), false
@@ -310,11 +318,7 @@ func packageFailure(err error, f packageFiles, format string) (text string, dele
 	case elevationDenied:
 		return "Your account isn't allowed to install software.", false
 	case elevationUnavailable:
-		tool := "apt"
-		if format == "rpm" {
-			tool = "dnf"
-		}
-		return "Masir can't ask for your password here. Run: sudo " + tool + " install " + f.pkg, false
+		return "Masir can't ask for administrator permission here. Download the new version from the release page and verify its signed checksum before installing.", false
 	}
 	switch code {
 	case pkgExitBusy:

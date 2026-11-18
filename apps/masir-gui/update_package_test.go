@@ -150,7 +150,11 @@ func TestPackageUpdateHappyPathWithAService(t *testing.T) {
 	f.status.Version = "0.1.6"
 	a.applyStatus(f.status)
 	a.startUpdate()
-	want := []updatePhase{updateAppDownloading, updateVerifying, updateAuthorizing, updateAppInstalling, updateRestarting}
+	if a.updateLabel() != "Install Update" || p.installs != 0 {
+		t.Fatalf("before confirmation: label %q, installs %d", a.updateLabel(), p.installs)
+	}
+	a.confirmInstall()
+	want := []updatePhase{updateAppDownloading, updateVerifying, updateAuthorizing, updateAppInstalling}
 	if !slices.Equal(p.phases, want) {
 		t.Fatalf("phases %v, want %v", p.phases, want)
 	}
@@ -170,6 +174,7 @@ func TestPackageUpdateWithAPackagedDaemonRestartsIt(t *testing.T) {
 	f.status.Version = "0.1.6"
 	a.applyStatus(f.status)
 	a.startUpdate()
+	a.confirmInstall()
 	if f.count("restart") != 1 || p.relaunches != 1 || a.updates.state.phase == updateFailed {
 		t.Fatalf("restarts %d, relaunches %d, tooltip %q", f.count("restart"), p.relaunches, a.updateTooltip())
 	}
@@ -184,6 +189,7 @@ func TestAnInstalledPackageRelaunchesWhenTheRestartFails(t *testing.T) {
 	a.applyStatus(f.status)
 	installPackage = func(_ string, _ packageFiles, _ int, authorized func()) error { authorized(); return nil }
 	a.startUpdate()
+	a.confirmInstall()
 	if p.relaunches != 1 || !a.updates.state.relaunching || len(a.notices) != 1 {
 		t.Fatalf("relaunches %d, notices %v", p.relaunches, a.notices)
 	}
@@ -194,6 +200,7 @@ func TestPackageUpdateWithoutADaemonRelaunches(t *testing.T) {
 	a.status = nil
 	a.reachable = false
 	a.startUpdate()
+	a.confirmInstall()
 	if len(p.fetches) != 1 || p.fetches[0].proxy != "" || p.relaunches != 1 {
 		t.Fatalf("fetches %+v, relaunches %d", p.fetches, p.relaunches)
 	}
@@ -234,7 +241,7 @@ func TestPackageUpdatePausesAndResumes(t *testing.T) {
 		return packageFiles{}, errors.New("stop here")
 	}
 	a.startUpdate()
-	if ctxs[0].Err() == nil || a.updates.state.phase != updateAppPaused || !strings.HasPrefix(a.updateLabel(), "Paused 1/1 · ") {
+	if ctxs[0].Err() == nil || a.updates.state.phase != updateAppPaused || !strings.HasPrefix(a.updateLabel(), "Paused · ") {
 		t.Fatalf("paused: label %q", a.updateLabel())
 	}
 	a.resumeUpdate()
@@ -289,7 +296,8 @@ func TestPackageUpdateCancelledDialogReturnsQuietly(t *testing.T) {
 	a, _, p := packageApp(t, blockPackageDeb)
 	p.installErr = &elevationError{kind: elevationCancelled, msg: "permission wasn't granted"}
 	a.startUpdate()
-	if a.updateLabel() != "New Update" || a.updates.state.err != "" || len(a.notices) != 0 {
+	a.confirmInstall()
+	if a.updateLabel() != "Install Update" || a.updates.state.err != "" || len(a.notices) != 0 {
 		t.Fatalf("label %q, err %q, notices %v", a.updateLabel(), a.updates.state.err, a.notices)
 	}
 	if _, err := os.Stat(p.files.pkg); err != nil {
@@ -318,6 +326,7 @@ func TestPackageUpdateFailures(t *testing.T) {
 			a, _, p := packageApp(t, blockPackageDeb)
 			p.fetchErr, p.installErr = c.fetch, c.install
 			a.startUpdate()
+			a.confirmInstall()
 			if a.updateLabel() != "Update failed" || a.updateTooltip() != c.tooltip {
 				t.Fatalf("label %q, tooltip %q", a.updateLabel(), a.updateTooltip())
 			}
@@ -338,20 +347,22 @@ func TestPackageUpdateInstallerBusyThenRetry(t *testing.T) {
 	a, _, p := packageApp(t, blockPackageDeb)
 	p.installErr = elevationExit(pkgExitBusy)
 	a.startUpdate()
+	a.confirmInstall()
 	p.installErr = nil
 	a.retryUpdate()
+	a.confirmInstall()
 	if p.installs != 2 || len(p.fetches) != 2 || p.fetches[1].dir != p.fetches[0].dir {
 		t.Fatalf("installs %d, fetches %+v", p.installs, p.fetches)
 	}
 }
 
-func TestPackageUpdateWithoutPkexecShowsTheCommand(t *testing.T) {
+func TestPackageUpdateWithoutPkexecDirectsToSignedRelease(t *testing.T) {
 	for _, block := range []installBlock{blockPackageDeb, blockPackageRpm} {
 		a, _, p := packageApp(t, block)
 		p.installErr = &elevationError{kind: elevationUnavailable, msg: "no agent"}
 		a.startUpdate()
-		tool := map[installBlock]string{blockPackageDeb: "sudo apt install ", blockPackageRpm: "sudo dnf install "}[block]
-		if tip := a.updateTooltip(); !strings.Contains(tip, tool+p.files.pkg) || !filepath.IsAbs(p.files.pkg) {
+		a.confirmInstall()
+		if tip := a.updateTooltip(); !strings.Contains(tip, "verify its signed checksum") || strings.Contains(tip, p.files.pkg) {
 			t.Fatalf("tooltip %q", tip)
 		}
 	}
@@ -361,6 +372,7 @@ func TestPackageUpdateUntrustedHelperFailsBeforeThePrompt(t *testing.T) {
 	a, _, p := packageApp(t, blockPackageDeb)
 	p.helperErr = errors.New("/opt/masir-desktop/bin is writable by group")
 	a.startUpdate()
+	a.confirmInstall()
 	if p.installs != 0 || a.updates.state.phase != updateFailed || !strings.Contains(a.updateTooltip(), "writable") {
 		t.Fatalf("installs %d, tooltip %q", p.installs, a.updateTooltip())
 	}
@@ -369,24 +381,39 @@ func TestPackageUpdateUntrustedHelperFailsBeforeThePrompt(t *testing.T) {
 // The app relaunches only after the installed download was deleted: quitting first
 // would leave it in the cache.
 func TestAPackageRelaunchWaitsForItsCleanup(t *testing.T) {
-	a, _, p := packageApp(t, blockPackageDeb)
-	p.installErr = elevationExit(pkgExitServicePending)
-	var queue []func()
-	a.async = func(fn func()) { queue = append(queue, fn) }
-	left := -1
-	relaunchApp = func() {
-		p.relaunches++
-		entries, _ := os.ReadDir(p.cache)
-		left = len(entries)
-	}
-	a.startUpdate()
-	for len(queue) > 0 {
-		fn := queue[0]
+	for _, pending := range []bool{false, true} {
+		a, f, p := packageApp(t, blockPackageDeb)
+		f.status.ServiceInstalled = true
+		f.status.Version = "0.1.6"
+		a.applyStatus(f.status)
+		if pending {
+			p.installErr = elevationExit(pkgExitServicePending)
+		}
+		var queue []func()
+		a.async = func(fn func()) { queue = append(queue, fn) }
+		relaunchApp = func() {
+			p.relaunches++
+			if entries, err := os.ReadDir(p.cache); err != nil || len(entries) != 0 {
+				t.Errorf("relaunch before download cleanup: %v, %v", entries, err)
+			}
+		}
+		a.startUpdate()
+		queue[0]() // download
 		queue = queue[1:]
-		fn()
-	}
-	if p.relaunches != 1 || left != 0 {
-		t.Fatalf("relaunches %d with %d download(s) still in the cache", p.relaunches, left)
+		a.confirmInstall()
+		queue[0]() // install
+		queue = queue[1:]
+		if len(queue) != 1 || a.updates.state.restarting || p.relaunches != 0 {
+			t.Fatal("restart or relaunch handling was started before cleanup")
+		}
+		for len(queue) > 0 {
+			fn := queue[0]
+			queue = queue[1:]
+			fn()
+		}
+		if p.relaunches != 1 {
+			t.Fatalf("relaunches %d", p.relaunches)
+		}
 	}
 }
 
@@ -394,6 +421,7 @@ func TestPackageInstalledButServicePendingRelaunches(t *testing.T) {
 	a, _, p := packageApp(t, blockPackageDeb)
 	p.installErr = elevationExit(pkgExitServicePending)
 	a.startUpdate()
+	a.confirmInstall()
 	if p.relaunches != 1 || !a.updates.state.relaunching || a.updates.state.phase == updateFailed {
 		t.Fatalf("relaunches %d, phase %v", p.relaunches, a.updates.state.phase)
 	}

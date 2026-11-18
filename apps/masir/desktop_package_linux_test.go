@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -109,7 +110,7 @@ func newInstallFake(t *testing.T) *installFake {
 			t.Fatal(err)
 		}
 	}
-	saved := []any{packageStagingParent, packageStagingOwned, verifyPackage, installedPackageVersion, packageMetadata, runPackageManager, serviceInstalled, serviceVersion, runBundled, elevated, runningServiceVersion, restartServiceNow}
+	saved := []any{packageStagingParent, packageStagingOwned, verifyPackage, installedPackageVersion, packageMetadata, runPackageManager, serviceInstalled, serviceVersion, runBundled, elevated, runningServiceVersion, restartServiceNow, syncPackageServiceUnit}
 	t.Cleanup(func() {
 		packageStagingParent = saved[0].(string)
 		packageStagingOwned = saved[1].(func(string) error)
@@ -123,6 +124,7 @@ func newInstallFake(t *testing.T) *installFake {
 		elevated = saved[9].(func() bool)
 		runningServiceVersion = saved[10].(func(string) (string, error))
 		restartServiceNow = saved[11].(func() error)
+		syncPackageServiceUnit = saved[12].(func(string) (bool, error))
 	})
 	packageStagingParent = f.staging
 	packageStagingOwned = func(string) error { return nil }
@@ -140,6 +142,7 @@ func newInstallFake(t *testing.T) *installFake {
 	serviceVersion = func() (string, error) { return "0.1.6", nil }
 	runningServiceVersion = func(string) (string, error) { return "0.1.7", nil }
 	restartServiceNow = func() error { f.restarts++; return nil }
+	syncPackageServiceUnit = func(string) (bool, error) { return false, nil }
 	runBundled = func(args ...string) error {
 		f.bundled = append(f.bundled, args)
 		return f.bundleErr
@@ -304,7 +307,7 @@ func TestInstallPackageStagingIsPrivate(t *testing.T) {
 		if b, err := os.ReadFile(path); err != nil || string(b) != "masir-desktop-linux-0.1.7-amd64.deb" {
 			t.Errorf("staged copy = %q, %v", b, err)
 		}
-		if filepath.Base(path) != "masir-desktop-linux-0.1.7-amd64.deb" {
+		if filepath.Base(path) != "masir-desktop-linux-0.1.7-"+runtime.GOARCH+".deb" {
 			t.Errorf("staged name %s: apt needs the .deb name", path)
 		}
 		return "", nil
@@ -429,14 +432,16 @@ func TestInstallPackageSkipsTheServiceWhenItIsCurrentOrAbsent(t *testing.T) {
 // doesn't answer is never started.
 func TestInstallPackageRestartsAStaleRunningService(t *testing.T) {
 	for _, c := range []struct {
-		name       string
-		running    string
-		runningErr error
-		restartErr error
-		restarts   int
-		code       int
+		name          string
+		running       string
+		runningErr    error
+		restartErr    error
+		unitRestarted bool
+		restarts      int
+		code          int
 	}{
 		{name: "stale", running: "0.1.6", restarts: 1},
+		{name: "unit sync restarted", running: "0.1.6", unitRestarted: true},
 		{name: "current", running: "0.1.7"},
 		{name: "newer", running: "0.1.8"},
 		// Stopped (perhaps on purpose) or still starting from the current binary.
@@ -452,6 +457,7 @@ func TestInstallPackageRestartsAStaleRunningService(t *testing.T) {
 			return c.running, c.runningErr
 		}
 		restartServiceNow = func() error { f.restarts++; return c.restartErr }
+		syncPackageServiceUnit = func(string) (bool, error) { return c.unitRestarted, nil }
 		if code := exitOf(f.install(io.Discard)); code != c.code || f.restarts != c.restarts || len(f.bundled) != 0 {
 			t.Errorf("%s: exit %d, restarts %d, bundled %v; want exit %d, restarts %d, no import", c.name, code, f.restarts, f.bundled, c.code, c.restarts)
 		}

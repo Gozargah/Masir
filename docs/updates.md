@@ -55,6 +55,11 @@ their shipped naming convention before claiming compatibility.
 
 ## What an update installs
 
+On macOS, Windows and writable Linux installs, **New Update** downloads and verifies
+the desktop payload. **Install Update** then commits it and restarts the app as needed.
+The separately downloaded daemon archive used by older services still follows its
+existing update flow.
+
 When both sides have the same newer release and the daemon advertises desktop import,
 the patched GUI downloads only the desktop delta or full archive. MyGo verifies and
 reconstructs the complete app, then invokes a preparation hook before app replacement.
@@ -188,7 +193,7 @@ then `rpm -qf`). A development build, or one whose version isn't a release, neve
 this flow. The version to install is the daemon's latest release, since the app feed
 can't be asked.
 
-**New Update** runs in two halves, one password between them:
+**New Update** downloads and verifies the package. **Install Update** begins installation and requests administrator permission.
 
 1. **Download, as the person.** The bundled CLI's `desktop fetch-package` downloads the
    package, `checksums-desktop.txt` and its `.minisig` into the app's cache
@@ -197,7 +202,7 @@ can't be asked.
    A paused download resumes, and downloads of other versions are deleted. The CLI
    verifies the signed list and the package before it reports success, and refuses a
    signed package of another version or format than the one asked for.
-2. **Install, as root.** The app checks that the bundled CLI and every directory above
+2. **Install, as root.** On the second click, the app checks that the bundled CLI and every directory above
    it are owned by root and not writable by anyone else. It then runs that exact file
    through `pkexec masir desktop install-package`. No custom polkit policy is involved,
    so the person types their password every time. The root command trusts nothing the
@@ -218,12 +223,12 @@ can't be asked.
      installer fails at once) or `dnf install -y`;
    - with a service installed and older than the package, run the *new* bundle's
      `daemon import-desktop` and `daemon sync-unit`. The service and its unit are
-     updated with the same password. When the service binary is already current but
-     the running service reports an older version (an earlier update replaced the
-     binary without a restart), `systemctl try-restart` it once instead. A stopped
-     service stays stopped.
+     updated with the same password. When the service binary is already current,
+     synchronize its unit under the same authorization. If the process still needs
+     a restart and synchronizing the unit did not restart it, use
+     `systemctl try-restart`. A stopped service stays stopped.
 
-Then the app follows the service restart, deletes its download and relaunches. Without a
+Then the app deletes its download, follows the service restart and relaunches. Without a
 service, the app restarts its bundled daemon as an app update does.
 
 Exit codes the app reads from `masir desktop …` (`apps/masir/exit_code.go`):
@@ -241,9 +246,9 @@ What the control shows:
 
 | Case | Control | Tooltip |
 |---|---|---|
-| password dialog cancelled | **New Update** again | — |
+| password dialog cancelled | **Install Update** again | — |
 | account not allowed to elevate | Update failed | Your account isn't allowed to install software. |
-| no polkit agent (or its text fallback can't start) | Update failed | Masir can't ask for your password here. Run: sudo apt install <package> |
+| no polkit agent (or its text fallback can't start) | Update failed | Download the new version from the release page and verify its signed checksum before installing. |
 | 10 | Update failed (the download is deleted) | The download didn't match the signed release; nothing was installed. |
 | 11 | Update failed | Another installer is running. Try again in a minute. |
 | 14 | Update failed | This version is already installed. Restart Masir. |

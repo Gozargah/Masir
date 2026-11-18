@@ -139,6 +139,7 @@ var (
 	serviceVersion          = installedServiceVersion
 	runningServiceVersion   = liveServiceVersion
 	restartServiceNow       = restartInstalledService
+	syncPackageServiceUnit  = reconcilePackageServiceUnit
 	runBundled              = execBundled
 )
 
@@ -252,7 +253,12 @@ func installDesktopPackage(pkg, sums, sig, user string, out io.Writer) (err erro
 	// an older version. One that doesn't answer is stopped, which the person may have
 	// chosen, or still starting from the current binary: leave it alone.
 	if current, err := serviceVersion(); err == nil && !newerVersion(version, current) {
-		if running, err := runningServiceVersion(user); err == nil && newerVersion(version, running) {
+		running, runningErr := runningServiceVersion(user)
+		restarted, err := syncPackageServiceUnit(user)
+		if err != nil {
+			return coded(exitServicePending, err)
+		}
+		if !restarted && runningErr == nil && newerVersion(version, running) {
 			if err := restartServiceNow(); err != nil {
 				return coded(exitServicePending, err)
 			}
@@ -266,6 +272,16 @@ func installDesktopPackage(pkg, sums, sig, user string, out io.Writer) (err erro
 		return coded(exitServicePending, err)
 	}
 	return nil
+}
+
+func reconcilePackageServiceUnit(user string) (bool, error) {
+	var restarted bool
+	err := syncServiceUnitWith(user, func(path, text string) error {
+		var err error
+		restarted, err = applyLinuxServiceDefinition(path, text)
+		return err
+	})
+	return restarted, err
 }
 
 // lockPackageInstall takes the install lock in parent, or fails as a busy installer

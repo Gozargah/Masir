@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"os/user"
@@ -16,6 +17,10 @@ func importLegacyDesktop(dir string, authorized func()) error {
 	cmd := exec.Command(filepath.Join(dir, "masir.exe"), "daemon", "import-desktop", "--from", dir, "--user", u.Uid)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if out, err := cmd.CombinedOutput(); err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 15 {
+			return &elevationError{kind: elevationCancelled, code: exit.ExitCode(), msg: "Administrator permission was declined"}
+		}
 		return fmt.Errorf("offline service upgrade: %s: %w", out, err)
 	}
 	if authorized != nil {

@@ -130,7 +130,7 @@ func TestRunFetchExitCodes(t *testing.T) {
 		if !ok || kind != elevationFailed || code != c.exit {
 			t.Errorf("exit %d: kind=%d code=%d ok=%v (%v)", c.exit, kind, code, ok, err)
 		}
-		text, remove := packageFailure(err, packageFiles{pkg: "/p.deb"}, "deb")
+		text, remove := packageFailure(err)
 		if text != c.text || remove != c.remove {
 			t.Errorf("exit %d: %q remove=%v, want %q %v", c.exit, text, remove, c.text, c.remove)
 		}

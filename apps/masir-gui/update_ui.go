@@ -38,7 +38,7 @@ func (a *app) updateControl(c *ui.Context, p palette, fill bool) {
 	if a.updates.state.phase == updateAvailable {
 		main.Shadow(0, 1, 3, 0, p.accent.Alpha(0.35))
 	}
-	if main.Hovered() && (a.updates.state.phase == updateAvailable || a.updates.state.phase == updateFailed) {
+	if main.Hovered() && (a.updates.state.phase == updateAvailable || a.updates.state.phase == updateReady || a.updates.state.phase == updateFailed) {
 		main.Background(p.accentHover)
 		if a.updates.state.phase == updateFailed {
 			main.Background(p.errorSurface)
@@ -67,6 +67,10 @@ func (a *app) updateControl(c *ui.Context, p palette, fill bool) {
 
 	clicked := main.Clicked()
 	switch a.updates.state.phase {
+	case updateReady:
+		if clicked {
+			a.confirmInstall()
+		}
 	case updateAvailable:
 		if clicked {
 			a.startUpdate()
@@ -92,7 +96,7 @@ func (a *app) updateControl(c *ui.Context, p palette, fill bool) {
 			if iconButton(c, "update-ignore", iconX, "Ignore this update", p, iconXS, variantGhost, 11) {
 				a.ignoreUpdate()
 			}
-		case updatePaused, updateAppPaused:
+		case updatePaused, updateAppPaused, updateReady:
 			if iconButton(c, "update-stop", iconStop, "Cancel the update", p, iconXS, variantGhost, 10) {
 				a.cancelUpdate()
 			}
@@ -105,6 +109,8 @@ func (a *app) updateLook(p palette) (text string, icon *ui.SVG, bg, fg ui.Color)
 	text, fg = a.updateLabel(), ui.Hex("#ffffff")
 	bg = p.accent
 	switch a.updates.state.phase {
+	case updateReady:
+		icon = iconRefresh
 	case updateAvailable:
 		icon = iconDownload
 		if a.updates.state.bundleOffer {
