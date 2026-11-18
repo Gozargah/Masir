@@ -2,7 +2,7 @@ diff --git a/proxy/tun/bind_socket_darwin.go b/proxy/tun/bind_socket_darwin.go
 new file mode 100644
 --- /dev/null
 +++ b/proxy/tun/bind_socket_darwin.go
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,46 @@
 +//go:build darwin
 +
 +package tun
@@ -32,22 +32,28 @@ new file mode 100644
 +	}
 +}
 +
-+func (updater *InterfaceUpdater) socketInterface(network, address string) (*net.Interface, error) {
++func (updater *InterfaceUpdater) socketInterface(network, address string) (*net.Interface, bool, error) {
 +	family, err := socketRouteFamily(network, address)
 +	if err != nil {
-+		return nil, err
++		return nil, false, err
 +	}
 +	updater.Lock()
 +	index, name := updater.tunIndex, updater.fixedName
 +	updater.Unlock()
 +	peer, _ := netip.ParseAddrPort(address)
-+	return findDarwinOutboundInterface(index, name, family, peer.Addr())
++	iface, err := findDarwinOutboundInterface(index, name, family, peer.Addr())
++	local := err == nil && darwinPeerIsLocal(iface, name, peer.Addr())
++	return iface, local, err
++}
++
++func darwinPeerIsLocal(iface *net.Interface, fixedName string, peer netip.Addr) bool {
++	return iface != nil && fixedName == "" && peer.IsValid() && iface.Flags&net.FlagLoopback != 0
 +}
 diff --git a/proxy/tun/bind_socket_darwin_test.go b/proxy/tun/bind_socket_darwin_test.go
 new file mode 100644
 --- /dev/null
 +++ b/proxy/tun/bind_socket_darwin_test.go
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,142 @@
 +//go:build darwin
 +
 +package tun
@@ -170,6 +176,26 @@ new file mode 100644
 +		t.Fatal("reject route must not fall back to a default")
 +	}
 +}
++
++func TestOwnAddressLoopbackRouteBypassesBinding(t *testing.T) {
++	peer := netip.MustParseAddr("192.0.2.3")
++	routes := []route.Message{defaultTestRoute(unix.AF_INET, 11), connectedTestRoute("192.0.2.3/32", 1)}
++	index, err := selectDarwinPeerRoute(routes, nil, unix.AF_INET, peer)
++	if err != nil || index != 1 {
++		t.Fatalf("host route: %d %v", index, err)
++	}
++	local := &net.Interface{Index: index, Name: "lo0", Flags: net.FlagUp | net.FlagLoopback}
++	iface, err := validateDarwinRouteInterface(local, true)
++	if err != nil || !darwinPeerIsLocal(iface, "", peer) {
++		t.Fatalf("local peer must bypass binding: %v", err)
++	}
++	if darwinPeerIsLocal(iface, "lo0", peer) {
++		t.Fatal("explicit interface must retain forced binding")
++	}
++	if _, err := validateDarwinRouteInterface(local, false); err == nil {
++		t.Fatal("loopback must not become a default egress")
++	}
++}
 diff --git a/proxy/tun/bind_socket_other.go b/proxy/tun/bind_socket_other.go
 new file mode 100644
 --- /dev/null
@@ -181,8 +207,8 @@ new file mode 100644
 +
 +import "net"
 +
-+func (updater *InterfaceUpdater) socketInterface(network, address string) (*net.Interface, error) {
-+	return updater.Get(), nil
++func (updater *InterfaceUpdater) socketInterface(network, address string) (*net.Interface, bool, error) {
++	return updater.Get(), false, nil
 +}
 diff --git a/proxy/tun/bind_socket_test.go b/proxy/tun/bind_socket_test.go
 new file mode 100644
@@ -217,7 +243,7 @@ diff --git a/proxy/tun/config.go b/proxy/tun/config.go
 
  	"github.com/xtls/xray-core/common/errors"
  )
-@@ -49,3 +52,25 @@
+@@ -49,3 +52,28 @@
  	updater.iface = got
  	errors.LogInfo(context.Background(), "[tun] update interface ", got.Name, " ", got.Index)
  }
@@ -229,9 +255,12 @@ diff --git a/proxy/tun/config.go b/proxy/tun/config.go
 +	if addrPort.Addr().Unmap().IsLoopback() || strings.HasPrefix(strings.ToLower(address), "localhost:") {
 +		return nil
 +	}
-+	iface, err := updater.socketInterface(network, address)
++	iface, local, err := updater.socketInterface(network, address)
 +	if err != nil {
 +		return errors.New("iface not found").Base(err)
++	}
++	if local {
++		return nil
 +	}
 +	if iface == nil {
 +		return errors.New("iface not found")
@@ -308,7 +337,7 @@ diff --git a/proxy/tun/tun_darwin.go b/proxy/tun/tun_darwin.go
  	if fixedName != "" {
  		iface, err := net.InterfaceByName(fixedName)
  		if err != nil {
-@@ -591,6 +596,51 @@
+@@ -591,6 +596,60 @@
  		return nil, err
  	}
 
@@ -353,6 +382,15 @@ diff --git a/proxy/tun/tun_darwin.go b/proxy/tun/tun_darwin.go
 +	if err != nil {
 +		return nil, err
 +	}
++	// Local host routes may legitimately use lo0 for the host's non-loopback
++	// addresses. Return that interface so socket binding can defer to the OS.
++	if len(peers) > 0 && peers[0].IsValid() {
++		iface, err := net.InterfaceByIndex(index)
++		if err != nil {
++			return nil, err
++		}
++		return validateDarwinRouteInterface(iface, true)
++	}
 +	return usableDarwinInterface(index)
 +}
 +
@@ -360,7 +398,7 @@ diff --git a/proxy/tun/tun_darwin.go b/proxy/tun/tun_darwin.go
  	var ipv6Index int
  	for _, message := range messages {
  		routeMessage, ok := message.(*route.RouteMessage)
-@@ -602,11 +652,11 @@
+@@ -602,11 +661,11 @@
  		}
 
  		family, ok := defaultRouteFamily(routeMessage)
@@ -374,7 +412,7 @@ diff --git a/proxy/tun/tun_darwin.go b/proxy/tun/tun_darwin.go
  		}
  		if family == unix.AF_INET6 && ipv6Index == 0 {
  			ipv6Index = routeMessage.Index
-@@ -614,9 +664,9 @@
+@@ -614,9 +673,9 @@
  	}
 
  	if ipv6Index != 0 {
@@ -387,7 +425,22 @@ diff --git a/proxy/tun/tun_darwin.go b/proxy/tun/tun_darwin.go
  }
 
  func defaultRouteFamily(message *route.RouteMessage) (int, bool) {
-@@ -792,3 +842,65 @@
+@@ -649,8 +708,12 @@
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+-		return nil, errors.New("default route interface is not usable")
++	return validateDarwinRouteInterface(iface, false)
++}
++
++func validateDarwinRouteInterface(iface *net.Interface, peerRoute bool) (*net.Interface, error) {
++	if iface.Flags&net.FlagUp == 0 || (!peerRoute && iface.Flags&net.FlagLoopback != 0) {
++		return nil, errors.New("route interface is not usable")
+ 	}
+ 	return iface, nil
+ }
+@@ -792,3 +855,65 @@
  	copy(mask[:], net.CIDRMask(bits, 128))
  	return mask
  }
@@ -473,41 +526,46 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
  	"github.com/xtls/xray-core/transport/internet/finalmask"
  	"golang.org/x/net/icmp"
  	"golang.org/x/net/ipv4"
-@@ -38,6 +41,9 @@
+@@ -35,68 +38,99 @@
+ 	err  error
+ }
+
++type icmpPeerSocket struct {
++	conn *icmp.PacketConn
++	id   int
++}
++
  type xicmpConnClient struct {
- 	icmp4    *icmp.PacketConn
- 	icmp6    *icmp.PacketConn
-+	loop4    *icmp.PacketConn
-+	loop6    *icmp.PacketConn
-+	localID  int
- 	udp      bool
- 	ips      []netip.Addr
- 	ip       net.IP
-@@ -51,30 +57,42 @@
+-	icmp4    *icmp.PacketConn
+-	icmp6    *icmp.PacketConn
+-	udp      bool
+-	ips      []netip.Addr
+-	ip       net.IP
+-	clientID [8]byte
+-	id       int
+-	seq      int
+-	readCh   chan packet
+-	closeCh  chan struct{}
+-	wg       sync.WaitGroup
+-	mu       sync.Mutex
++	udp                         bool
++	ips                         []netip.Addr
++	ip                          net.IP
++	port                        string
++	clientID                    [8]byte
++	nextID, seq                 int
++	peers                       map[netip.Addr]*icmpPeerSocket
++	readDeadline, writeDeadline time.Time
++	readCh                      chan packet
++	closeCh                     chan struct{}
++	wg                          sync.WaitGroup
++	mu                          sync.Mutex
  }
 
  func NewConnClient(c *Config, dest *net.Destination) (net.PacketConn, error) {
 -	var icmp4, icmp6 *icmp.PacketConn
 -	var err4, err6 error
-+	ips := make([]netip.Addr, 0, len(c.IPs))
-+	for _, raw := range c.IPs {
-+		peer, err := netip.ParseAddr(raw)
-+		if err != nil {
-+			return nil, err
-+		}
-+		ips = append(ips, peer.Unmap())
-+	}
-+	peers := ips
-+	if len(peers) == 0 {
-+		peer, ok := netip.AddrFromSlice(dest.Address.IP())
-+		if !ok {
-+			return nil, fmt.Errorf("ICMP requires an IP peer")
-+		}
-+		peers = []netip.Addr{peer.Unmap()}
-+	}
-+	groups := groupICMPPeers(peers)
-+	network4, network6 := "ip4:icmp", "ip6:ipv6-icmp"
- 	if c.DGRAM {
+-	if c.DGRAM {
 -		icmp4, err4 = icmp.ListenPacket("udp4", "0.0.0.0")
 -		icmp6, err6 = icmp.ListenPacket("udp6", "::")
 -	} else {
@@ -518,190 +576,227 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 -		return nil, errors.Combine(err4, err6)
 -	}
 -
--	ips := make([]netip.Addr, 0, len(c.IPs))
+ 	ips := make([]netip.Addr, 0, len(c.IPs))
 -	for _, ip := range c.IPs {
 -		ips = append(ips, netip.MustParseAddr(ip))
 -	}
 -
--	var ip net.IP
--	if len(ips) > 0 {
--		ip = ips[mrand.Intn(len(ips))].AsSlice()
--	} else {
--		ip = dest.Address.IP()
--	}
-+		network4, network6 = "udp4", "udp6"
-+	}
-+	icmp4, loop4, err := listenICMPPeers(network4, "0.0.0.0", groups[0], dest.Port.String())
-+	if err != nil {
-+		return nil, err
-+	}
-+	icmp6, loop6, err := listenICMPPeers(network6, "::", groups[1], dest.Port.String())
-+	if err != nil {
-+		if icmp4 != nil {
-+			icmp4.Close()
++	for _, raw := range c.IPs {
++		peer, err := netip.ParseAddr(raw)
++		if err != nil {
++			return nil, err
 +		}
-+		if loop4 != nil {
-+			loop4.Close()
-+		}
-+		return nil, err
++		ips = append(ips, peer.Unmap())
 +	}
-+	ip := peers[mrand.Intn(len(peers))].AsSlice()
-
+ 	var ip net.IP
+ 	if len(ips) > 0 {
+ 		ip = ips[mrand.Intn(len(ips))].AsSlice()
+ 	} else {
+ 		ip = dest.Address.IP()
+ 	}
+-
++	if _, ok := netip.AddrFromSlice(ip); !ok {
++		return nil, fmt.Errorf("ICMP requires an IP peer")
++	}
  	var clientID [8]byte
  	common.Must2(rand.Read(clientID[:]))
-@@ -82,6 +100,8 @@
- 	conn := &xicmpConnClient{
- 		icmp4:    icmp4,
- 		icmp6:    icmp6,
-+		loop4:    loop4,
-+		loop6:    loop6,
- 		udp:      c.DGRAM,
- 		ips:      ips,
- 		ip:       ip,
-@@ -92,9 +112,19 @@
- 		closeCh:  make(chan struct{}),
- 	}
-
+-
+-	conn := &xicmpConnClient{
+-		icmp4:    icmp4,
+-		icmp6:    icmp6,
+-		udp:      c.DGRAM,
+-		ips:      ips,
+-		ip:       ip,
+-		clientID: clientID,
+-		id:       mrand.Intn(65536),
+-		seq:      1,
+-		readCh:   make(chan packet),
+-		closeCh:  make(chan struct{}),
+-	}
+-
 -	conn.wg.Add(2)
 -	go conn.recv4()
 -	go conn.recv6()
-+	conn.localID = (conn.id + 1) % 65536
-+	for _, socket := range []*icmp.PacketConn{icmp4, loop4} {
-+		if socket != nil {
-+			conn.wg.Add(1)
-+			go conn.recv4(socket)
+-
+-	return conn, nil
++	return &xicmpConnClient{udp: c.DGRAM, ips: ips, ip: ip, port: dest.Port.String(), clientID: clientID, nextID: mrand.Intn(65536), seq: 1, peers: make(map[netip.Addr]*icmpPeerSocket), readCh: make(chan packet), closeCh: make(chan struct{})}, nil
++}
++
++// Open on first use: large alternative-IP lists do not allocate unused sockets.
++// Each peer retains its binding and raw ICMP ID for the connection's lifetime.
++func (c *xicmpConnClient) socketForPeer(ip net.IP) (*icmpPeerSocket, error) {
++	peer, ok := netip.AddrFromSlice(ip)
++	if !ok {
++		return nil, fmt.Errorf("invalid ICMP peer")
++	}
++	peer = peer.Unmap()
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	if c.closed() {
++		return nil, io.ErrClosedPipe
++	}
++	if socket := c.peers[peer]; socket != nil {
++		return socket, nil
++	}
++	if !c.udp && len(c.peers) >= 65536 {
++		return nil, fmt.Errorf("raw ICMP peer ID space exhausted")
++	}
++	network, address := "ip6:ipv6-icmp", "::"
++	if peer.Is4() {
++		network, address = "ip4:icmp", "0.0.0.0"
++	}
++	if c.udp {
++		network = "udp6"
++		if peer.Is4() {
++			network = "udp4"
 +		}
 +	}
-+	for _, socket := range []*icmp.PacketConn{icmp6, loop6} {
-+		if socket != nil {
-+			conn.wg.Add(1)
-+			go conn.recv6(socket)
-+		}
++	conn, err := listenControlledICMP(network, address, net.JoinHostPort(peer.String(), c.port))
++	if err != nil {
++		return nil, err
 +	}
-
- 	return conn, nil
++	if err = conn.SetReadDeadline(c.readDeadline); err == nil {
++		err = conn.SetWriteDeadline(c.writeDeadline)
++	}
++	if err != nil {
++		conn.Close()
++		return nil, err
++	}
++	socket := &icmpPeerSocket{conn: conn, id: c.nextID}
++	c.nextID = (c.nextID + 1) % 65536
++	c.peers[peer] = socket
++	c.wg.Add(1)
++	if peer.Is4() {
++		go c.recv4(socket)
++	} else {
++		go c.recv6(socket)
++	}
++	return socket, nil
  }
-@@ -108,12 +138,12 @@
+
+ func (c *xicmpConnClient) closed() bool {
+@@ -108,12 +142,12 @@
  	}
  }
 
 -func (c *xicmpConnClient) recv4() {
-+func (c *xicmpConnClient) recv4(socket *icmp.PacketConn) {
++func (c *xicmpConnClient) recv4(socket *icmpPeerSocket) {
  	defer c.wg.Done()
 
  	var b [finalmask.UDPSize]byte
  	for {
 -		n, addr, err := c.icmp4.ReadFrom(b[:])
-+		n, addr, err := socket.ReadFrom(b[:])
++		n, addr, err := socket.conn.ReadFrom(b[:])
  		if err != nil {
  			if c.closed() {
  				return
-@@ -149,7 +179,7 @@
+@@ -149,7 +183,7 @@
 
  		// errors.LogDebug(context.Background(), "id ", echo.ID, " seq ", echo.Seq, " addr ", addr)
 
 -		if !c.udp && echo.ID != c.id {
-+		if !c.udp && echo.ID != c.socketID(socket) {
++		if !c.udp && echo.ID != socket.id {
  			continue
  		}
 
-@@ -176,12 +206,12 @@
+@@ -176,12 +210,12 @@
  	}
  }
 
 -func (c *xicmpConnClient) recv6() {
-+func (c *xicmpConnClient) recv6(socket *icmp.PacketConn) {
++func (c *xicmpConnClient) recv6(socket *icmpPeerSocket) {
  	defer c.wg.Done()
 
  	var b [finalmask.UDPSize]byte
  	for {
 -		n, addr, err := c.icmp6.ReadFrom(b[:])
-+		n, addr, err := socket.ReadFrom(b[:])
++		n, addr, err := socket.conn.ReadFrom(b[:])
  		if err != nil {
  			if c.closed() {
  				return
-@@ -217,7 +247,7 @@
+@@ -217,7 +251,7 @@
 
  		// errors.LogDebug(context.Background(), "id ", echo.ID, " seq ", echo.Seq, " addr ", addr)
 
 -		if !c.udp && echo.ID != c.id {
-+		if !c.udp && echo.ID != c.socketID(socket) {
++		if !c.udp && echo.ID != socket.id {
  			continue
  		}
 
-@@ -285,13 +315,16 @@
+@@ -285,13 +319,16 @@
  	copy(b[8:], c.clientID[:])
  	copy(b[16:], p)
 
-+	socket := c.packetConn(ip)
-+	if socket == nil {
-+		return 0, fmt.Errorf("no ICMP socket for peer family")
++	socket, err := c.socketForPeer(ip)
++	if err != nil {
++		return 0, err
 +	}
  	if ip.To4() != nil {
 -		b = marshal(b, ipv4.ICMPTypeEcho, c.id, seq, 8+len(p))
 -		_, err = c.icmp4.WriteTo(b, addr)
-+		b = marshal(b, ipv4.ICMPTypeEcho, c.socketID(socket), seq, 8+len(p))
++		b = marshal(b, ipv4.ICMPTypeEcho, socket.id, seq, 8+len(p))
  	} else {
 -		b = marshal(b, ipv6.ICMPTypeEchoRequest, c.id, seq, 8+len(p))
 -		_, err = c.icmp6.WriteTo(b, addr)
 -	}
-+		b = marshal(b, ipv6.ICMPTypeEchoRequest, c.socketID(socket), seq, 8+len(p))
++		b = marshal(b, ipv6.ICMPTypeEchoRequest, socket.id, seq, 8+len(p))
 +	}
-+	_, err = socket.WriteTo(b, addr)
++	_, err = socket.conn.WriteTo(b, addr)
 
  	if err != nil {
  		errors.LogErrorInner(context.Background(), err, "send err")
-@@ -307,8 +340,11 @@
+@@ -307,8 +344,9 @@
  		return nil
  	}
  	close(c.closeCh)
 -	_ = c.icmp4.Close()
 -	_ = c.icmp6.Close()
-+	for _, socket := range c.sockets() {
-+		if socket != nil {
-+			socket.Close()
-+		}
++	for _, socket := range c.peers {
++		socket.conn.Close()
 +	}
  	c.wg.Wait()
  	close(c.readCh)
  	return nil
-@@ -319,20 +355,29 @@
+@@ -319,20 +357,30 @@
  }
 
  func (c *xicmpConnClient) SetDeadline(t time.Time) error {
 -	_ = c.icmp4.SetDeadline(t)
 -	_ = c.icmp6.SetDeadline(t)
-+	for _, socket := range c.sockets() {
-+		if socket != nil {
-+			socket.SetDeadline(t)
-+		}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.readDeadline, c.writeDeadline = t, t
++	for _, socket := range c.peers {
++		socket.conn.SetDeadline(t)
 +	}
  	return nil
  }
-
+-
  func (c *xicmpConnClient) SetReadDeadline(t time.Time) error {
 -	_ = c.icmp4.SetReadDeadline(t)
 -	_ = c.icmp6.SetReadDeadline(t)
-+	for _, socket := range c.sockets() {
-+		if socket != nil {
-+			socket.SetReadDeadline(t)
-+		}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.readDeadline = t
++	for _, socket := range c.peers {
++		socket.conn.SetReadDeadline(t)
 +	}
  	return nil
  }
-
+-
  func (c *xicmpConnClient) SetWriteDeadline(t time.Time) error {
 -	_ = c.icmp4.SetWriteDeadline(t)
 -	_ = c.icmp6.SetWriteDeadline(t)
-+	for _, socket := range c.sockets() {
-+		if socket != nil {
-+			socket.SetWriteDeadline(t)
-+		}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	c.writeDeadline = t
++	for _, socket := range c.peers {
++		socket.conn.SetWriteDeadline(t)
 +	}
  	return nil
  }
 
-@@ -360,3 +405,104 @@
+@@ -360,3 +408,38 @@
  	}
  	return b[:8+dataLen]
  }
@@ -740,77 +835,11 @@ diff --git a/transport/internet/finalmask/xicmp/client.go b/transport/internet/f
 +	}
 +	return conn, nil
 +}
-+
-+// Remote and loopback peers need separate sockets: binding a shared socket to
-+// the outbound interface would also force local packets onto that interface.
-+type icmpPeerGroup struct{ remote, local netip.Addr }
-+
-+func groupICMPPeers(peers []netip.Addr) [2]icmpPeerGroup {
-+	var groups [2]icmpPeerGroup
-+	for _, peer := range peers {
-+		peer = peer.Unmap()
-+		family := 1
-+		if peer.Is4() {
-+			family = 0
-+		}
-+		if peer.IsLoopback() {
-+			groups[family].local = peer
-+		} else {
-+			groups[family].remote = peer
-+		}
-+	}
-+	return groups
-+}
-+
-+func listenICMPPeers(network, address string, peers icmpPeerGroup, port string) (*icmp.PacketConn, *icmp.PacketConn, error) {
-+	primary := peers.remote
-+	if !primary.IsValid() {
-+		primary = peers.local
-+	}
-+	if !primary.IsValid() {
-+		return nil, nil, nil
-+	}
-+	socket, err := listenControlledICMP(network, address, net.JoinHostPort(primary.String(), port))
-+	if err != nil {
-+		return nil, nil, err
-+	}
-+	if !peers.remote.IsValid() || !peers.local.IsValid() {
-+		return socket, nil, nil
-+	}
-+	local, err := listenControlledICMP(network, address, net.JoinHostPort(peers.local.String(), port))
-+	if err != nil {
-+		socket.Close()
-+		return nil, nil, err
-+	}
-+	return socket, local, nil
-+}
-+
-+func (c *xicmpConnClient) sockets() [4]*icmp.PacketConn {
-+	return [4]*icmp.PacketConn{c.icmp4, c.icmp6, c.loop4, c.loop6}
-+}
-+func (c *xicmpConnClient) packetConn(ip net.IP) *icmp.PacketConn {
-+	if ip.To4() != nil {
-+		if ip.IsLoopback() && c.loop4 != nil {
-+			return c.loop4
-+		}
-+		return c.icmp4
-+	}
-+	if ip.IsLoopback() && c.loop6 != nil {
-+		return c.loop6
-+	}
-+	return c.icmp6
-+}
-+func (c *xicmpConnClient) socketID(socket *icmp.PacketConn) int {
-+	if socket == c.loop4 || socket == c.loop6 {
-+		return c.localID
-+	}
-+	return c.id
-+}
 diff --git a/transport/internet/finalmask/xicmp/client_control_test.go b/transport/internet/finalmask/xicmp/client_control_test.go
 new file mode 100644
 --- /dev/null
 +++ b/transport/internet/finalmask/xicmp/client_control_test.go
-@@ -0,0 +1,177 @@
+@@ -0,0 +1,136 @@
 +//go:build darwin || linux
 +
 +package xicmp
@@ -840,92 +869,6 @@ new file mode 100644
 +	})
 +}
 +
-+func TestICMPDialerControllers(t *testing.T) {
-+	var networks []string
-+	requireICMPSockets(t)
-+	destination := net.Destination{Address: net.LocalHostIP, Port: 1234, Network: net.Network_UDP}
-+	withControllers(t, func(network, address string, c syscall.RawConn) error {
-+		want := destination.NetAddr()
-+		if network == "udp6" {
-+			want = "[::1]:1234"
-+		}
-+		if address != want {
-+			t.Errorf("address = %q, want %q", address, want)
-+		}
-+		networks = append(networks, network)
-+		return nil
-+	})
-+	c, err := NewConnClient(&Config{DGRAM: true, IPs: []string{"127.0.0.1", "::1"}}, &destination)
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	defer c.Close()
-+	if len(networks) != 2 || networks[0] != "udp4" || networks[1] != "udp6" {
-+		t.Fatalf("controllers saw %v, want udp4 and udp6", networks)
-+	}
-+}
-+
-+func TestICMPControllerFailureClosesSocket(t *testing.T) {
-+	requireICMPSockets(t)
-+	rejected := errors.New("interface unavailable")
-+	var socket syscall.RawConn
-+	withControllers(t, func(network, address string, c syscall.RawConn) error {
-+		socket = c
-+		return rejected
-+	})
-+	c, err := listenControlledICMP("udp4", "0.0.0.0", "127.0.0.1:1234")
-+	if !errors.Is(err, rejected) || c != nil {
-+		t.Fatalf("got %v, %v; want nil and controller error", c, err)
-+	}
-+	if socket == nil {
-+		t.Fatal("controller was not called")
-+	}
-+	if err := socket.Control(func(uintptr) {}); err == nil {
-+		t.Fatal("rejected socket is still open")
-+	}
-+}
-+
-+func TestICMPPartialSetupClosesBothSockets(t *testing.T) {
-+	requireICMPSockets(t)
-+	var sockets []syscall.RawConn
-+	withControllers(t, func(network, address string, c syscall.RawConn) error {
-+		sockets = append(sockets, c)
-+		if network == "udp6" {
-+			return errors.New("IPv6 binding failed")
-+		}
-+		return nil
-+	})
-+	c, err := NewConnClient(&Config{DGRAM: true, IPs: []string{"127.0.0.1", "::1"}}, &net.Destination{Address: net.LocalHostIP, Network: net.Network_UDP})
-+	if err == nil || c != nil {
-+		t.Fatalf("got %v, %v; want failed setup", c, err)
-+	}
-+	if len(sockets) != 2 {
-+		t.Fatalf("controllers saw %d sockets, want two", len(sockets))
-+	}
-+	for i, socket := range sockets {
-+		if err := socket.Control(func(uintptr) {}); err == nil {
-+			t.Errorf("socket %d is still open", i)
-+		}
-+	}
-+}
-+
-+func TestICMPUsesConfiguredPeerFamilies(t *testing.T) {
-+	requireICMPSockets(t)
-+	var got []string
-+	withControllers(t, func(network, address string, c syscall.RawConn) error {
-+		got = append(got, network+" "+address)
-+		return nil
-+	})
-+	conn, err := NewConnClient(&Config{DGRAM: true, IPs: []string{"192.0.2.1", "2001:db8::1"}}, &net.Destination{Address: net.LocalHostIP, Port: 1234, Network: net.Network_UDP})
-+	if err != nil {
-+		t.Fatal(err)
-+	}
-+	defer conn.Close()
-+	if len(got) != 2 || got[0] != "udp4 192.0.2.1:1234" || got[1] != "udp6 [2001:db8::1]:1234" {
-+		t.Fatalf("controllers saw %v; want configured IPv4/IPv6 peers", got)
-+	}
-+}
-+
 +func requireICMPSockets(t *testing.T) {
 +	t.Helper()
 +	for _, tc := range []struct{ network, address string }{{"udp4", "0.0.0.0"}, {"udp6", "::"}} {
@@ -942,49 +885,94 @@ new file mode 100644
 +	}
 +}
 +
-+func TestICMPMixedLoopbackPeersUseSeparateSockets(t *testing.T) {
++func TestICMPPeerBindingsAreIndependent(t *testing.T) {
 +	requireICMPSockets(t)
 +	var got []string
 +	withControllers(t, func(network, address string, raw syscall.RawConn) error {
 +		got = append(got, network+" "+address)
 +		return nil
 +	})
-+	p, err := NewConnClient(&Config{DGRAM: true, IPs: []string{"127.0.0.1", "192.0.2.1", "::1", "2001:db8::1"}}, &net.Destination{Address: net.LocalHostIP, Port: 1234, Network: net.Network_UDP})
++	p, err := NewConnClient(&Config{DGRAM: true, IPs: []string{"192.0.2.1", "198.51.100.2", "127.0.0.1", "::1"}}, &net.Destination{Address: net.LocalHostIP, Port: 1234, Network: net.Network_UDP})
 +	if err != nil {
 +		t.Fatal(err)
 +	}
 +	defer p.Close()
 +	c := p.(*xicmpConnClient)
-+	if len(got) != 4 {
-+		t.Fatalf("expected four peer-specific sockets; saw %v", got)
++	if len(got) != 0 {
++		t.Fatal("unused peers opened sockets")
 +	}
-+	for _, tc := range []struct {
-+		ip   string
-+		want *icmp.PacketConn
-+	}{{"127.0.0.1", c.loop4}, {"192.0.2.1", c.icmp4}, {"::1", c.loop6}, {"2001:db8::1", c.icmp6}} {
-+		if tc.want == nil || c.packetConn(net.ParseIP(tc.ip)) != tc.want {
-+			t.Errorf("wrong socket for %s", tc.ip)
++	var sockets []*icmpPeerSocket
++	for _, ip := range []string{"192.0.2.1", "198.51.100.2", "127.0.0.1", "::1"} {
++		socket, err := c.socketForPeer(net.ParseIP(ip))
++		if err != nil {
++			t.Fatal(err)
 +		}
++		for _, old := range sockets {
++			if socket.conn == old.conn || socket.id == old.id {
++				t.Fatal("peers shared a socket or raw ID")
++			}
++		}
++		sockets = append(sockets, socket)
 +	}
-+	if c.loop4 == c.icmp4 || c.loop6 == c.icmp6 || c.socketID(c.loop4) == c.socketID(c.icmp4) {
-+		t.Fatal("local and remote sockets must be isolated, including raw ICMP IDs")
++	if len(got) != 4 || got[0] != "udp4 192.0.2.1:1234" || got[1] != "udp4 198.51.100.2:1234" || got[2] != "udp4 127.0.0.1:1234" || got[3] != "udp6 [::1]:1234" {
++		t.Fatalf("wrong peer bindings: %v", got)
++	}
++	reused, err := c.socketForPeer(net.ParseIP("192.0.2.1"))
++	if err != nil || reused != sockets[0] {
++		t.Fatal("peer socket was not reused")
 +	}
 +}
 +
-+func TestICMPUnusedFamilyIsNotOpened(t *testing.T) {
++func TestICMPControllerFailureClosesSocket(t *testing.T) {
 +	requireICMPSockets(t)
-+	var networks []string
++	rejected := errors.New("interface unavailable")
++	var raw syscall.RawConn
++	withControllers(t, func(network, address string, c syscall.RawConn) error { raw = c; return rejected })
++	socket, err := listenControlledICMP("udp4", "0.0.0.0", "127.0.0.1:1234")
++	if !errors.Is(err, rejected) || socket != nil {
++		t.Fatalf("expected controller rejection, got %v", err)
++	}
++	if raw == nil {
++		t.Fatal("controller not called")
++	}
++	if err := raw.Control(func(uintptr) {}); err == nil {
++		t.Fatal("rejected socket remained open")
++	}
++}
++
++func TestICMPPeerFailureKeepsExistingSocketAndCloseReapsAll(t *testing.T) {
++	requireICMPSockets(t)
 +	withControllers(t, func(network, address string, raw syscall.RawConn) error {
-+		networks = append(networks, network)
++		if address == "198.51.100.2:1234" {
++			return errors.New("rejected peer")
++		}
 +		return nil
 +	})
-+	p, err := NewConnClient(&Config{DGRAM: true}, &net.Destination{Address: net.LocalHostIP, Network: net.Network_UDP})
++	p, err := NewConnClient(&Config{DGRAM: true}, &net.Destination{Address: net.LocalHostIP, Port: 1234, Network: net.Network_UDP})
 +	if err != nil {
 +		t.Fatal(err)
 +	}
 +	defer p.Close()
 +	c := p.(*xicmpConnClient)
-+	if c.icmp6 != nil || len(networks) != 1 || networks[0] != "udp4" {
-+		t.Fatalf("opened unused family: %v", networks)
++	first, err := c.socketForPeer(net.ParseIP("192.0.2.1"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err := c.socketForPeer(net.ParseIP("198.51.100.2")); err == nil {
++		t.Fatal("rejected peer succeeded")
++	}
++	if len(c.peers) != 1 {
++		t.Fatal("failed peer entered cache")
++	}
++	raw, err := first.conn.IPv4PacketConn().PacketConn.(syscall.Conn).SyscallConn()
++	if err != nil {
++		t.Fatal(err)
++	}
++	c.Close()
++	if err := raw.Control(func(uintptr) {}); err == nil {
++		t.Fatal("close left peer socket open")
++	}
++	if _, err := c.socketForPeer(net.ParseIP("192.0.2.1")); err == nil {
++		t.Fatal("closed connection reopened a socket")
 +	}
 +}
