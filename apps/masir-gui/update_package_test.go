@@ -242,6 +242,21 @@ func TestPackageUpdatePausesAndResumes(t *testing.T) {
 	}
 }
 
+// A daemon job started elsewhere (the CLI) doesn't move a paused package download.
+func TestADaemonJobDoesNotMoveThePackageFlow(t *testing.T) {
+	a, _, _ := packageApp(t, blockPackageDeb)
+	fetchPackage = func(ctx context.Context, r packageFetch, progress func(int64, int64)) (packageFiles, error) {
+		progress(30, 100)
+		a.pauseUpdate()
+		return packageFiles{}, ctx.Err()
+	}
+	a.startUpdate()
+	a.applyJob(&pb.UpdateJob{Target: pb.UpdateTarget_UPDATE_TARGET_MASIR, State: pb.UpdateState_UPDATE_STATE_DOWNLOADING, BytesDone: 42, BytesTotal: 100})
+	if a.updates.state.phase != updateAppPaused || !a.updates.state.pkgSync {
+		t.Fatalf("phase %v, label %q", a.updates.state.phase, a.updateLabel())
+	}
+}
+
 func TestPackageUpdateCancelledDialogReturnsQuietly(t *testing.T) {
 	a, _, p := packageApp(t, blockPackageDeb)
 	p.installErr = &elevationError{kind: elevationCancelled, msg: "permission wasn't granted"}

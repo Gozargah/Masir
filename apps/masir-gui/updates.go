@@ -604,8 +604,10 @@ func (a *app) watchDaemonUpdate() {
 
 // applyJob turns the daemon's job state into the control's phase.
 func (a *app) applyJob(job *pb.UpdateJob) {
-	if a.updates.state.bundleSync {
-		return // the local import owns progress; late download-watch events do not
+	if a.updates.state.bundleSync || a.updates.state.pkgSync {
+		// The local import or the package flow owns progress; a daemon job, late or
+		// started elsewhere (the CLI), must not move it, or a pause would reach the daemon.
+		return
 	}
 	if a.updates.state.bundleOffer {
 		if job == nil || !updateActive(job.GetState()) {
