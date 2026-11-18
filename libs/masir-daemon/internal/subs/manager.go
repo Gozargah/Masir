@@ -348,7 +348,7 @@ func (m *Manager) Update(ctx context.Context, id string) (*Subscription, error) 
 
 // TestLatency probes the subscription's configs (all, or just configIDs), calls report
 // as each finishes, and saves the results. Probes cut short by ctx aren't saved.
-func (m *Manager) TestLatency(ctx context.Context, subID string, configIDs []string, probeURL, tunName string, report func(configID string, l Latency)) error {
+func (m *Manager) TestLatency(ctx context.Context, subID string, configIDs []string, probeURL string, currentTunName func() string, report func(configID string, l Latency)) error {
 	s, err := m.Get(subID)
 	if err != nil {
 		return err
@@ -369,7 +369,7 @@ func (m *Manager) TestLatency(ctx context.Context, subID string, configIDs []str
 	}
 
 	results := map[string]Latency{}
-	opt := xray.LatencyOptions{URL: probeURL, Timeout: latencyTimeout, TunName: tunName}
+	opt := xray.LatencyOptions{URL: probeURL, Timeout: latencyTimeout, CurrentTunName: currentTunName}
 	xray.MeasureEach(ctx, probes, opt, latencyWorkers, func(id string, d time.Duration, err error) {
 		l := Latency{Ms: d.Milliseconds(), TestedAt: m.now()}
 		if err != nil {

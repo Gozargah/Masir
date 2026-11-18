@@ -24,10 +24,15 @@ func configureProbeInterface(tunName string) error {
 	if !ok {
 		return nil // stock Xray
 	}
-	iface, err := net.InterfaceByName(tunName)
+	interfaces, err := net.Interfaces()
 	if err != nil {
 		return err
 	}
-	binder.SetExcludedTunIndex(iface.Index)
-	return internet.RegisterDialerController(binder.BindSocket)
+	for _, iface := range interfaces {
+		if iface.Name == tunName {
+			binder.SetExcludedTunIndex(iface.Index)
+			return internet.RegisterDialerController(binder.BindSocket)
+		}
+	}
+	return errProbeTunMissing
 }
