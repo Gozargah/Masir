@@ -221,14 +221,16 @@ diff --git a/proxy/tun/bind_socket_linux.go b/proxy/tun/bind_socket_linux.go
 new file mode 100644
 --- /dev/null
 +++ b/proxy/tun/bind_socket_linux.go
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,64 @@
 +//go:build linux && !android
 +
 +package tun
 +
 +import (
++	"fmt"
 +	"net"
 +	"net/netip"
++	"strconv"
 +
 +	"github.com/vishvananda/netlink"
 +)
@@ -239,6 +241,22 @@ new file mode 100644
 +	updater.Unlock()
 +	if fixedName != "" {
 +		return cached, false, nil
++	}
++	if peer, err := netip.ParseAddrPort(address); err == nil && peer.Addr().Zone() != "" {
++		zone := peer.Addr().Zone()
++		iface, err := net.InterfaceByName(zone)
++		if err != nil {
++			if index, parseErr := strconv.Atoi(zone); parseErr == nil {
++				iface, err = net.InterfaceByIndex(index)
++			}
++		}
++		if err != nil {
++			return nil, false, err
++		}
++		if iface.Index == tunIndex {
++			return nil, false, fmt.Errorf("peer zone selects the TUN interface")
++		}
++		return iface, false, nil
 +	}
 +	family := linuxSocketFamily(network, address)
 +	if family == 0 {
@@ -272,12 +290,14 @@ diff --git a/proxy/tun/bind_socket_linux_test.go b/proxy/tun/bind_socket_linux_t
 new file mode 100644
 --- /dev/null
 +++ b/proxy/tun/bind_socket_linux_test.go
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,55 @@
 +//go:build linux && !android
 +
 +package tun
 +
 +import (
++	"fmt"
++	"net"
 +	"testing"
 +
 +	"github.com/vishvananda/netlink"
@@ -296,6 +316,34 @@ new file mode 100644
 +		if got := linuxSocketFamily(tc.network, tc.address); got != tc.want {
 +			t.Errorf("%s %s: got family %d, want %d", tc.network, tc.address, got, tc.want)
 +		}
++	}
++}
++
++func TestLinuxScopedPeerOverridesAutomaticInterface(t *testing.T) {
++	scoped, err := net.InterfaceByName("lo")
++	if err != nil {
++		t.Fatal(err)
++	}
++	// Use a different interface as the automatic selection. The named or
++	// numeric zone must win regardless of the system's default routes.
++	automatic := &net.Interface{Index: scoped.Index + 1, Name: "other-egress"}
++	updater := &InterfaceUpdater{iface: automatic}
++	for _, zone := range []string{scoped.Name, fmt.Sprint(scoped.Index)} {
++		address := "[fe80::2%" + zone + "]:0"
++		got, _, err := updater.socketInterface("udp6", address)
++		if err != nil || got == nil || got.Index != scoped.Index {
++			t.Fatalf("zone %s selected %v, error %v", zone, got, err)
++		}
++		updater.tunIndex = scoped.Index
++		if _, _, err := updater.socketInterface("udp6", address); err == nil {
++			t.Fatal("accepted the excluded TUN as a peer zone")
++		}
++		updater.tunIndex = 0
++		updater.fixedName = automatic.Name
++		if got, _, err := updater.socketInterface("udp6", address); err != nil || got != automatic {
++			t.Fatalf("fixed interface changed: %v %v", got, err)
++		}
++		updater.fixedName = ""
 +	}
 +}
 diff --git a/proxy/tun/bind_socket_other.go b/proxy/tun/bind_socket_other.go

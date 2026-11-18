@@ -19,8 +19,9 @@ and including connected LAN and local host routes. The daemon snapshots its
 active TUN after the probe acquires a worker slot. If that interface disappears
 before setup, the helper retries once with the new state. With Masir's TUN off,
 probes use normal system routing, including routes owned by other VPNs. On
-Linux, automatic binding uses the peer family’s default route when available.
-Explicit interface settings take precedence.
+Linux, automatic binding uses a scoped IPv6 peer's zone first, then the
+peer address family's default route for unscoped peers. Explicit interface
+settings take precedence.
 
 `scripts/with-xray.sh` prepares an ignored `.xray-patched.*` directory and runs a
 command with a private Go workspace replacing only Xray-core. It preserves the
