@@ -23,11 +23,7 @@ jobs:
         run: |
           race=-race # needs cgo on Windows, which the runner doesn't set up
           if [ "$RUNNER_OS" = "Windows" ]; then race=; fi
-          for m in apps/masir apps/masir-gui libs/masir-daemon libs/masir-core libs/masir-proto; do
-            echo "::group::$m"
-            (cd "$m" && go vet ./... && go test $race ./...)
-            echo "::endgroup::"
-          done
+          sh scripts/test-modules.sh $race
 
   build:
     runs-on: ubuntu-latest
@@ -41,7 +37,9 @@ jobs:
         uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
-          args: release --snapshot --clean
+          install-only: true
+      - name: Build with patched Xray
+        run: sh scripts/with-xray.sh goreleaser release --snapshot --clean
       - uses: actions/upload-artifact@v7
         with:
           name: masir-snapshot

@@ -1,8 +1,5 @@
 .PHONY: proto proto-lint build snapshot test test-race lima-test gui gui-local gui-dev screenshots
 
-# The Go modules of go.work, in the order CI checks them.
-MODULES := apps/masir apps/masir-gui libs/masir-daemon libs/masir-core libs/masir-proto
-
 ANALYTICS_PKG := github.com/Gozargah/Masir/libs/masir-daemon/internal/analytics
 -include .env
 export MASIR_POSTHOG_KEY MASIR_POSTHOG_HOST MASIR_UPDATE_PUBKEY MYGO_UPDATER_PRIVATE_KEY MINISIGN_SECRET_KEY MASIR_SIGN_COMPONENTS
@@ -17,25 +14,19 @@ proto-lint:
 
 # masir is a single executable: `masir daemon run` is the daemon.
 build:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o ./dist/masir ./apps/masir
+	sh scripts/with-xray.sh go build -trimpath -ldflags "$(LDFLAGS)" -o ./dist/masir ./apps/masir
 
 # All release archives, as CI builds them, into build/release (needs network for geo data).
 snapshot:
-	go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean
+	sh scripts/with-xray.sh go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean
 
 # The module checks CI runs, one module at a time. `test-race` adds the race detector.
 test:
-	@for m in $(MODULES); do \
-		echo "==> $$m"; \
-		(cd $$m && go vet ./... && go test ./...) || exit 1; \
-	done
+	sh scripts/test-modules.sh
 
 # The same with the race detector, for the final check before committing.
 test-race:
-	@for m in $(MODULES); do \
-		echo "==> $$m"; \
-		(cd $$m && go vet ./... && go test -race ./...) || exit 1; \
-	done
+	sh scripts/test-modules.sh -race
 
 # Linux checks in Lima VMs: Ubuntu (the Debian family), Arch and Fedora with SELinux
 # enforcing. Installs the service in each and verifies the unit's capabilities, the

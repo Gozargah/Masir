@@ -15,6 +15,9 @@
 set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
+if [ -z "${MASIR_XRAY_SOURCE:-}" ]; then
+ exec sh "$root/scripts/with-xray.sh" bash "$root/scripts/lima-test.sh" "$@"
+fi
 conf="$root/scripts/lima/distros.conf"
 guest_script="$root/scripts/lima/guest-test.sh"
 port=${MASIR_LIMA_PORT:-8793}
