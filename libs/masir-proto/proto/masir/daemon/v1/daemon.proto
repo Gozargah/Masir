@@ -446,6 +446,9 @@ message SubscriptionConfig {
   // Xray restarts only for this daemon process lifetime.
   uint64 upload_bytes = 10;
   uint64 download_bytes = 11;
+  // Set for a provider's default balancer. Zero members indicates a single outbound.
+  uint32 balancer_members = 12;
+  string balancer_strategy = 13;
 }
 
 message LatencyResult {

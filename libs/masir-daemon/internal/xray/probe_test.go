@@ -243,3 +243,50 @@ func TestProbeBatchFitsWorkerLifetime(t *testing.T) {
 		t.Fatal("unserviceable request budget accepted")
 	}
 }
+
+func TestIsolatedBalancedProfileProbe(t *testing.T) {
+	healthReady := make(chan struct{})
+	var markHealthy sync.Once
+	earlyRequest := make(chan struct{}, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			// The first probe reaches the fallback before health is known.
+			time.Sleep(350 * time.Millisecond)
+			markHealthy.Do(func() { close(healthReady) })
+		} else {
+			select {
+			case <-healthReady:
+			default:
+				select {
+				case earlyRequest <- struct{}{}:
+				default:
+				}
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+
+	cfg := []byte(strings.ReplaceAll(`{
+		"outbounds":[{"tag":"node","protocol":"freedom"},{"tag":"block","protocol":"blackhole"}],
+		"observatory":{"subjectSelector":["node"],"probeURL":"HEALTH_URL"},
+		"routing":{
+			"balancers":[
+				{"tag":"masir-fallback","selector":["block"]},
+				{"tag":"pool","selector":["node"],"fallbackTag":"block","strategy":{"type":"leastPing"}}
+			],
+			"rules":[{"protocol":["http"],"balancerTag":"pool"},{"network":"tcp,udp","outboundTag":"block"}]
+		}
+	}`, "HEALTH_URL", target.URL+"/health"))
+	_, err := MeasureDelay(context.Background(), cfg, LatencyOptions{
+		URL: target.URL, Attempts: 1, Timeout: 4 * time.Second, Full: true, BalancedProfile: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-earlyRequest:
+		t.Fatal("probe reached the provider member before the observer reported health")
+	default:
+	}
+}

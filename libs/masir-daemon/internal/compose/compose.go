@@ -4,6 +4,7 @@
 package compose
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -12,10 +13,10 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
-	"strings"
 
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/store"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/subs"
+	"github.com/Gozargah/Masir/libs/masir-daemon/internal/xray"
 )
 
 const (
@@ -37,12 +38,15 @@ var privateRanges = []string{
 }
 
 type Input struct {
-	State   store.State
-	Proxy   bool            // the mixed proxy inbound
-	Tun     bool            // the TUN inbound
-	TunName string          // interface name; empty lets Xray pick
-	LogDir  string          // where Xray writes its error log; empty keeps it on stdout
-	Active  json.RawMessage // the selected config's outbound; nil when nothing is selected
+	State                store.State
+	Proxy                bool            // the mixed proxy inbound
+	Tun                  bool            // the TUN inbound
+	TunName              string          // interface name; empty lets Xray pick
+	LogDir               string          // where Xray writes its error log; empty keeps it on stdout
+	Active               json.RawMessage // the selected config's outbound; nil when nothing is selected
+	ActiveProfile        *subs.OutboundProfile
+	ActiveID             string // empty for callers that do not persist a selected config
+	ActiveSubscriptionID string
 	// Skip names rules left out of this config without being disabled: the daemon
 	// suspends one it can't verify (see server.gate), and brings it back once it can.
 	Skip map[string]bool
@@ -57,6 +61,10 @@ type ResolvedRule struct {
 	FellBack    bool // the target couldn't be used, so OutboundTag is the fallback
 }
 
+func (r *ResolvedRule) setTarget(t profileTarget) {
+	r.OutboundTag = t.tag
+}
+
 type Output struct {
 	Config []byte
 	Rules  []ResolvedRule
@@ -64,10 +72,11 @@ type Output struct {
 
 func Build(in Input) (Output, error) {
 	st := in.State
-	hasProxy := len(in.Active) > 0
-	proxyOrDirect := "direct"
+	hasProxy := len(in.Active) > 0 || in.ActiveProfile != nil
+	proxy := profileTarget{tag: "direct"}
+	var graph profileGraph
 	if hasProxy {
-		proxyOrDirect = proxyTag
+		proxy.tag = proxyTag
 	}
 
 	// Outbounds: built-ins, the selection, pinned configs, custom ones, then DNS plumbing.
@@ -76,8 +85,27 @@ func Build(in Input) (Output, error) {
 		obj{"tag": "block", "protocol": "blackhole"},
 	}
 	serverOutbounds := []json.RawMessage{}
-	if hasProxy {
-		o, err := withTag(in.Active, proxyTag)
+	if in.ActiveProfile != nil {
+		var members []json.RawMessage
+		revision, err := json.Marshal(in.ActiveProfile)
+		if err != nil {
+			return Output{}, fmt.Errorf("selected profile revision: %w", err)
+		}
+		digest := sha256.Sum256(revision)
+		namespace := fmt.Sprintf("masir-profile/active-%x", digest[:8])
+		if in.ActiveSubscriptionID != "" && in.ActiveID != "" {
+			namespace = fmt.Sprintf("masir-profile/%s/%s/active-%x", in.ActiveSubscriptionID, in.ActiveID, digest[:8])
+		}
+		proxy, members, err = graph.add(in.ActiveProfile, namespace)
+		if err != nil {
+			return Output{}, fmt.Errorf("selected config: %w", err)
+		}
+		for _, member := range members {
+			outbounds = append(outbounds, member)
+		}
+		serverOutbounds = append(serverOutbounds, members...)
+	} else if hasProxy {
+		o, err := withTag(in.Active, proxy.tag)
 		if err != nil {
 			return Output{}, fmt.Errorf("selected config: %w", err)
 		}
@@ -86,7 +114,7 @@ func Build(in Input) (Output, error) {
 	}
 
 	var resolved []ResolvedRule
-	pinned := map[string]bool{}
+	pinned := map[string]profileTarget{}
 	for _, r := range st.Rules {
 		if !st.Settings.RulesEnabled || r.Disabled || in.Skip[r.Tag] {
 			continue
@@ -96,7 +124,8 @@ func Build(in Input) (Output, error) {
 		case store.TargetDirect, store.TargetBlock:
 			rr.OutboundTag = string(r.Target.Kind)
 		case store.TargetProxy:
-			rr.OutboundTag, rr.FellBack = proxyOrDirect, !hasProxy
+			rr.setTarget(proxy)
+			rr.FellBack = !hasProxy
 		case store.TargetOutbound:
 			rr.OutboundTag = r.Target.Tag
 		case store.TargetConfig:
@@ -105,20 +134,35 @@ func Build(in Input) (Output, error) {
 				c, ok = in.Resolve(r.Target)
 			}
 			if !ok {
-				rr.OutboundTag, rr.FellBack = proxyOrDirect, true
+				rr.setTarget(proxy)
+				rr.FellBack = true
 				break
 			}
 			tag := "sub-" + r.Target.SubscriptionID + "-" + c.ID
-			rr.OutboundTag = tag
-			if !pinned[tag] {
-				pinned[tag] = true
-				o, err := withTag(c.Outbound, tag)
-				if err != nil {
-					return Output{}, fmt.Errorf("pinned config %s: %w", c.Name, err)
+			target, exists := pinned[tag]
+			if !exists {
+				if c.Profile != nil {
+					balancer, members, err := graph.add(c.Profile, "masir-profile/"+r.Target.SubscriptionID+"/"+c.ID+"/pinned")
+					if err != nil {
+						return Output{}, fmt.Errorf("pinned config %s: %w", c.Name, err)
+					}
+					for _, member := range members {
+						outbounds = append(outbounds, member)
+					}
+					serverOutbounds = append(serverOutbounds, members...)
+					target = balancer
+				} else {
+					o, err := withTag(c.Outbound, tag)
+					if err != nil {
+						return Output{}, fmt.Errorf("pinned config %s: %w", c.Name, err)
+					}
+					outbounds = append(outbounds, o)
+					serverOutbounds = append(serverOutbounds, c.Outbound)
+					target = profileTarget{tag: tag}
 				}
-				outbounds = append(outbounds, o)
-				serverOutbounds = append(serverOutbounds, c.Outbound)
+				pinned[tag] = target
 			}
+			rr.setTarget(target)
 		default:
 			return Output{}, fmt.Errorf("rule %q has unknown target %q", r.Tag, r.Target.Kind)
 		}
@@ -147,8 +191,8 @@ func Build(in Input) (Output, error) {
 			"tag": ProxyInboundTag, "listen": listen, "port": st.Settings.ProxyPort, "protocol": "mixed",
 			"settings": obj{"auth": "noauth", "udp": true},
 		}
-		// With user rules, sniff so domain and protocol rules also match apps that connect by IP.
-		if len(st.Rules) > 0 {
+		// Sniff when a user or provider rule can use the result.
+		if len(st.Rules) > 0 || graph.sniff {
 			mixed["sniffing"] = sniffing(false)
 		}
 		inbounds = append(inbounds, mixed)
@@ -194,21 +238,19 @@ func Build(in Input) (Output, error) {
 
 	// DNS: everything through DoH over the proxy; proxy server names bootstrap over plain DNS, direct.
 	doh := parseDoH(st.Settings.DoHDNS)
-	domains := serverDomains(serverOutbounds)
+	domains := xray.BootstrapDomains(serverOutbounds)
 	if !doh.isIP && !slices.Contains(domains, "full:"+doh.host) {
 		domains = append(domains, "full:"+doh.host)
 	}
 	dnsServers := []any{obj{"address": st.Settings.DoHDNS}}
-	if len(domains) > 0 {
-		for _, s := range st.Settings.DNSServers {
-			// Bootstrap is only for these names, never a direct fallback for DoH.
-			dnsServers = append(dnsServers, obj{"address": s, "domains": domains, "skipFallback": true, "finalQuery": true, "tag": "dns-bootstrap"})
-		}
+	for _, s := range st.Settings.DNSServers {
+		// Bootstrap is only for these names, never a direct fallback for DoH.
+		dnsServers = append(dnsServers, obj{"address": s, "domains": domains, "skipFallback": true, "finalQuery": true, "tag": "dns-bootstrap"})
 	}
 
 	// Rules: plumbing first, so no user rule can break DNS or loop Xray; then user rules;
 	// then the LAN bypass; then fallback.
-	upstream := obj{"ruleTag": "masir-dns-upstream", "port": doh.port, "outboundTag": proxyOrDirect}
+	upstream := obj{"ruleTag": "masir-dns-upstream", "port": doh.port, "outboundTag": proxy.tag}
 	if doh.isIP {
 		upstream["ip"] = []string{doh.host}
 	} else {
@@ -235,11 +277,19 @@ func Build(in Input) (Output, error) {
 	}
 	fallback := "direct"
 	if st.Settings.Fallback == store.FallbackProxy && hasProxy {
-		fallback = proxyTag
+		fallback = proxy.tag
+	}
+	if proxy.scoped {
+		fallback = "direct"
+	}
+	defaultRoute := obj{"ruleTag": "masir-default-route", "network": "tcp,udp", "balancerTag": FallbackBalancer}
+	if st.Settings.Fallback == store.FallbackProxy && proxy.scoped {
+		delete(defaultRoute, "balancerTag")
+		defaultRoute["outboundTag"] = proxy.tag
 	}
 	rules = append(rules,
 		obj{"ruleTag": "masir-lan-bypass", "ip": privateRanges, "outboundTag": "direct"},
-		obj{"ruleTag": "masir-default-route", "network": "tcp,udp", "balancerTag": FallbackBalancer},
+		defaultRoute,
 	)
 
 	// IP rules only see IP destinations under AsIs; resolve unmatched domains so they apply too.
@@ -258,10 +308,10 @@ func Build(in Input) (Output, error) {
 		// xray.SetLogSink) without also capturing temporary latency-test instances.
 		log["error"] = filepath.Join(in.LogDir, "xray-error.log")
 	}
-	cfg, err := json.Marshal(obj{
+	config := obj{
 		"log": log,
 		// Apply the IPv4 policy to every resolver, including bootstrap servers.
-		"dns":       obj{"servers": dnsServers, "queryStrategy": "UseIPv4"},
+		"dns":       obj{"servers": dnsServers, "queryStrategy": "UseIPv4", "tag": "masir-dns"},
 		"inbounds":  orEmpty(inbounds),
 		"outbounds": outbounds,
 		"routing": obj{
@@ -269,7 +319,12 @@ func Build(in Input) (Output, error) {
 			"balancers":      []any{obj{"tag": FallbackBalancer, "selector": []string{fallback}}},
 			"rules":          rules,
 		},
-	})
+	}
+	graph.applyObservers(config)
+	if len(graph.scopes) > 0 {
+		config["masirProfileRoutes"] = graph.scopes
+	}
+	cfg, err := json.Marshal(config)
 	if err != nil {
 		return Output{}, err
 	}
@@ -340,68 +395,4 @@ func parseDoH(raw string) dohEndpoint {
 		port = p
 	}
 	return dohEndpoint{host: u.Hostname(), isIP: net.ParseIP(u.Hostname()) != nil, port: port}
-}
-
-// serverDomains lists the hostnames (not IPs) these outbounds dial, as full: matchers.
-func serverDomains(outbounds []json.RawMessage) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, raw := range outbounds {
-		for _, h := range serverHosts(raw) {
-			if net.ParseIP(h) != nil || seen[h] {
-				continue
-			}
-			seen[h] = true
-			out = append(out, "full:"+h)
-		}
-	}
-	return out
-}
-
-// serverHosts covers the shapes Xray accepts: flat settings.address, vnext, servers,
-// and wireguard peers[].endpoint (whose address is the tunnel IP, not a server).
-func serverHosts(raw json.RawMessage) []string {
-	var o struct {
-		Protocol string `json:"protocol"`
-		Settings struct {
-			Address any `json:"address"`
-			Vnext   []struct {
-				Address string `json:"address"`
-			} `json:"vnext"`
-			Servers []struct {
-				Address string `json:"address"`
-			} `json:"servers"`
-			Peers []struct {
-				Endpoint string `json:"endpoint"`
-			} `json:"peers"`
-		} `json:"settings"`
-	}
-	if json.Unmarshal(raw, &o) != nil {
-		return nil
-	}
-	var hosts []string
-	if o.Protocol != "wireguard" {
-		switch a := o.Settings.Address.(type) {
-		case string:
-			hosts = append(hosts, a)
-		case []any:
-			for _, v := range a {
-				if s, ok := v.(string); ok {
-					hosts = append(hosts, s)
-				}
-			}
-		}
-	}
-	for _, v := range o.Settings.Vnext {
-		hosts = append(hosts, v.Address)
-	}
-	for _, s := range o.Settings.Servers {
-		hosts = append(hosts, s.Address)
-	}
-	for _, p := range o.Settings.Peers {
-		if h, _, err := net.SplitHostPort(p.Endpoint); err == nil {
-			hosts = append(hosts, h)
-		}
-	}
-	return slices.DeleteFunc(hosts, func(h string) bool { return strings.TrimSpace(h) == "" })
 }

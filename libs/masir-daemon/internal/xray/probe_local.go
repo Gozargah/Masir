@@ -23,12 +23,13 @@ import (
 const DefaultProbeURL = "https://www.google.com/generate_204"
 
 type LatencyOptions struct {
-	CurrentTunName func() string `json:"-"` // snapshot after acquiring the worker slot
-	TunName        string        // active Masir TUN to exclude from the probe route
-	URL            string        // probe URL; empty means DefaultProbeURL
-	Attempts       int           // requests per config; the fastest wins (default 2)
-	Timeout        time.Duration // limit for one request (default 12s)
-	Full           bool          // keep dns/routing/policy instead of stripping them
+	CurrentTunName  func() string `json:"-"` // snapshot after acquiring the worker slot
+	TunName         string        // active Masir TUN to exclude from the probe route
+	URL             string        // probe URL; empty means DefaultProbeURL
+	Attempts        int           // requests per config; the fastest wins (default 2)
+	Timeout         time.Duration // limit for one request (default 12s)
+	BalancedProfile bool          // use Masir’s managed routing and observatory
+	Full            bool          // keep dns/routing/policy instead of stripping them
 }
 
 func (o LatencyOptions) withDefaults() LatencyOptions {
@@ -56,6 +57,22 @@ var essentialApps = map[string]bool{
 // Cancelling ctx aborts the test; the instance is always closed.
 func measureDelayLocal(ctx context.Context, cfgJSON []byte, opt LatencyOptions) (time.Duration, error) {
 	opt = opt.withDefaults()
+
+	if opt.BalancedProfile {
+		p, err := ParseProfile(cfgJSON)
+		if err != nil {
+			return 0, err
+		}
+		p.inbounds = nil
+		p.base["log"] = json.RawMessage(`{"loglevel":"none"}`)
+		engine := New("")
+		defer engine.Close()
+		if err := engine.Apply(ctx, p); err != nil {
+			return 0, err
+		}
+
+		return measureThrough(ctx, engine.inst, "", opt)
+	}
 
 	cfg, err := confserial.LoadJSONConfig(bytes.NewReader(cfgJSON))
 	if err != nil {
@@ -221,6 +238,11 @@ func measureThrough(ctx context.Context, inst *core.Instance, tag string, opt La
 			if tag != "" {
 				ctx = session.SetForcedOutboundTagToContext(ctx, tag)
 			}
+			if opt.BalancedProfile {
+				ctx = session.ContextWithContent(ctx, &session.Content{SniffingRequest: session.SniffingRequest{
+					Enabled: true, RouteOnly: true, OverrideDestinationForProtocol: []string{"http", "tls", "quic"},
+				}})
+			}
 			return core.Dial(ctx, inst, dest)
 		},
 	}
@@ -236,7 +258,7 @@ func measureThrough(ctx context.Context, inst *core.Instance, tag string, opt La
 			}
 			return 0, err
 		}
-		d, err := probeOnce(ctx, client, opt.URL, opt.Timeout)
+		d, err := probeAttempt(ctx, client, opt)
 		if err != nil {
 			lastErr = err
 			continue
@@ -249,6 +271,30 @@ func measureThrough(ctx context.Context, inst *core.Instance, tag string, opt La
 		return 0, lastErr
 	}
 	return best, nil
+}
+
+// Give observers time to publish their first result after a fast failed
+// fallback request. The retries share one attempt's existing timeout.
+func probeAttempt(ctx context.Context, client *http.Client, opt LatencyOptions) (time.Duration, error) {
+	if !opt.BalancedProfile {
+		return probeOnce(ctx, client, opt.URL, opt.Timeout)
+	}
+	ctx, cancel := context.WithTimeout(ctx, opt.Timeout)
+	defer cancel()
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		delay, err := probeOnce(ctx, client, opt.URL, opt.Timeout)
+		if err == nil {
+			return delay, nil
+		}
+		client.CloseIdleConnections()
+		select {
+		case <-ctx.Done():
+			return 0, err
+		case <-tick.C:
+		}
+	}
 }
 
 // probeOnce is its own function so defer cancel() runs after every request,

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
 
 	"github.com/xtls/xray-core/app/router"
@@ -94,8 +95,27 @@ func ValidateInbound(raw json.RawMessage) error {
 
 // ValidateRule reports whether Xray can build raw as a routing rule.
 func ValidateRule(raw json.RawMessage) error {
-	_, err := buildRule(raw)
+	cfg, err := buildRule(raw)
+	if err != nil {
+		return err
+	}
+	if err := validateRuleAttributes(cfg); err != nil {
+		return err
+	}
+	_, err = cfg.Rule[0].BuildCondition()
 	return err
+}
+
+// Xray's condition builder assumes attribute expressions are valid.
+func validateRuleAttributes(cfg *router.Config) error {
+	for i, rule := range cfg.Rule {
+		for _, pattern := range rule.Attributes {
+			if _, err := regexp.Compile(pattern); err != nil {
+				return fmt.Errorf("routing rule %d has an invalid attribute expression", i+1)
+			}
+		}
+	}
+	return nil
 }
 
 func buildInbound(raw json.RawMessage) (*core.InboundHandlerConfig, error) {
