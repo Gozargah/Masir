@@ -99,9 +99,6 @@ func withoutIdle(args []string) []string {
 // an update installed a new one (by then the TUN and proxy are torn down), and whether
 // the daemon was still idle.
 func run(parent context.Context, userFlag string, idle bool) (restart, stillIdle bool, err error) {
-	if os.Getenv("GOMEMLIMIT") == "" {
-		debug.SetMemoryLimit(100 * 1024 * 1024)
-	}
 	// Every attempt leaves a timestamped line, so a start that failed before "serving"
 	// is visible instead of the log opening mid-flight at the first takeover.
 	log.Printf("starting: user=%q idle=%v %s", userFlag, idle, identity.Process())
