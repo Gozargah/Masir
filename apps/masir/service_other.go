@@ -11,6 +11,6 @@ func restartService() error { return errNoService }
 // serviceDefinition is empty: this OS has no service manager file to keep in sync.
 func serviceDefinition(string, int) string { return "" }
 
-func applyServiceDefinition(string, string) error { return nil }
+func applyServiceDefinition(string, string, bool) error { return nil }
 
 func serviceDefinitionPath() string { return "" }

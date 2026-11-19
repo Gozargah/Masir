@@ -16,5 +16,5 @@ func applyServiceUnit() error {
 	if !serviceDefinitionStale() {
 		return nil
 	}
-	return runAdmin(service.BinaryPath(), "daemon", "sync-unit", "--user", strconv.Itoa(os.Getuid()))
+	return runAdmin(nil, service.BinaryPath(), "daemon", "sync-unit", "--user", strconv.Itoa(os.Getuid()))
 }

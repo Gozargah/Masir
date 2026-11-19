@@ -63,7 +63,7 @@ func startElevatedDaemon(user string, log *os.File) error {
 	params, _ := windows.UTF16PtrFromString("daemon run --user " + windows.EscapeArg(user))
 	if err := windows.ShellExecute(0, verb, file, params, nil, windows.SW_HIDE); err != nil {
 		if errors.Is(err, windows.ERROR_CANCELLED) {
-			return fail("Administrator permission was declined")
+			return coded(exitAuthorizationCancelled, fail("Administrator permission was declined"))
 		}
 		return fmt.Errorf("run as Administrator: %w", err)
 	}
@@ -92,7 +92,7 @@ func elevate(args ...string) error {
 	params, _ := windows.UTF16PtrFromString(strings.Join(quoted, " "))
 	if err := windows.ShellExecute(0, verb, file, params, nil, windows.SW_HIDE); err != nil {
 		if errors.Is(err, windows.ERROR_CANCELLED) {
-			return fail("Administrator permission was declined")
+			return coded(exitAuthorizationCancelled, fail("Administrator permission was declined"))
 		}
 		return fmt.Errorf("run as Administrator: %w", err)
 	}

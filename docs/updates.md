@@ -34,6 +34,8 @@ Every download is `<app>-<role>-<os>-<version>-<arch>`.
 | `masir-cli-<os>-<v>-<arch>.tar.gz` | masir and both geo files: offline installation and combined updates |
 | `masir-desktop-portable-<os>-<v>-<arch>.tar.gz` | the app, on macOS and Linux; also the archive its updater reads |
 | `masir-desktop-update-windows-<v>-<arch>.tar.gz` | the app on Windows, where the portable download is a `.zip` |
+| `masir-desktop-linux-<v>-<arch>.deb` | the Linux app for apt; also what a packaged app updates itself with |
+| `masir-desktop-linux-<v>-<arch>.rpm` | the Linux app for dnf; also what a packaged app updates itself with |
 | `masir-desktop-<from>-to-<v>-<os>-<arch>.delta` | the change from the previous app release |
 
 The CLI updater downloads the full archive and installs its executable and both geo files
@@ -52,6 +54,11 @@ as well. There is no extra first-launch download. Very old clients must be check
 their shipped naming convention before claiming compatibility.
 
 ## What an update installs
+
+On macOS, Windows and writable Linux installs, **New Update** downloads and verifies
+the desktop payload. **Install Update** then commits it and restarts the app as needed.
+The separately downloaded daemon archive used by older services still follows its
+existing update flow.
 
 When both sides have the same newer release and the daemon advertises desktop import,
 the patched GUI downloads only the desktop delta or full archive. MyGo verifies and
@@ -116,16 +123,18 @@ replace itself and says to update the app.
 ### Replacing the desktop app manually
 
 Launching a newer signed desktop app compares its release with the installed daemon
-and offers **Update daemon** in the footer and Settings update control. Opening the app
+and offers **Finish Update** in the footer and Settings update control. Opening the app
 never installs or elevates. The installed service is identified from its reported
 status, even when the app selects a bundled CLI because the legacy service path moved.
 
 Clicking the action requests OS administrator permission and runs the bundled CLI's
-`daemon import-desktop` helper directly. It independently verifies the signed local
+`daemon import-desktop` helper directly. While the password dialog is open the control
+shows **Enter Password…**; cancelling the dialog returns to **Finish Update** without an
+error. The helper independently verifies the signed local
 components, preflights the rules, preserves custom geo files and rollback backups, and
 restarts the service through the supervisor. The GUI confirms the running version and
-tunnel before reporting success. Failures display **Retry** with the error in the tooltip;
-status events do not retry them or fall back to GitHub.
+tunnel before reporting success. Other failures display **Retry** with the error in the
+tooltip; status events do not retry them or fall back to GitHub.
 
 Equal versions, newer services, development versions and bundled fallback daemons are
 left alone. Missing local components produce a visible error on click, before any
@@ -169,6 +178,115 @@ enabled rule, the combined update fails before changing any active file. The pre
 pair is retained as `.previous` alongside the active data, and a binary installation
 failure restores it. Service rollback restores the saved binary and saved geo pair when
 both data backups exist. CLI and geo jobs are serialized, including background refreshes.
+
+## Linux packages (.deb/.rpm)
+
+The `.deb` and `.rpm` install the app in `/opt/masir-desktop`, which root owns. MyGo's
+updater turns itself off when it can't write the app's folder, so a packaged app never
+reads the signed app feed. `/opt/masir-desktop` has one writer: the package manager.
+The app updates it through the bundled CLI, and the daemon and CLI treat
+`/opt/masir-desktop/bin/masir` as the app's own copy. They don't replace it themselves:
+`masir update` there says to update the app.
+
+At launch the app looks once for the package that owns its executable (`dpkg-query -S`,
+then `rpm -qf`). A development build, or one whose version isn't a release, never enters
+this flow. The version to install is the daemon's latest release, since the app feed
+can't be asked.
+
+**New Update** downloads and verifies the package. **Install Update** begins installation and requests administrator permission.
+
+1. **Download, as the person.** The bundled CLI's `desktop fetch-package` downloads the
+   package, `checksums-desktop.txt` and its `.minisig` into the app's cache
+   (`~/.cache/<App>/updates/<version>`). It tries directly first. It then tries Masir's
+   local proxy, but only when the proxy is already running: the update never starts it.
+   A paused download resumes, and downloads of other versions are deleted. The CLI
+   verifies the signed list and the package before it reports success, and refuses a
+   signed package of another version or format than the one asked for.
+2. **Install, as root.** On the second click, the app checks that the bundled CLI and every directory above
+   it are owned by root and not writable by anyone else. It then runs that exact file
+   through `pkexec masir desktop install-package`. No custom polkit policy is involved,
+   so the person types their password every time. The root command trusts nothing the
+   person can still write, and works in this order:
+   - take `/var/lib/masir-desktop.update.lock` (`flock`), so a second install fails
+     as a busy installer instead of deleting the first one's staging. apt, dpkg and
+     the service import inherit the lock, so it holds until they end too;
+   - copy the three files, as regular files opened with `O_NOFOLLOW` and capped in
+     size, into a fresh 0700 directory under `/var/lib/masir-desktop.update-*`
+     (left-over ones from a killed run are removed first);
+   - verify that copy against the signed list, with the minisign keys built into the
+     CLI. The version comes from the signed line, never from the file name;
+   - read the package's own metadata (`dpkg-deb`/`rpm`): it must be `masir-desktop`
+     at the signed version, and newer than the installed package. A package dpkg
+     holds unpacked or half-configured may be finished at its own version, but never
+     replaced by an older one;
+   - install the copy with `apt-get install -y` (dpkg lock timeout 0, so a busy
+     installer fails at once) or `dnf install -y`;
+   - with a service installed and older than the package, run the *new* bundle's
+     `daemon import-desktop` and `daemon sync-unit`. The service and its unit are
+     updated with the same password. When the service binary is already current,
+     synchronize its unit under the same authorization. If the process still needs
+     a restart and synchronizing the unit did not restart it, use
+     `systemctl try-restart`. A stopped service stays stopped.
+
+Then the app deletes its download, follows the service restart and relaunches. Without a
+service, the app restarts its bundled daemon as an app update does.
+
+Exit codes the app reads from `masir desktop …` (`apps/masir/exit_code.go`):
+
+| Code | Meaning |
+|---|---|
+| 10 | the package isn't the signed release |
+| 11 | another installer holds the package manager's lock, or another Masir update is installing |
+| 12 | the package manager refused the package |
+| 13 | the app is installed, the service didn't take the new version |
+| 14 | the package isn't newer than what is installed |
+| 16 | the app is installed and the service unit still needs reconciliation |
+| 20 | the release host couldn't be reached |
+
+What the control shows:
+
+| Case | Control | Tooltip |
+|---|---|---|
+| password dialog cancelled | **Install Update** again | — |
+| account not allowed to elevate | Update failed | Your account isn't allowed to install software. |
+| no polkit agent (or its text fallback can't start) | Update failed | Download the new version from the release page and verify its signed checksum before installing. |
+| 10 | Update failed (the download is deleted) | The download didn't match the signed release; nothing was installed. |
+| 11 | Update failed | Another installer is running. Try again in a minute. |
+| 14 | Update failed | This version is already installed. Restart Masir. |
+| 20 | Update failed | GitHub isn't reachable. Connect Masir and try again. |
+| 12, other | Update failed | the last line of the package manager's error |
+| 13 | the app relaunches | the new app offers **Finish Update** for an outdated daemon |
+| 16 | the app relaunches | **Finish Update** retries the service unit even when the daemon is already current |
+
+The new app stays installed if the service step fails.
+
+A portable copy unpacked into a folder the person can't write is not a package. Its daemon
+still updates, and the app tooltip says to download the new version from the release page.
+
+Installs of 0.1.6 and older predate this flow and need one manual install of a newer
+package:
+
+```sh
+sudo apt install ./masir-desktop-linux-<v>-<arch>.deb
+sudo dnf install ./masir-desktop-linux-<v>-<arch>.rpm
+```
+
+The `.rpm` path is untested. dnf5 may refuse an unsigned local package without
+`--nogpgcheck`, which the minisign check would make safe, and dnf4 may wait on its lock
+instead of failing with code 11.
+
+### Testing package updates locally
+
+`MASIR_DESKTOP_RELEASE_BASE` points the CLI at another release host, and only a loopback
+address is accepted. In the app, `MASIR_DESKTOP_RELEASE_VERSION` stands in for the daemon's
+latest release, and only together with a loopback base.
+`scripts/build-test-packages.sh <out> <version>…` builds `.deb` packages signed with a
+throwaway key (in `<out>/test-key.env`), laid out like a release. It calls
+`scripts/build-gui.sh` rather than `make gui-local`, because the Makefile includes `.env`,
+whose release keys would replace the test key. Serve `<out>` with
+`python3 -m http.server 8799 --bind 127.0.0.1`, install the lower version with apt, and
+launch it with both variables. Restore a real release afterwards: the test packages trust
+only the throwaway key.
 
 ## Compatibility rules
 

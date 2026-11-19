@@ -157,6 +157,12 @@ func (s *shell) ready() {
 	// and Linux. macOS has no such window, which is why it worked there.
 	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) {
 		s.quitting = true
+		st := &s.a.updates.state
+		if st.phase == updateReady && st.appSync {
+			// Discard the verified, uncommitted MyGo payload before the process exits.
+			st.appCancel()
+			<-st.appInstallDone
+		}
 		s.a.flushPanelHeight()
 		s.a.flushGUISettings()
 	})
@@ -322,6 +328,7 @@ func main() {
 		s.ready()
 		a.refreshLoginState()
 		a.autoInstallCLI()
+		a.detectPackageInstall()
 		go a.watch(context.Background())
 		// The panel is the app's greeting, unless the session started it: a login item
 		// stays in the tray until the user asks for it. Without a tray icon, the window is

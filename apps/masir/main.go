@@ -72,6 +72,9 @@ func main() {
 // internalRun reports whether this process is the daemon or an elevated helper, which
 // report their own analytics and shouldn't be treated as CLI commands.
 func internalRun() bool {
+	if len(os.Args) >= 2 && os.Args[1] == "desktop" {
+		return true
+	}
 	if len(os.Args) < 3 || os.Args[1] != "daemon" {
 		return false
 	}
@@ -98,6 +101,7 @@ func mayRunAsRoot(path string) bool {
 		"masir daemon enable",
 		"masir daemon disable",
 		"masir daemon rollback",
+		"masir desktop install-package",
 		// An installed service is restarted through the service manager; without one,
 		// daemonRestart refuses a root caller itself.
 		"masir daemon restart":
@@ -156,8 +160,15 @@ func handleError(_ io.Writer, _ fang.Styles, err error) {
 }
 
 // report prints a command's error the clack way and returns the exit code: 130 when
-// the user quit, 1 otherwise.
+// the user quit, a codedError's code, 1 otherwise.
 func report(err error) int {
+	// A coded error is an answer for the caller even when a signal also arrived.
+	var ce *codedError
+	if errors.As(err, &ce) {
+		lastErr = message(err)
+		showError(err)
+		return ce.code
+	}
 	switch {
 	case cancelled(err):
 		lastErr = "cancelled"
@@ -379,7 +390,8 @@ func rootCmd() *cobra.Command {
 		flagSpec{names: []string{"user"}, help: "The uid the service serves"})
 	unitCmd.Hidden = true // an update compares it with the installed definition
 	syncUnitCmd := leaf("sync-unit", "Rewrite the installed service definition from the service's binary", daemonSyncUnit, cobra.NoArgs,
-		flagSpec{names: []string{"user"}, help: "The uid the service serves"})
+		flagSpec{names: []string{"user"}, help: "The uid the service serves"},
+		flagSpec{names: []string{"retry"}, bool: true, help: "Retry loading the Linux service definition"})
 	syncUnitCmd.Hidden = true // an update applies a definition that changed
 	checkRules := leaf("check", "Answer whether the rules on stdin can run (a daemon asks a new version this)", daemonCheck, cobra.NoArgs)
 	checkRules.Hidden = true // the daemon runs it on a downloaded version before installing it
@@ -442,6 +454,7 @@ func rootCmd() *cobra.Command {
 		daemonGroup, updateCmd, getConfig,
 		leaf("menu", "Pick a command from an interactive menu", func(args) error { return menu() }, cobra.NoArgs),
 		leaf("version", "Print the versions of masir, its daemon and Xray", cmdVersion, cobra.NoArgs))
+	root.AddCommand(desktopCommands()...)
 	return root
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Gozargah/Masir/libs/masir-core/service"
@@ -23,6 +24,8 @@ func daemonImportDesktop(a args) error {
 	if !elevated() {
 		return elevate("daemon", "import-desktop", "--user", user, "--from", source)
 	}
+	// The password was accepted: the app leaves "Enter Password…".
+	fmt.Println("authorized")
 	ctx, cancel := context.WithTimeout(appCtx, 4*time.Minute)
 	defer cancel()
 	return masird.InstallDesktopOffline(ctx, source, user, version, stopOfflineService, func() error {

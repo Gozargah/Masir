@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -50,6 +51,8 @@ const (
 	updateAppDownloading
 	updateAppPaused
 	updateAppInstalling
+	updateReady
+	updateAuthorizing
 	updateFailed
 )
 
@@ -73,16 +76,16 @@ type updateState struct {
 	lastAttempt    time.Time
 	lastForeground time.Time
 	lastStart      int64
-	// parts is how many downloads this update has: the daemon and command line, then
-	// the app. One part when only one of them is updated, so a single download is not
-	// labelled "2/2".
+	// parts counts separate payloads. Only a two-payload update shows part numbers.
 	parts int
 	// download progress for the app update; the daemon job has its own bytes.
 	progress, total int64
 	appPaused       bool
-	appCancelled    bool
 	appCancel       context.CancelFunc
 	appRun          int
+	appSync         bool
+	appInstallDone  chan struct{}
+	installReady    func()
 	watchCancel     context.CancelFunc
 	ignoreBusy      bool
 	attached        bool
@@ -98,8 +101,18 @@ type updateState struct {
 	// Local discovery offers an explicit action; only a click enters bundleSync.
 	// bundleGap remembers a dismissed version pair without contacting the service.
 	bundleOffer bool
+	unitPending bool
 	bundleSync  bool
 	bundleGap   string
+	// block says why MyGo can't replace this app; a .deb or .rpm is updated by its
+	// package manager instead. pkgSync says that flow owns the control, and pkgDir is
+	// the download it keeps for a retry.
+	block      installBlock
+	pkgSync    bool
+	pkgDir     string
+	pkgVersion string // the release the package flow downloads
+	// pkgLast is closed when the last download or cleanup of the package cache ends.
+	pkgLast chan struct{}
 	// wantApp says the person asked for the update and the app feed hasn't answered yet.
 	// A bundled daemon is updated by the app, so the answer decides what runs.
 	wantApp bool
@@ -118,12 +131,13 @@ var daemonWaitTimeout = 2 * time.Minute
 // The app's updater is behind variables so tests do not need a signed release or a
 // running application.
 var (
-	preparedUpdatesEnabled = preparedUpdateSupported
-	installSharedAppUpdate = installPreparedUpdate
-	importSharedComponents = importDesktopComponents
-	appUpdatesEnabled      = func() bool { return mygo.Updater.Enabled() }
-	checkAppUpdate         = func(ctx context.Context) (*mygo.Update, error) { return mygo.Updater.Check(ctx) }
-	installAppUpdate       = func(ctx context.Context, u *mygo.Update, progress func(int64, int64)) error {
+	preparedUpdatesEnabled   = preparedUpdateSupported
+	confirmPreparedUpdates   = preparedUpdateSupported
+	installPreparedAppUpdate = installPreparedUpdate
+	importSharedComponents   = importDesktopComponents
+	appUpdatesEnabled        = func() bool { return mygo.Updater.Enabled() }
+	checkAppUpdate           = func(ctx context.Context) (*mygo.Update, error) { return mygo.Updater.Check(ctx) }
+	installAppUpdate         = func(ctx context.Context, u *mygo.Update, progress func(int64, int64)) error {
 		return u.Install(ctx, progress)
 	}
 	relaunchApp             = func() { mygo.App.Relaunch() }
@@ -399,7 +413,8 @@ func (a *app) daemonIsBundled() bool {
 	}
 	p := filepath.ToSlash(a.binary)
 	return strings.Contains(p, ".app/Contents/") ||
-		strings.Contains(p, "/resources/bin/") || strings.Contains(p, "/Resources/bin/")
+		strings.Contains(p, "/resources/bin/") || strings.Contains(p, "/Resources/bin/") ||
+		strings.Contains(p, "/opt/masir-desktop/bin/") // the .deb and .rpm layout
 }
 
 // daemonReleaseAvailable is the release check alone, before deciding which copy (the
@@ -423,7 +438,7 @@ func (a *app) appUpdateAvailable() bool {
 // hasUpdate reports whether either side has an update the person has not ignored. A
 // bundled daemon's release is shown too: the app update is how it is installed.
 func (a *app) hasUpdate() bool {
-	if a.updates.state.bundleOffer || a.daemonUpdateAvailable() || a.appUpdateAvailable() {
+	if a.updates.state.bundleOffer || a.daemonUpdateAvailable() || a.appUpdateAvailable() || a.packageUpdateAvailable() {
 		return true
 	}
 	// A bundled daemon is updated by the app. Until the app feed has answered for this
@@ -460,7 +475,7 @@ func (a *app) busyUpdate() bool {
 	switch a.updates.state.phase {
 	case updateStarting, updateDownloading, updatePaused, updateVerifying,
 		updateInstalling, updateRestarting, updateAppDownloading, updateAppPaused,
-		updateAppInstalling:
+		updateAppInstalling, updateAuthorizing, updateReady:
 		return true
 	}
 	return false
@@ -482,6 +497,15 @@ func (a *app) startUpdate() {
 	}
 	if a.updates.state.bundleOffer {
 		a.startBundledDaemonUpdate()
+		return
+	}
+	// The package carries the service's components too, so it goes before the daemon.
+	if b := a.updates.state.block; (b == blockPackageDeb || b == blockPackageRpm) && a.packageUpdateAvailable() {
+		a.startPackageUpdate()
+		return
+	}
+	// A read-only portable copy can only be replaced by hand; its daemon still updates.
+	if a.updates.state.block == blockReadOnly && !a.daemonUpdateAvailable() {
 		return
 	}
 	a.updates.state.err = ""
@@ -556,7 +580,7 @@ func (a *app) watchDaemonUpdate() {
 			a.post(func() {
 				attaching := a.updates.state.attaching
 				a.updates.state.attaching = false
-				if a.updates.state.bundleSync {
+				if a.updates.state.bundleSync || a.updates.state.pkgSync || a.updates.state.appSync {
 					return
 				}
 				if attaching {
@@ -586,8 +610,10 @@ func (a *app) watchDaemonUpdate() {
 
 // applyJob turns the daemon's job state into the control's phase.
 func (a *app) applyJob(job *pb.UpdateJob) {
-	if a.updates.state.bundleSync {
-		return // the local import owns progress; late download-watch events do not
+	if a.updates.state.bundleSync || a.updates.state.pkgSync || a.updates.state.appSync {
+		// A desktop update owns the control. A late or unrelated daemon job must
+		// not change it or route the pause action to the daemon.
+		return
 	}
 	if a.updates.state.bundleOffer {
 		if job == nil || !updateActive(job.GetState()) {
@@ -653,6 +679,9 @@ func (a *app) daemonWatchEnded() {
 		a.updates.state.sawJob = false
 		a.updates.state.attached = false
 	}
+	if a.updates.state.pkgSync || a.updates.state.appSync {
+		return // the desktop update owns the control and follows the restart itself
+	}
 	if a.offerBundledDaemonUpdate(a.status) {
 		return
 	}
@@ -709,7 +738,9 @@ func (a *app) waitForDaemon(version string, timeout time.Duration) error {
 		if err == nil {
 			st := res.GetStatus()
 			lastVersion = st.GetVersion()
-			if version == "" || sameVersion(st.GetVersion(), version) {
+			// This version or newer: a newer daemon (a service ahead of the app) isn't
+			// a failed update; an older or cached one is.
+			if version == "" || sameVersion(st.GetVersion(), version) || newerRelease(st.GetVersion(), version) {
 				sawVersion = true
 				if !a.updates.state.tunWasOn || st.GetTunRunning() {
 					return nil
@@ -744,7 +775,7 @@ func (a *app) daemonAfterInstall(job *pb.UpdateJob) {
 
 // daemonFinished moves on to the app update, or back to the version text.
 func (a *app) daemonFinished() {
-	if a.updates.state.phase == updateAppDownloading || a.updates.state.phase == updateAppPaused || a.updates.state.phase == updateAppInstalling {
+	if a.updates.state.appSync {
 		return // the app update already started from the daemon's final job
 	}
 	a.updates.state.job = nil
@@ -762,9 +793,9 @@ func (a *app) daemonFinished() {
 	a.updates.state.phase = updateIdle
 }
 
-// startAppUpdate installs the signed desktop app update with MyGo. A pause cancels the
-// download; a resume starts it again, since MyGo's installer cannot continue a partial
-// app download.
+// startAppUpdate prepares the signed desktop update with MyGo. Published builds
+// wait for confirmation at the prepared hook, before committing any files. A
+// pause cancels the download; a resume starts it again.
 func (a *app) startAppUpdate() {
 	u := a.updates.state.app
 	shared := a.canShareDesktopUpdate()
@@ -777,11 +808,14 @@ func (a *app) startAppUpdate() {
 	a.updates.state.phase = updateAppDownloading
 	a.updates.state.progress, a.updates.state.total = 0, 0
 	a.updates.state.appPaused = false
-	a.updates.state.appCancelled = false
 	a.updates.state.appRun++
 	run := a.updates.state.appRun
 	ctx, cancel := context.WithCancel(context.Background())
 	a.updates.state.appCancel = cancel
+	waitForInstall := confirmPreparedUpdates()
+	a.updates.state.appSync = true
+	done := make(chan struct{})
+	a.updates.state.appInstallDone = done
 	a.async(func() {
 		lastPct, lastAt := -1, time.Now()
 		progress := func(done, total int64) {
@@ -794,31 +828,53 @@ func (a *app) startAppUpdate() {
 			}
 			lastPct, lastAt = pct, time.Now()
 			a.post(func() {
-				if run == a.updates.state.appRun && a.updates.state.phase == updateAppDownloading {
+				if run == a.updates.state.appRun && (a.updates.state.phase == updateAppDownloading || a.updates.state.phase == updateVerifying) {
+					a.updates.state.phase = updateAppDownloading
 					a.updates.state.progress, a.updates.state.total = done, total
 					if total > 0 && done >= total {
-						a.updates.state.phase = updateAppInstalling // past the pause point
+						a.updates.state.phase = updateAppInstalling
+						if waitForInstall {
+							a.updates.state.phase = updateVerifying
+						}
 					}
 				}
 			})
 		}
 		var err error
-		if shared {
-			err = installSharedAppUpdate(ctx, u, progress, func(dir string) error {
-				return importSharedComponents(ctx, a.d, dir, u.Version)
+		if shared || waitForInstall {
+			err = installPreparedAppUpdate(ctx, u, progress, func(dir string) error {
+				if waitForInstall {
+					approved := make(chan struct{})
+					a.post(func() {
+						if run == a.updates.state.appRun && !a.updates.state.appPaused {
+							a.updates.state.installReady = func() { close(approved) }
+							a.updates.state.phase = updateReady
+						}
+					})
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-approved:
+					}
+				}
+				if shared {
+					return importSharedComponents(ctx, a.d, dir, u.Version)
+				}
+				return nil
 			})
 		} else {
 			err = installAppUpdate(ctx, u, progress)
 		}
+		cancel()
+		close(done)
 		a.post(func() {
 			if run != a.updates.state.appRun {
 				return // a pause and resume started a newer attempt
 			}
 			a.updates.state.appCancel = nil
+			a.updates.state.appInstallDone = nil
+			a.updates.state.appSync = false
 			switch {
-			case a.updates.state.appCancelled:
-				a.updates.state.phase = updateAvailable
-				a.updates.state.progress, a.updates.state.total = 0, 0
 			case a.updates.state.appPaused:
 				a.updates.state.phase = updateAppPaused
 			case err != nil:
@@ -842,6 +898,18 @@ func (a *app) startAppUpdate() {
 			}
 		})
 	})
+}
+
+// confirmInstall commits the payload held by the desktop or package updater.
+func (a *app) confirmInstall() {
+	st := &a.updates.state
+	if st.phase != updateReady || st.installReady == nil {
+		return
+	}
+	install := st.installReady
+	st.installReady = nil
+	st.phase = updateAppInstalling
+	install()
 }
 
 // pauseUpdate pauses a daemon download, or cancels the app download until it is resumed.
@@ -892,6 +960,10 @@ func (a *app) resumeUpdate() {
 			})
 		})
 	case updateAppPaused:
+		if a.updates.state.pkgSync {
+			a.startPackageUpdate()
+			return
+		}
 		a.startAppUpdate()
 	}
 }
@@ -914,14 +986,30 @@ func (a *app) cancelUpdate() {
 				a.applyJob(res.GetJob())
 			})
 		})
-	case updateAppDownloading, updateAppPaused:
-		a.updates.state.appCancelled = true
+	case updateAppDownloading, updateAppPaused, updateReady:
+		a.updates.state.installReady = nil
+		a.updates.state.appRun++
+		a.updates.state.appInstallDone = nil
 		if a.updates.state.appCancel != nil {
 			a.updates.state.appCancel()
 			a.updates.state.appCancel = nil
 		}
 		a.updates.state.phase = updateAvailable
+		a.updates.state.appSync = false
 		a.updates.state.progress, a.updates.state.total = 0, 0
+		if a.updates.state.pkgSync {
+			a.updates.state.pkgSync = false
+			// Queued now: after the cancelled download ends and before any retry, which
+			// would otherwise resume the partial a cancel promised to delete.
+			if v := a.updates.state.pkgVersion; v != "" {
+				a.pkgSerial(func() func() {
+					if root, err := packageCacheDir(); err == nil {
+						os.RemoveAll(filepath.Join(root, v))
+					}
+					return nil
+				})
+			}
+		}
 	}
 }
 
@@ -969,6 +1057,9 @@ func (a *app) ignoreUpdate() {
 		version = a.updates.state.rel.GetLatestVersion()
 	case a.appUpdateAvailable():
 		version = a.updates.state.app.Version
+	case a.packageUpdateAvailable():
+		// The daemon keeps any version, available or not.
+		version = packageTargetVersion(a.updates.state.rel)
 	}
 	if version == "" {
 		return
@@ -1021,24 +1112,42 @@ func (a *app) updatePercent() int {
 // when there are two, and how far along. The control is 42 tw wide and the footer has no
 // room to grow it, so the part is a short marker, never a word.
 func (a *app) downloadLabel(part int) string {
-	return fmt.Sprintf("Part %d/%d · %d%%", min(part, max(1, a.updates.state.parts)), max(1, a.updates.state.parts), a.updatePercent())
+	if a.updates.state.parts < 2 {
+		if pct := a.updatePercent(); pct > 0 {
+			return fmt.Sprintf("Downloading %d%%", pct)
+		}
+		return "Downloading…"
+	}
+	return fmt.Sprintf("Part %d/2 · %d%%", part, a.updatePercent())
 }
 
 // pausedLabel is downloadLabel while the download is paused.
 func (a *app) pausedLabel(part int) string {
-	return fmt.Sprintf("Paused %d/%d · %d%%", min(part, max(1, a.updates.state.parts)), max(1, a.updates.state.parts), a.updatePercent())
+	if a.updates.state.parts < 2 {
+		return fmt.Sprintf("Paused · %d%%", a.updatePercent())
+	}
+	return fmt.Sprintf("Paused %d/2 · %d%%", part, a.updatePercent())
 }
 
 // updateTooltip says what the numbered label cannot: what each part is fetching.
 func (a *app) updateTooltip() string {
+	if a.updates.state.phase == updateAuthorizing {
+		return "Your password is needed to install the update."
+	}
+	if a.updates.state.phase == updateFailed && a.updates.state.err != "" {
+		return a.updates.state.err
+	}
+	if a.updates.state.bundleOffer && a.updates.state.unitPending && !newerRelease(a.version, a.status.GetVersion()) {
+		return "Apply the background service configuration. Administrator permission is required."
+	}
 	if a.updates.state.bundleOffer {
-		return "Update daemon " + a.status.GetVersion() + " to " + a.version + " from this app. Administrator permission is required; the connection will briefly restart."
+		return "Finish the update: daemon " + a.status.GetVersion() + " to " + a.version + " from this app. Administrator permission is required; the connection will briefly restart."
 	}
 	if a.updates.state.bundleSync {
-		if a.updates.state.err != "" {
-			return a.updates.state.err
-		}
 		return "Updating the daemon from this app; the connection will briefly restart"
+	}
+	if a.updates.state.block == blockReadOnly && a.updates.state.phase == updateAvailable && a.packageUpdateAvailable() && !a.daemonUpdateAvailable() {
+		return "Masir can't update itself here: its folder isn't writable. Download the new version from the release page."
 	}
 	if a.updates.state.parts < 2 {
 		return ""
@@ -1057,8 +1166,11 @@ func (a *app) updateLabel() string {
 	if a.updates.state.bundleSync && a.updates.state.phase == updateInstalling {
 		return "Updating daemon..."
 	}
+	if a.updates.state.phase == updateAuthorizing {
+		return "Enter Password…"
+	}
 	if a.updates.state.bundleOffer {
-		return "Update daemon"
+		return "Finish Update"
 	}
 	if a.updates.state.bundleSync && a.updates.state.phase == updateFailed {
 		return "Retry"
@@ -1066,6 +1178,8 @@ func (a *app) updateLabel() string {
 	switch a.updates.state.phase {
 	case updateAvailable:
 		return "New Update"
+	case updateReady:
+		return "Install Update"
 	case updateStarting:
 		return "Starting..."
 	case updateDownloading:
@@ -1075,7 +1189,7 @@ func (a *app) updateLabel() string {
 	case updateVerifying:
 		return "Verifying..."
 	case updateInstalling:
-		return "Installing.."
+		return "Installing..."
 	case updateRestarting:
 		return "Restarting..."
 	case updateAppDownloading:
@@ -1107,6 +1221,8 @@ func (a *app) followDaemonRestart(version string, request bool) {
 	a.updates.state.restarting = true
 	a.updates.state.phase = updateRestarting
 	a.updates.state.err = ""
+	packageRestart := a.updates.state.pkgSync
+	relaunch := a.updates.state.relaunchAfterRestart
 	a.async(func() {
 		if request {
 			ctx, cancel := rpc()
@@ -1129,15 +1245,23 @@ func (a *app) followDaemonRestart(version string, request bool) {
 				a.updates.state.phase = updateFailed
 				a.updates.state.err = msg
 				a.notifyError("The update failed: " + a.updates.state.err)
+				// The package manager already replaced this app: keep running the old
+				// one and a retry can only find the new version installed.
+				if a.updates.state.pkgSync {
+					a.updates.state.pkgSync = false
+					a.updates.state.relaunching = true
+					relaunchApp()
+				}
 			})
 			return
 		}
 		// A release can change the service definition (capabilities, sandbox). It asks
 		// for permission only when the definition really changed.
-		if err := reconcileUpdatedService(); err != nil {
-			log.Printf("service definition: %v", err)
+		if !packageRestart {
+			if err := reconcileUpdatedService(); err != nil {
+				log.Printf("service definition: %v", err)
+			}
 		}
-		relaunch := a.updates.state.relaunchAfterRestart
 		a.post(func() {
 			a.updates.state.restarting = false
 			if a.updates.state.bundleSync {
@@ -1148,6 +1272,7 @@ func (a *app) followDaemonRestart(version string, request bool) {
 				a.updates.state.gapSeen = ""
 			}
 			a.updates.state.bundleSync = false
+			a.updates.state.pkgSync = false
 			a.updates.state.relaunchAfterRestart = false
 			a.updates.state.phase = updateIdle
 			if relaunch {
