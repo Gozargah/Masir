@@ -90,6 +90,9 @@ func validateProfileRouting(profile *OutboundProfile, layout *conf.RouterConfig)
 		balancers[balancer.Tag] = true
 	}
 	for i, raw := range layout.RuleList {
+		if err := xray.ValidateRule(raw); err != nil {
+			return fmt.Errorf("invalid subscription profile rule %d", i+1)
+		}
 		var target struct {
 			Outbound string `json:"outboundTag"`
 			Balancer string `json:"balancerTag"`

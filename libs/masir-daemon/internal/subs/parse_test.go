@@ -249,3 +249,12 @@ func TestBalancerSummaryWithoutSharedDefault(t *testing.T) {
 		t.Fatalf("got %s with %d members, want leastLoad with 2", strategy, count)
 	}
 }
+
+func TestProfileRejectsInvalidRulePredicate(t *testing.T) {
+	body := []byte(`{"outbounds":[{"tag":"node","protocol":"freedom"}],
+		"routing":{"rules":[{"port":"not-a-port","balancerTag":"pool"}],
+			"balancers":[{"tag":"pool","selector":["node"]}]}}`)
+	if configs, err := Parse(body); err == nil || len(configs) != 0 {
+		t.Fatal("invalid route was admitted")
+	}
+}

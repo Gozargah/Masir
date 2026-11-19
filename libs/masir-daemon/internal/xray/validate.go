@@ -94,7 +94,11 @@ func ValidateInbound(raw json.RawMessage) error {
 
 // ValidateRule reports whether Xray can build raw as a routing rule.
 func ValidateRule(raw json.RawMessage) error {
-	_, err := buildRule(raw)
+	cfg, err := buildRule(raw)
+	if err != nil {
+		return err
+	}
+	_, err = cfg.Rule[0].BuildCondition()
 	return err
 }
 

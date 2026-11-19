@@ -406,7 +406,7 @@ func (m *Manager) TestLatency(ctx context.Context, subID string, configIDs []str
 	}
 	xray.MeasureEach(ctx, probes, opt, latencyWorkers, saveResult)
 	opt.Full = true
-	opt.WaitForRoute = true
+	opt.BalancedProfile = true
 	for _, c := range profiles {
 		if ctx.Err() != nil {
 			break

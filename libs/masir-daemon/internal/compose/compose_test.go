@@ -679,7 +679,19 @@ func TestProfileSwitchKeepsOpenTCPAndUDPFlows(t *testing.T) {
 		}
 	}
 	exchange("before switch")
-	_, generation, _, _ := engine.OutboundTraffic(ctx)
+	initial, generation, _, err := engine.OutboundTraffic(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var up uint64
+	for tag, counters := range initial {
+		if strings.HasPrefix(tag, "masir-profile/feed/pool/") {
+			up += counters.Up
+		}
+	}
+	if up < 2*uint64(len("before switch")) {
+		t.Fatal("echo traffic did not pass through the balanced profile")
+	}
 	apply(Input{State: st, Active: json.RawMessage(`{"protocol":"freedom"}`)})
 	exchange("after switch")
 	traffic, next, _, err := engine.OutboundTraffic(ctx)
@@ -763,4 +775,61 @@ func TestProfileRoutesThroughInternalFailover(t *testing.T) {
 		t.Fatalf("cyclic loopback selected %+v, %v, want block", route, err)
 	}
 
+}
+
+func TestProfileRoutingReplacementPreservesExactDirectFallback(t *testing.T) {
+	st := testState(t)
+	st.Settings.Fallback = store.FallbackDirect
+	if err := st.AddOutbound("direct-backup", []byte(`{"protocol":"blackhole"}`)); err != nil {
+		t.Fatal(err)
+	}
+	profile := &subs.OutboundProfile{
+		Outbounds: []json.RawMessage{json.RawMessage(`{"tag":"node","protocol":"freedom"}`)},
+		Routing: json.RawMessage(`{"rules":[{"network":"tcp,udp","balancerTag":"pool"}],
+			"balancers":[{"tag":"pool","selector":["node"]}]}`),
+	}
+	engine := xray.New("")
+	defer engine.Close()
+	ctx := context.Background()
+	apply := func(state store.State) {
+		t.Helper()
+		out, _ := build(t, Input{State: state, ActiveProfile: profile})
+		p, err := xray.ParseProfile(out.Config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := engine.Apply(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply(st)
+	st.Rules = []store.Rule{{Tag: "block-domain", Match: json.RawMessage(`{"domain":["full:blocked.example"]}`), Target: store.Target{Kind: store.TargetBlock}}}
+	apply(st)
+	for range 32 {
+		route, err := engine.TestRoute(ctx, xray.RouteQuery{Domain: "other.example", Port: 443})
+		if err != nil || route.OutboundTag != "direct" {
+			t.Fatalf("replacement fallback = %+v, %v", route, err)
+		}
+	}
+}
+
+func TestProfileCompositionValidatesRoutingInputs(t *testing.T) {
+	outbound := json.RawMessage(`{"tag":"node","protocol":"freedom","StreamSettings":{"Sockopt":{"DialerProxy":"helper"}}}`)
+	profile := &subs.OutboundProfile{
+		Outbounds:   []json.RawMessage{outbound, json.RawMessage(`{"tag":"helper","protocol":"freedom"}`)},
+		Observatory: json.RawMessage(`{"subjectSelector":["node"],"probeUrl":"https://probe.example"}`),
+		Routing: json.RawMessage(`{"rules":[{"protocol":["http"],"balancerTag":"pool"}],
+			"balancers":[{"tag":"pool","selector":["node"]}]}`),
+	}
+	out, c := build(t, Input{State: testState(t), Proxy: true, ActiveProfile: profile})
+	if len(c.Inbounds) == 0 || c.Inbounds[0]["sniffing"] == nil {
+		t.Fatal("provider protocol rule requires mixed-inbound sniffing")
+	}
+	if !strings.Contains(string(out.Config), `"dialerProxy":"masir-profile/`) {
+		t.Fatal("profile dialer reference was not scoped")
+	}
+	profile.Observatory = json.RawMessage(`{"subjectSelector":["node"],"probeUrl":"invalid"}`)
+	if _, err := Build(Input{State: testState(t), ActiveProfile: profile}); err == nil {
+		t.Fatal("invalid observer URL was accepted")
+	}
 }

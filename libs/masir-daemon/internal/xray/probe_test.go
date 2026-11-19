@@ -259,7 +259,7 @@ func TestIsolatedBalancedProfileProbe(t *testing.T) {
 		}
 	}`)
 	_, err := MeasureDelay(context.Background(), cfg, LatencyOptions{
-		URL: target.URL, Attempts: 1, Full: true, WaitForRoute: true,
+		URL: target.URL, Attempts: 1, Full: true, BalancedProfile: true,
 	})
 	if err != nil {
 		t.Fatal(err)
