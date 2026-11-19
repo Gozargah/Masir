@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/Gozargah/Masir/libs/masir-daemon/internal/subs"
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
 )
 
@@ -21,7 +20,7 @@ func (s *Server) SelectConfig(ctx context.Context, req *pb.SelectConfigRequest) 
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	next := subs.Active{SubscriptionID: req.SubscriptionId, ConfigID: c.ID, Name: c.Name, Outbound: c.Outbound}
+	next := c.Active(req.SubscriptionId)
 	s.collectTrafficLocked(ctx)
 	if err := s.subs.SetActive(next); err != nil {
 		return nil, toStatus(err)

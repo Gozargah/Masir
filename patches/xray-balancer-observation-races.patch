@@ -1,0 +1,81 @@
+diff --git a/app/observatory/observer.go b/app/observatory/observer.go
+--- a/app/observatory/observer.go
++++ b/app/observatory/observer.go
+@@ -39,7 +39,9 @@
+ }
+ 
+ func (o *Observer) GetObservation(ctx context.Context) (proto.Message, error) {
+-	return &ObservationResult{Status: o.status}, nil
++	o.statusLock.Lock()
++	defer o.statusLock.Unlock()
++	return proto.CloneOf(&ObservationResult{Status: o.status}), nil
+ }
+ 
+ func (o *Observer) Type() interface{} {
+@@ -80,19 +82,21 @@
+ 
+ 		if len(outbounds) == 0 {
+ 			errors.LogWarning(o.ctx, "no outbound matches subjectSelector ", o.config.SubjectSelector)
+-			time.Sleep(sleepTime)
++			if !o.waitForNextProbe(sleepTime) {
++				return
++			}
+ 			continue
+ 		}
+ 
+ 		if !o.config.EnableConcurrency {
++			outbounds = slices.Clone(outbounds)
+ 			sort.Strings(outbounds)
+ 			for _, v := range outbounds {
+ 				result := o.probe(v)
+ 				o.updateStatusForResult(v, &result)
+-				if o.finished.Done() {
++				if !o.waitForNextProbe(sleepTime) {
+ 					return
+ 				}
+-				time.Sleep(sleepTime)
+ 			}
+ 			continue
+ 		}
+@@ -114,7 +118,20 @@
+ 				return
+ 			}
+ 		}
+-		time.Sleep(sleepTime)
++		if !o.waitForNextProbe(sleepTime) {
++			return
++		}
++	}
++}
++
++func (o *Observer) waitForNextProbe(interval time.Duration) bool {
++	timer := time.NewTimer(interval)
++	defer timer.Stop()
++	select {
++	case <-timer.C:
++		return true
++	case <-o.finished.Wait():
++		return false
+ 	}
+ }
+ 
+diff --git a/app/proxyman/outbound/outbound.go b/app/proxyman/outbound/outbound.go
+--- a/app/proxyman/outbound/outbound.go
++++ b/app/proxyman/outbound/outbound.go
+@@ -162,13 +162,13 @@
+ 
+ // Select implements outbound.HandlerSelector.
+ func (m *Manager) Select(selectors []string) []string {
++	m.access.RLock()
++	defer m.access.RUnlock()
++
+ 	key := strings.Join(selectors, ",")
+ 	if cache, ok := m.tagsCache.Load(key); ok {
+ 		return cache.([]string)
+ 	}
+-
+-	m.access.RLock()
+-	defer m.access.RUnlock()
+ 
+ 	tags := make([]string, 0, len(selectors))
+ 

@@ -143,19 +143,25 @@ func (s *Server) updateTraffic(raw map[string]xray.Traffic, gen uint64, ok bool,
 			deltaDown = cur.Down
 		}
 
-		out := s.cumulativeOutbound[tag]
-		out.Up += deltaUp
-		out.Down += deltaDown
-		s.cumulativeOutbound[tag] = out
-
-		// Attribute to server if this is the active proxy or a pinned server rule
 		var serverKey string
-		if tag == "proxy" {
-			if activeSub != "" && activeCfg != "" {
-				serverKey = activeSub + "/" + activeCfg
+		if profile, ok := strings.CutPrefix(tag, "masir-flow/masir-profile/"); ok {
+			subID, config, _ := strings.Cut(profile, "/")
+			configID, _, _ := strings.Cut(config, "/")
+			if subID != "" && configID != "" {
+				serverKey = subID + "/" + configID
 			}
-		} else if srv, exists := tagToServer[tag]; exists {
-			serverKey = srv
+		} else {
+			out := s.cumulativeOutbound[tag]
+			out.Up += deltaUp
+			out.Down += deltaDown
+			s.cumulativeOutbound[tag] = out
+			if tag == "proxy" {
+				if activeSub != "" && activeCfg != "" {
+					serverKey = activeSub + "/" + activeCfg
+				}
+			} else {
+				serverKey = tagToServer[tag]
+			}
 		}
 
 		if serverKey != "" {

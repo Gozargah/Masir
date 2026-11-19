@@ -65,3 +65,15 @@ When upgrading Xray, the preparer fails if the patch no longer applies. Rebase
 the patch, run the project and patched-dependency tests, and verify an XICMP
 probe with TUN enabled. Remove the patch and conditional API use when upstream
 provides the equivalent socket controller behavior and binding API.
+
+`patches/xray-balancer-observation-races.patch` makes Xray's standard
+observatory return a locked copy of its probe results. Routing can read these
+results while probes update them. It also holds the outbound manager's read
+lock while accessing its selector cache, which can be replaced when a live
+apply adds or removes handlers. The standard observatory copies cached tags
+before sorting and stops waiting between probes when Masir closes it.
+
+`patches/xray-profile-traffic.patch` tracks bytes and active links at the
+profile dispatch boundary. The daemon uses those counters to retain
+superseded outbound graphs while their links drain and attribute traffic to
+the original subscription entry.

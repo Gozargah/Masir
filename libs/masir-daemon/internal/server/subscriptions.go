@@ -151,18 +151,21 @@ func (s *Server) toPBConfig(subID string, c *subs.Config) *pb.SubscriptionConfig
 		tr := s.serverTraffic(subID, c.ID)
 		up, down = tr.Up, tr.Down
 	}
+	strategy, members := c.Profile.BalancerSummary()
 	return &pb.SubscriptionConfig{
-		Id:            c.ID,
-		Name:          c.Name,
-		Protocol:      c.Protocol,
-		Address:       c.Address,
-		Port:          uint32(c.Port),
-		Network:       c.Network,
-		Security:      c.Security,
-		OutboundJson:  string(c.Outbound),
-		Latency:       toPBLatency(c.Latency),
-		UploadBytes:   up,
-		DownloadBytes: down,
+		Id:               c.ID,
+		Name:             c.Name,
+		Protocol:         c.Protocol,
+		Address:          c.Address,
+		Port:             uint32(c.Port),
+		Network:          c.Network,
+		Security:         c.Security,
+		OutboundJson:     string(c.Outbound),
+		Latency:          toPBLatency(c.Latency),
+		UploadBytes:      up,
+		DownloadBytes:    down,
+		BalancerStrategy: strategy,
+		BalancerMembers:  members,
 	}
 }
 

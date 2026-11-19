@@ -4383,8 +4383,11 @@ type SubscriptionConfig struct {
 	// Xray restarts only for this daemon process lifetime.
 	UploadBytes   uint64 `protobuf:"varint,10,opt,name=upload_bytes,json=uploadBytes,proto3" json:"upload_bytes,omitempty"`
 	DownloadBytes uint64 `protobuf:"varint,11,opt,name=download_bytes,json=downloadBytes,proto3" json:"download_bytes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Set for a provider's default balancer. Zero members indicates a single outbound.
+	BalancerMembers  uint32 `protobuf:"varint,12,opt,name=balancer_members,json=balancerMembers,proto3" json:"balancer_members,omitempty"`
+	BalancerStrategy string `protobuf:"bytes,13,opt,name=balancer_strategy,json=balancerStrategy,proto3" json:"balancer_strategy,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SubscriptionConfig) Reset() {
@@ -4492,6 +4495,20 @@ func (x *SubscriptionConfig) GetDownloadBytes() uint64 {
 		return x.DownloadBytes
 	}
 	return 0
+}
+
+func (x *SubscriptionConfig) GetBalancerMembers() uint32 {
+	if x != nil {
+		return x.BalancerMembers
+	}
+	return 0
+}
+
+func (x *SubscriptionConfig) GetBalancerStrategy() string {
+	if x != nil {
+		return x.BalancerStrategy
+	}
+	return ""
 }
 
 type LatencyResult struct {
@@ -6883,7 +6900,7 @@ const file_masir_daemon_v1_daemon_proto_rawDesc = "" +
 	"\vtotal_bytes\x18\x03 \x01(\x03R\n" +
 	"totalBytes\x12 \n" +
 	"\fexpire_at_ms\x18\x04 \x01(\x03R\n" +
-	"expireAtMs\"\xe1\x02\n" +
+	"expireAtMs\"\xb9\x03\n" +
 	"\x12SubscriptionConfig\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
@@ -6896,7 +6913,9 @@ const file_masir_daemon_v1_daemon_proto_rawDesc = "" +
 	"\alatency\x18\t \x01(\v2\x1e.masir.daemon.v1.LatencyResultR\alatency\x12!\n" +
 	"\fupload_bytes\x18\n" +
 	" \x01(\x04R\vuploadBytes\x12%\n" +
-	"\x0edownload_bytes\x18\v \x01(\x04R\rdownloadBytes\"f\n" +
+	"\x0edownload_bytes\x18\v \x01(\x04R\rdownloadBytes\x12)\n" +
+	"\x10balancer_members\x18\f \x01(\rR\x0fbalancerMembers\x12+\n" +
+	"\x11balancer_strategy\x18\r \x01(\tR\x10balancerStrategy\"f\n" +
 	"\rLatencyResult\x12\x1d\n" +
 	"\n" +
 	"latency_ms\x18\x01 \x01(\x03R\tlatencyMs\x12\x14\n" +
@@ -7111,8 +7130,8 @@ const file_masir_daemon_v1_daemon_proto_rawDesc = "" +
 	"\n" +
 	"StopUpdate\x12\".masir.daemon.v1.StopUpdateRequest\x1a#.masir.daemon.v1.StopUpdateResponse\x12Z\n" +
 	"\vWatchUpdate\x12#.masir.daemon.v1.WatchUpdateRequest\x1a$.masir.daemon.v1.WatchUpdateResponse0\x01\x12j\n" +
-	"\x11ListGeoCategories\x12).masir.daemon.v1.ListGeoCategoriesRequest\x1a*.masir.daemon.v1.ListGeoCategoriesResponseB\xc4\x01\n" +
-	"\x13com.masir.daemon.v1B\vDaemonProtoP\x01ZBgithub.com/you/masir/libs/masir-proto/gen/masir/daemon/v1;daemonv1\xa2\x02\x03MDX\xaa\x02\x0fMasir.Daemon.V1\xca\x02\x0fMasir\\Daemon\\V1\xe2\x02\x1bMasir\\Daemon\\V1\\GPBMetadata\xea\x02\x11Masir::Daemon::V1b\x06proto3"
+	"\x11ListGeoCategories\x12).masir.daemon.v1.ListGeoCategoriesRequest\x1a*.masir.daemon.v1.ListGeoCategoriesResponseB\xc9\x01\n" +
+	"\x13com.masir.daemon.v1B\vDaemonProtoP\x01ZGgithub.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1;daemonv1\xa2\x02\x03MDX\xaa\x02\x0fMasir.Daemon.V1\xca\x02\x0fMasir\\Daemon\\V1\xe2\x02\x1bMasir\\Daemon\\V1\\GPBMetadata\xea\x02\x11Masir::Daemon::V1b\x06proto3"
 
 var (
 	file_masir_daemon_v1_daemon_proto_rawDescOnce sync.Once
