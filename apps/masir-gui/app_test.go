@@ -344,6 +344,23 @@ func newTestApp(f *fakeDaemon) *app {
 
 func tester(a *app) *ui.Tester { return ui.NewTester(a.view, panelWidth, 900) }
 
+func TestRefreshListsIgnoresOlderCompletion(t *testing.T) {
+	f := ukServers()
+	a := newTestApp(f)
+	var completions []func()
+	a.post = func(fn func()) { completions = append(completions, fn) }
+
+	a.refreshLists()
+	f.subs = append(f.subs, &pb.Subscription{Id: "s2", Name: "New subscription"})
+	a.refreshLists()
+
+	completions[1]()
+	completions[0]()
+	if subs := a.subscriptions.subscriptions; len(subs) != 2 || subs[1].Id != "s2" {
+		t.Fatalf("subscription list reverted to an older result: %v", subs)
+	}
+}
+
 func TestMainPanelShowsTheServerAndRules(t *testing.T) {
 	a := newTestApp(ukServers())
 	tt := tester(a)
