@@ -828,6 +828,11 @@ func TestProfileCompositionValidatesRoutingInputs(t *testing.T) {
 	if !strings.Contains(string(out.Config), `"dialerProxy":"masir-profile/`) {
 		t.Fatal("profile dialer reference was not scoped")
 	}
+	profile.Routing = json.RawMessage(strings.Replace(string(profile.Routing), `"protocol":["http"]`, `"domains":["full:site.example"]`, 1))
+	_, c = build(t, Input{State: testState(t), Proxy: true, ActiveProfile: profile})
+	if len(c.Inbounds) == 0 || c.Inbounds[0]["sniffing"] == nil {
+		t.Fatal("provider domain rule requires mixed-inbound sniffing")
+	}
 	profile.Observatory = json.RawMessage(`{"subjectSelector":["node"],"probeUrl":"invalid"}`)
 	if _, err := Build(Input{State: testState(t), ActiveProfile: profile}); err == nil {
 		t.Fatal("invalid observer URL was accepted")

@@ -238,6 +238,11 @@ func measureThrough(ctx context.Context, inst *core.Instance, tag string, opt La
 			if tag != "" {
 				ctx = session.SetForcedOutboundTagToContext(ctx, tag)
 			}
+			if opt.BalancedProfile {
+				ctx = session.ContextWithContent(ctx, &session.Content{SniffingRequest: session.SniffingRequest{
+					Enabled: true, RouteOnly: true, OverrideDestinationForProtocol: []string{"http", "tls", "quic"},
+				}})
+			}
 			return core.Dial(ctx, inst, dest)
 		},
 	}
@@ -253,7 +258,7 @@ func measureThrough(ctx context.Context, inst *core.Instance, tag string, opt La
 			}
 			return 0, err
 		}
-		d, err := probeOnce(ctx, client, opt.URL, opt.Timeout)
+		d, err := probeAttempt(ctx, client, opt)
 		if err != nil {
 			lastErr = err
 			continue
@@ -266,6 +271,30 @@ func measureThrough(ctx context.Context, inst *core.Instance, tag string, opt La
 		return 0, lastErr
 	}
 	return best, nil
+}
+
+// Give observers time to publish their first result after a fast failed
+// fallback request. The retries share one attempt's existing timeout.
+func probeAttempt(ctx context.Context, client *http.Client, opt LatencyOptions) (time.Duration, error) {
+	if !opt.BalancedProfile {
+		return probeOnce(ctx, client, opt.URL, opt.Timeout)
+	}
+	ctx, cancel := context.WithTimeout(ctx, opt.Timeout)
+	defer cancel()
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		delay, err := probeOnce(ctx, client, opt.URL, opt.Timeout)
+		if err == nil {
+			return delay, nil
+		}
+		client.CloseIdleConnections()
+		select {
+		case <-ctx.Done():
+			return 0, err
+		case <-tick.C:
+		}
+	}
 }
 
 // probeOnce is its own function so defer cancel() runs after every request,

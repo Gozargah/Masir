@@ -251,10 +251,12 @@ func TestBalancerSummaryWithoutSharedDefault(t *testing.T) {
 }
 
 func TestProfileRejectsInvalidRulePredicate(t *testing.T) {
-	body := []byte(`{"outbounds":[{"tag":"node","protocol":"freedom"}],
-		"routing":{"rules":[{"port":"not-a-port","balancerTag":"pool"}],
-			"balancers":[{"tag":"pool","selector":["node"]}]}}`)
-	if configs, err := Parse(body); err == nil || len(configs) != 0 {
-		t.Fatal("invalid route was admitted")
+	for _, predicate := range []string{`"port":"not-a-port"`, `"attrs":{"example":"["}`} {
+		body := []byte(`{"outbounds":[{"tag":"node","protocol":"freedom"}],
+			"routing":{"rules":[{` + predicate + `,"balancerTag":"pool"}],
+				"balancers":[{"tag":"pool","selector":["node"]}]}}`)
+		if configs, err := Parse(body); err == nil || len(configs) != 0 {
+			t.Error("invalid route was admitted")
+		}
 	}
 }

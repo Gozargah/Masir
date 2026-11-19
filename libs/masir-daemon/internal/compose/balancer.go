@@ -196,7 +196,10 @@ func (g *profileGraph) add(p *subs.OutboundProfile, namespace string) (profileTa
 	}
 	for _, rule := range routing.Rules {
 		for key := range rule {
-			g.sniff = g.sniff || strings.EqualFold(key, "protocol")
+			switch strings.ToLower(key) {
+			case "protocol", "domain", "domains":
+				g.sniff = true
+			}
 		}
 	}
 	scopedRules, err := scopeRules(routing.Rules, p.Ingress, prefix, loopbacks)
