@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
+	"google.golang.org/grpc"
 )
 
 // multiSubDaemon creates a fakeDaemon with 3 subscriptions for testing groups.
@@ -187,5 +189,80 @@ func TestFoldedStateSurvivesRefreshesAndLatencyTests(t *testing.T) {
 
 	if !a.isGroupCollapsed("s3") || tt.HasText("New York") {
 		t.Fatal("list refresh reopened folded group")
+	}
+}
+
+func TestRefreshActiveLatencyWithoutWindow(t *testing.T) {
+	d := &subscriptionLatencyDaemon{featureDaemon: &featureDaemon{fakeDaemon: ukServers()}}
+	a := newTestApp(d.fakeDaemon)
+	a.d = d
+	ctx := context.Background()
+
+	key, ok := a.activeKey()
+	if !ok {
+		t.Fatal("fixture has no active server")
+	}
+	a.testing[key] = true
+	a.refreshActiveLatency(ctx)
+	if len(d.requests) != 0 {
+		t.Fatal("started a second probe for a server already being tested")
+	}
+	delete(a.testing, key)
+
+	a.refreshActiveLatency(ctx)
+	if len(d.requests) != 1 {
+		t.Fatalf("got %d probe requests, want one", len(d.requests))
+	}
+	req := d.requests[0]
+	if req.SubscriptionId != key.sub || len(req.ConfigIds) != 1 || req.ConfigIds[0] != key.cfg {
+		t.Fatalf("probe did not target only the active server: %v", req)
+	}
+	if got := a.latency[key]; got != 42 || a.testing[key] {
+		t.Fatalf("active latency = %d ms, testing = %t", got, a.testing[key])
+	}
+
+	a.reachable = false
+	a.refreshActiveLatency(ctx)
+	if len(d.requests) != 1 {
+		t.Fatal("started a probe while the daemon was unreachable")
+	}
+}
+
+func TestDelayedListsKeepNewerActiveLatency(t *testing.T) {
+	d := &subscriptionLatencyDaemon{featureDaemon: &featureDaemon{fakeDaemon: ukServers()}}
+	a := newTestApp(d.fakeDaemon)
+	a.d = d
+	key, ok := a.activeKey()
+	if !ok {
+		t.Fatal("fixture has no active server")
+	}
+
+	var applyLists func()
+	a.post = func(fn func()) { applyLists = fn }
+	a.refreshLists() // captures the previous 2048 ms result
+	a.post = func(fn func()) { fn() }
+	a.refreshActiveLatency(context.Background())
+	applyLists()
+
+	if got := a.latency[key]; got != 42 {
+		t.Fatalf("delayed list replaced new latency with %d ms", got)
+	}
+}
+
+type missedLatencyDaemon struct{ *fakeDaemon }
+
+func (d *missedLatencyDaemon) TestSubscriptionLatency(_ context.Context, _ *pb.TestSubscriptionLatencyRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[pb.TestSubscriptionLatencyResponse], error) {
+	d.configs["s1"][1].Latency = &pb.LatencyResult{LatencyMs: 42, TestedAtMs: 2}
+	return &subscriptionLatencyStream{}, nil
+}
+
+func TestProbeRecoversSavedLatencyWhenStreamEndsEarly(t *testing.T) {
+	d := &missedLatencyDaemon{fakeDaemon: ukServers()}
+	a := newTestApp(d.fakeDaemon)
+	a.d = d
+	key := serverKey{"s1", "c2"}
+	a.testServers(server{key: key})
+	if got := a.latency[key]; got != 42 || a.testing[key] {
+		t.Fatalf("recovered latency = %d ms, testing = %t", got, a.testing[key])
 	}
 }

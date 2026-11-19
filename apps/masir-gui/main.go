@@ -301,6 +301,8 @@ func main() {
 	defer conn.Close()
 
 	a := newApp(d, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	s := &shell{a: a}
 	a.pickerParent = func() *mygo.Window { return s.win }
 	a.post = func(fn func()) {
@@ -329,7 +331,8 @@ func main() {
 		a.refreshLoginState()
 		a.autoInstallCLI()
 		a.detectPackageInstall()
-		go a.watch(context.Background())
+		go a.watch(ctx)
+		go a.watchActiveLatency(ctx)
 		// The panel is the app's greeting, unless the session started it: a login item
 		// stays in the tray until the user asks for it. Without a tray icon, the window is
 		// the only way in, so show it always.

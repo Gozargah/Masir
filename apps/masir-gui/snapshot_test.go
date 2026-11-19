@@ -41,13 +41,13 @@ func TestSnapshots(t *testing.T) {
 			tt.Advance(110 * time.Millisecond) // part way through the roll
 		}},
 
-		{"latency-shimmer", true, func(a *app, tt *ui.Tester) {
+		{"latency-testing", true, func(a *app, tt *ui.Tester) {
 			a.open = sectionServers
 			for _, s := range a.subscriptions.servers {
 				a.testing[s.key] = true
 			}
 			tt.Frame()
-			tt.Advance(550 * time.Millisecond)
+			tt.Advance(latencyPulsePeriod / 2)
 		}},
 		{"connected-breathe", true, func(a *app, tt *ui.Tester) {
 			a.status.Settings.Power, a.status.XrayRunning = true, true
