@@ -19,12 +19,18 @@ func TestServiceUnitBoundsTheStop(t *testing.T) {
 		"ExecStart=/usr/local/lib/masir/masir daemon run --user 1000",
 		"TimeoutStopSec=10",
 		"Restart=on-failure",
-		"Environment=GOMEMLIMIT=100MiB",
-		"MemoryHigh=150M",
-		"MemoryMax=200M",
 	} {
 		if !strings.Contains(u, want) {
 			t.Fatalf("unit is missing %q:\n%s", want, u)
+		}
+	}
+}
+
+func TestServiceUnitLeavesMemoryLimitsToSystemPolicy(t *testing.T) {
+	u := serviceUnit("/usr/local/lib/masir/masir", 1000)
+	for _, setting := range []string{"GOMEMLIMIT=", "MemoryHigh=", "MemoryMax="} {
+		if strings.Contains(u, setting) {
+			t.Errorf("service unit forces %s", setting)
 		}
 	}
 }

@@ -36,11 +36,6 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>
   <dict><key>SuccessfulExit</key><false/></dict>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>GOMEMLIMIT</key>
-    <string>100MiB</string>
-  </dict>
   <key>StandardOutPath</key><string>/var/log/masird.log</string>
   <key>StandardErrorPath</key><string>/var/log/masird.log</string>
 </dict>

@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime/debug"
 	"strconv"
 	"time"
 )
@@ -59,9 +58,6 @@ func init() {
 		os.Stdout = os.Stderr
 		// Bound orphan lifetime too, even if the parent exits or core.New hangs.
 		time.AfterFunc(probeLifetime, func() { os.Exit(1) })
-		if os.Getenv("GOMEMLIMIT") == "" {
-			debug.SetMemoryLimit(100 * 1024 * 1024)
-		}
 		if err := serveProbe(os.Stdin, results); err != nil {
 			if errors.Is(err, errProbeTunMissing) {
 				os.Exit(probeTunMissingExit)

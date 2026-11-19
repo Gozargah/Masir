@@ -26,9 +26,6 @@ Wants=network-online.target
 [Service]
 ExecStart=%s daemon run --user %d
 Restart=on-failure
-Environment=GOMEMLIMIT=100MiB
-MemoryHigh=150M
-MemoryMax=200M
 # The daemon ends its streams and exits on SIGTERM; this only bounds a stop that can't
 # finish (a wedged Xray, say), so systemctl stop never waits systemd's 90s default.
 TimeoutStopSec=10
