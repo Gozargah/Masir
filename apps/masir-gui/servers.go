@@ -70,6 +70,38 @@ func latencyOf(r *pb.LatencyResult) int64 {
 	return r.GetLatencyMs()
 }
 
+const activeLatencyInterval = 30 * time.Second
+
+// watchActiveLatency runs for the lifetime of the tray app, including while hidden.
+func (a *app) watchActiveLatency(ctx context.Context) {
+	ticker := time.NewTicker(activeLatencyInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.post(func() { a.refreshActiveLatency(ctx) })
+		}
+	}
+}
+
+// activeLatencyTarget follows the confirmed selection. The subscription probe needs
+// a config that still exists in its subscription.
+func (a *app) activeLatencyTarget() (serverKey, bool) {
+	st := a.status
+	if !a.reachable || st.GetActiveStale() || st.GetActiveSubscriptionId() == "" || st.GetActiveConfigId() == "" {
+		return serverKey{}, false
+	}
+	return serverKey{st.GetActiveSubscriptionId(), st.GetActiveConfigId()}, true
+}
+
+func (a *app) refreshActiveLatency(ctx context.Context) {
+	if key, ok := a.activeLatencyTarget(); ok && ctx.Err() == nil {
+		a.probeServers(ctx, true, []server{{key: key}})
+	}
+}
+
 // testServers measures the given servers, or all of them when none are given; results
 // arrive as they finish.
 func (a *app) testServers(only ...server) {
@@ -77,6 +109,10 @@ func (a *app) testServers(only ...server) {
 	if len(targets) == 0 {
 		targets = a.subscriptions.servers
 	}
+	a.probeServers(context.Background(), false, targets)
+}
+
+func (a *app) probeServers(parent context.Context, quiet bool, targets []server) {
 	bySub := map[string][]string{}
 	for _, s := range targets {
 		if a.testing[s.key] {
@@ -93,7 +129,7 @@ func (a *app) testServers(only ...server) {
 	for _, id := range subIDs {
 		cfgs := bySub[id]
 		a.async(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 			defer cancel()
 			stream, err := a.d.TestSubscriptionLatency(ctx, &pb.TestSubscriptionLatencyRequest{SubscriptionId: id, ConfigIds: cfgs})
 			done := map[string]bool{}
@@ -118,7 +154,7 @@ func (a *app) testServers(only ...server) {
 						delete(a.testing, serverKey{id, cfg})
 					}
 				}
-				if err != nil && !errors.Is(err, io.EOF) {
+				if !quiet && err != nil && !errors.Is(err, io.EOF) {
 					a.fail("Couldn't complete the latency test: ", err)
 				}
 			})
