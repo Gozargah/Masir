@@ -6,6 +6,7 @@ import (
 	"time"
 
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
+	"google.golang.org/grpc"
 )
 
 // multiSubDaemon creates a fakeDaemon with 3 subscriptions for testing groups.
@@ -245,5 +246,23 @@ func TestDelayedListsKeepNewerActiveLatency(t *testing.T) {
 
 	if got := a.latency[key]; got != 42 {
 		t.Fatalf("delayed list replaced new latency with %d ms", got)
+	}
+}
+
+type missedLatencyDaemon struct{ *fakeDaemon }
+
+func (d *missedLatencyDaemon) TestSubscriptionLatency(_ context.Context, _ *pb.TestSubscriptionLatencyRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[pb.TestSubscriptionLatencyResponse], error) {
+	d.configs["s1"][1].Latency = &pb.LatencyResult{LatencyMs: 42, TestedAtMs: 2}
+	return &subscriptionLatencyStream{}, nil
+}
+
+func TestProbeRecoversSavedLatencyWhenStreamEndsEarly(t *testing.T) {
+	d := &missedLatencyDaemon{fakeDaemon: ukServers()}
+	a := newTestApp(d.fakeDaemon)
+	a.d = d
+	key := serverKey{"s1", "c2"}
+	a.testServers(server{key: key})
+	if got := a.latency[key]; got != 42 || a.testing[key] {
+		t.Fatalf("recovered latency = %d ms, testing = %t", got, a.testing[key])
 	}
 }
