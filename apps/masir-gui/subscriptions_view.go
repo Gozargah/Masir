@@ -74,15 +74,26 @@ func refreshTime(ms int64) string {
 }
 
 func (a *app) subscriptionsView(c *ui.Context, p palette) {
+	subs := a.subscriptions.subscriptions
 	ui.Column(c).Fill().Children(func() {
 		ui.Column(c).Padding(pageInset, pageInset, 0).Shrink(0).Children(func() {
-			a.pageHeader(c, p, "Subscriptions", func() {
+			add := func() {
 				if iconButton(c, "subscriptions-add", iconPlus, "Add Subscription", p, iconSM, variantGhost, 18) {
 					a.openPage(addSubscriptionPath)
 				}
-			})
+			}
+			if len(subs) == 0 {
+				a.pageHeader(c, p, "Subscriptions", add)
+				return
+			}
+			a.pageHeader(c, p, "Subscriptions", func() {
+				if iconButton(c, "subscriptions-refresh-all", iconRefresh, "Refresh all subscriptions", p, iconSM, variantGhost, 16) {
+					for _, sub := range subs {
+						a.refreshSubscription(sub.Id)
+					}
+				}
+			}, add)
 		})
-		subs := a.subscriptions.subscriptions
 		if len(subs) == 0 {
 			label(c, "No subscriptions yet. Add a subscription to import servers.", sizeBody, 18, 400, p.muted).Padding(0, pageInset, pageInset)
 			return
