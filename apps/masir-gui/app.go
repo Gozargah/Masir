@@ -383,6 +383,9 @@ func (a *app) refreshLists() {
 		})
 
 		a.post(func() {
+			if refresh != a.listRefresh {
+				return
+			}
 			a.subscriptions.subscriptions = subsRes.GetSubscriptions()
 			a.subscriptions.servers = servers
 			for _, s := range servers {

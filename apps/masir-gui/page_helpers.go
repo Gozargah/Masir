@@ -46,17 +46,19 @@ func titled(c *ui.Context, p palette, title string, action func(), fn func()) {
 const pageInset float32 = 12
 
 // pageHeader is the back arrow and the centered title of a page.
-func (a *app) pageHeader(c *ui.Context, p palette, title string, action ...func()) {
+func (a *app) pageHeader(c *ui.Context, p palette, title string, actions ...func()) {
+	actionGap := tw(2)
+	sideWidth := max(tw(7), float32(len(actions))*(tw(6)+actionGap)-actionGap)
 	ui.Row(c).Padding(0, 0, pageInset).AlignItems(ui.Center).Shrink(0).Children(func() {
-		ui.Row(c).Width(tw(7)).Children(func() {
+		ui.Row(c).Width(sideWidth).Shrink(0).Children(func() {
 			if iconButton(c, "back", iconBack, "Back", p, iconSM, variantGhost, 16) {
 				a.goBack()
 			}
 		})
 		label(c, title, sizeTitle, 18, 600, p.text).TextAlign(ui.Center).Grow(1).SingleLine()
-		ui.Row(c).Width(tw(7)).Children(func() {
-			if len(action) > 0 {
-				action[0]()
+		ui.Row(c).Width(sideWidth).Shrink(0).Gap(actionGap).Children(func() {
+			for _, action := range actions {
+				action()
 			}
 		})
 	})
