@@ -6,12 +6,19 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/Gozargah/Masir/libs/masir-core/service"
 )
+
+func TestServicePlistLeavesGoMemoryLimitToRuntime(t *testing.T) {
+	if strings.Contains(servicePlist(service.BinaryPath(), 501), "GOMEMLIMIT") {
+		t.Fatal("service plist forces a Go memory limit")
+	}
+}
 
 // Login Items shows a legacy daemon's executable icon. A bare binary gets it from a
 // resource fork and the FinderInfo custom-icon flag, which updates must re-apply.
