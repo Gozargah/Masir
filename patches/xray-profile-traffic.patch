@@ -1,0 +1,146 @@
+diff --git a/app/dispatcher/default.go b/app/dispatcher/default.go
+--- a/app/dispatcher/default.go
++++ b/app/dispatcher/default.go
+@@ -504,5 +504,24 @@
+ 		log.Record(accessMessage)
+ 	}
+ 
++	// Count traffic once at the profile boundary. Forced routes, including
++	// observatory probes and chained dials, do not enter this boundary.
++	if isPickRoute == 2 && strings.HasPrefix(handler.Tag(), "masir-profile/") {
++		name := "outbound>>>masir-flow/" + handler.Tag() + ">>>traffic>>>"
++		if c, _ := d.stats.GetOrRegisterCounter(name + "uplink"); c != nil {
++			link.Reader = &profileTrafficReader{Reader: link.Reader, counter: c}
++		}
++		if c, _ := d.stats.GetOrRegisterCounter(name + "downlink"); c != nil {
++			link.Writer = &SizeStatWriter{Writer: link.Writer, Counter: c}
++		}
++		parts := strings.SplitN(handler.Tag(), "/", 5)
++		if len(parts) == 5 {
++			name := "masir-active-flows>>>" + strings.Join(parts[:4], "/")
++			if c, _ := d.stats.GetOrRegisterCounter(name); c != nil {
++				trackProfileFlow(ctx, c, link)
++			}
++		}
++	}
++
+ 	handler.Dispatch(ctx, link)
+ }
+diff --git a/app/dispatcher/stats.go b/app/dispatcher/stats.go
+--- a/app/dispatcher/stats.go
++++ b/app/dispatcher/stats.go
+@@ -1,9 +1,15 @@
+ package dispatcher
+ 
+ import (
++	"context"
++	"sync"
++	"sync/atomic"
++	"time"
++
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/buf"
+ 	"github.com/xtls/xray-core/features/stats"
++	"github.com/xtls/xray-core/transport"
+ )
+ 
+ type SizeStatWriter struct {
+@@ -23,3 +29,83 @@
+ func (w *SizeStatWriter) Interrupt() {
+ 	common.Interrupt(w.Writer)
+ }
++
++// profileFlowWriter follows the link lifetime even when a mux dispatch has
++// already returned and its worker still owns the live stream.
++type profileFlowWriter struct {
++	buf.Writer
++	release func()
++}
++
++func trackProfileFlow(ctx context.Context, counter stats.Counter, link *transport.Link) {
++	counter.Add(1)
++	finish := sync.OnceFunc(func() { counter.Add(-1) })
++	stop := context.AfterFunc(ctx, finish)
++	var remaining atomic.Int32
++	remaining.Store(2)
++	directionDone := func() {
++		if remaining.Add(-1) == 0 {
++			stop()
++			finish()
++		}
++	}
++	if reader, ok := link.Reader.(*profileTrafficReader); ok {
++		reader.release = sync.OnceFunc(directionDone)
++	} else {
++		link.Reader = &profileTrafficReader{Reader: link.Reader, release: sync.OnceFunc(directionDone)}
++	}
++	link.Writer = &profileFlowWriter{Writer: link.Writer, release: sync.OnceFunc(directionDone)}
++}
++
++// SpliceStatWriter exposes the counter that direct splice writes bypass.
++func (w *profileFlowWriter) SpliceStatWriter() *SizeStatWriter {
++	writer, _ := w.Writer.(*SizeStatWriter)
++	return writer
++}
++
++func (w *profileFlowWriter) Close() error {
++	defer w.release()
++	return common.Close(w.Writer)
++}
++
++func (w *profileFlowWriter) Interrupt() {
++	defer w.release()
++	common.Interrupt(w.Writer)
++}
++
++type profileTrafficReader struct {
++	buf.Reader
++	counter stats.Counter
++	release func()
++}
++
++func (r *profileTrafficReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
++	mb, err := r.Reader.ReadMultiBuffer()
++	r.record(mb, err)
++	return mb, err
++}
++
++func (r *profileTrafficReader) ReadMultiBufferTimeout(timeout time.Duration) (buf.MultiBuffer, error) {
++	if reader, ok := r.Reader.(buf.TimeoutReader); ok {
++		mb, err := reader.ReadMultiBufferTimeout(timeout)
++		r.record(mb, err)
++		return mb, err
++	}
++	return nil, buf.ErrReadTimeout
++}
++
++func (r *profileTrafficReader) record(mb buf.MultiBuffer, err error) {
++	if r.counter != nil {
++		r.counter.Add(int64(mb.Len()))
++	}
++	if err != nil && err != buf.ErrReadTimeout && r.release != nil {
++		r.release()
++	}
++}
++
++func (r *profileTrafficReader) Interrupt() {
++	if r.release != nil {
++		defer r.release()
++	}
++	common.Interrupt(r.Reader)
++}
+diff --git a/proxy/proxy.go b/proxy/proxy.go
+--- a/proxy/proxy.go
++++ b/proxy/proxy.go
+@@ -770,6 +770,11 @@
+ 		if splice {
+ 			errors.LogDebug(ctx, "CopyRawConn splice")
+ 			statWriter, _ := writer.(*dispatcher.SizeStatWriter)
++			if wrapper, ok := writer.(interface {
++				SpliceStatWriter() *dispatcher.SizeStatWriter
++			}); ok {
++				statWriter = wrapper.SpliceStatWriter()
++			}
+ 			//runtime.Gosched() // necessary
+ 			timer.SetTimeout(24 * time.Hour) // prevent leak, just in case
+ 			if inTimer != nil {

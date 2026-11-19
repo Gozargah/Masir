@@ -1,10 +1,14 @@
 package xray
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
+	"github.com/xtls/xray-core/app/router"
+	"github.com/xtls/xray-core/infra/conf"
 )
 
 const (
@@ -20,13 +24,16 @@ type item struct {
 // Profile is an Xray config split into the part that needs a restart (base)
 // and the parts that can change live through the API (inbounds, outbounds, rules).
 type Profile struct {
-	base      map[string]json.RawMessage // everything except inbounds, outbounds and the live routing parts
-	inbounds  []item
-	outbounds []item
-	rules     []item
-	balancers json.RawMessage // the fallback balancer, retargeted live instead of applied
-	fallback  fallback        // where that balancer points, i.e. the routing mode
-	hash      string          // of base
+	base              map[string]json.RawMessage // everything except inbounds, outbounds and the live routing parts
+	inbounds          []item
+	outbounds         []item
+	rules             []item
+	balancers         json.RawMessage // the fallback balancer followed by any provider balancers
+	providerBalancers json.RawMessage
+	scopes            map[string]json.RawMessage
+	observers         []map[string]json.RawMessage
+	fallback          fallback // where that balancer points, i.e. the routing mode
+	hash              string   // of base
 }
 
 // fallback is the catch-all's balancer and the outbound it should send traffic to.
@@ -79,18 +86,50 @@ func ParseProfile(raw []byte) (*Profile, error) {
 			p.rules = items
 			delete(routing, "rules")
 		}
-		// The fallback balancer can't be changed through Xray's API (it can only be
-		// added, and never removed), so it rides along with the profile but outside the
-		// restart hash: a mode change retargets it instead of rebuilding the config.
+		// Balancers can be replaced with the full routing table. The synthetic
+		// fallback can also be retargeted on its own.
 		if b, ok := routing["balancers"]; ok {
 			p.balancers = b
 			p.fallback = parseFallback(b)
+			var entries []json.RawMessage
+			if err := json.Unmarshal(b, &entries); err != nil {
+				return nil, fmt.Errorf("decode balancers: %w", err)
+			}
+			if len(entries) > 1 {
+				p.providerBalancers = marshal(entries[1:])
+			}
 			delete(routing, "balancers")
 		}
 		top["routing"] = marshal(routing)
 	}
 
-	sum := sha256.Sum256(marshal(top)) // map keys marshal sorted, so this is stable
+	if raw := top["masirProfileRoutes"]; len(raw) != 0 {
+		if err := json.Unmarshal(raw, &p.scopes); err != nil {
+			return nil, fmt.Errorf("decode provider route tables: %w", err)
+		}
+		delete(top, "masirProfileRoutes")
+	}
+	if raw := top["masirObservers"]; len(raw) != 0 {
+		if err := json.Unmarshal(raw, &p.observers); err != nil {
+			return nil, fmt.Errorf("decode managed observers: %w", err)
+		}
+		delete(top, "masirObservers")
+	}
+	for _, key := range []string{"observatory", "burstObservatory"} {
+		if raw := top[key]; len(raw) != 0 {
+			p.observers = append(p.observers, map[string]json.RawMessage{key: raw})
+			delete(top, key)
+		}
+	}
+
+	fingerprint := make(map[string]json.RawMessage, len(top))
+	for key, value := range top {
+		fingerprint[key] = value
+	}
+	if raw := top["dns"]; len(raw) > 0 {
+		fingerprint["dns"] = dnsPolicy(raw)
+	}
+	sum := sha256.Sum256(marshal(fingerprint)) // map keys marshal sorted, so this is stable
 	p.hash = hex.EncodeToString(sum[:])
 	return p, nil
 }
@@ -146,6 +185,31 @@ func parseItems(raw json.RawMessage, tagKey, what, autoPrefix string) ([]item, e
 // needsRestart: the base changed, or the first outbound (Xray's fallback) changed.
 func (p *Profile) needsRestart(old *Profile) bool {
 	return old == nil || p.hash != old.hash || firstTag(p.outbounds) != firstTag(old.outbounds)
+}
+
+// replacementRouting prepares a full table before any live state is changed.
+func (p *Profile) replacementRouting(old *Profile) (*router.Config, error) {
+	providerChanged := !bytes.Equal(p.providerBalancers, old.providerBalancers)
+	providerRouting := len(p.providerBalancers) != 0 || len(old.providerBalancers) != 0 || len(p.scopes) != 0 || len(old.scopes) != 0
+	if !providerChanged && (!providerRouting || sameItems(p.rules, old.rules)) {
+		return nil, nil
+	}
+	var config conf.RouterConfig
+	if raw := p.base["routing"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &config); err != nil {
+			return nil, err
+		}
+	}
+	config.RuleList = rawItems(p.rules)
+	if err := json.Unmarshal(p.balancers, &config.Balancers); err != nil {
+		return nil, err
+	}
+	for _, balancer := range config.Balancers {
+		if balancer == nil {
+			return nil, fmt.Errorf("empty balancer definition")
+		}
+	}
+	return config.Build()
 }
 
 // bootstrap renders the data-plane config without Xray API services or listeners.
@@ -217,6 +281,17 @@ func (p *Profile) Marshal() ([]byte, error) {
 	for k, v := range p.base {
 		top[k] = v
 	}
+	if len(p.scopes) > 0 {
+		top["masirProfileRoutes"] = marshal(p.scopes)
+	}
+	if len(p.observers) == 1 {
+		for key, value := range p.observers[0] {
+			top[key] = value
+		}
+	} else if len(p.observers) > 1 {
+		top["masirObservers"] = marshal(p.observers)
+	}
+
 	if len(p.inbounds) > 0 {
 		top["inbounds"] = marshal(rawItems(p.inbounds))
 	}

@@ -127,6 +127,18 @@ func (s *Server) Boot(ctx context.Context, dir string) error {
 	}
 	m.Log = s.Log
 	m.OnChange = s.subscriptionsChanged
+	m.BuildProbeProfile = func(c subs.Config) ([]byte, error) {
+		state := store.State{Settings: store.DefaultSettings()}
+		state.Settings.Fallback = store.FallbackProxy
+		out, err := compose.Build(compose.Input{State: state, ActiveProfile: c.Profile})
+		if err != nil {
+			return nil, err
+		}
+		if err := xray.CheckNoLocalFiles(out.Config); err != nil {
+			return nil, err
+		}
+		return out.Config, nil
+	}
 	m.SetInterval(time.Duration(st.Settings.SubIntervalMinutes) * time.Minute)
 	s.subs = m
 	s.refreshSubscriptionCounts()

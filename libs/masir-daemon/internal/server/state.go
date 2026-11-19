@@ -62,18 +62,21 @@ func (s *Server) applyLockedWithCollection(ctx context.Context, st store.State, 
 	}
 	runs := st.Settings.XrayRuns() && !s.idle.Load()
 	tun := runs && st.Settings.Power && st.Settings.Tun && s.id.Privileged
-	skip, err := s.gate(st, len(active.Outbound) > 0, runs, attended)
+	skip, err := s.gate(st, len(active.Outbound) > 0 || active.Profile != nil, runs, attended)
 	if err != nil {
 		return err
 	}
 	in := compose.Input{
-		Skip:    skip,
-		State:   st,
-		Proxy:   runs,
-		Tun:     tun,
-		LogDir:  s.logDir(),
-		Active:  active.Outbound,
-		Resolve: s.resolveTarget,
+		Skip:                 skip,
+		State:                st,
+		Proxy:                runs,
+		Tun:                  tun,
+		LogDir:               s.logDir(),
+		Active:               active.Outbound,
+		ActiveProfile:        active.Profile,
+		ActiveID:             active.ConfigID,
+		ActiveSubscriptionID: active.SubscriptionID,
+		Resolve:              s.resolveTarget,
 	}
 	if tun {
 		in.TunName = s.tunName()
