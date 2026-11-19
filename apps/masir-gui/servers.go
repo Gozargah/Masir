@@ -70,6 +70,11 @@ func latencyOf(r *pb.LatencyResult) int64 {
 	return r.GetLatencyMs()
 }
 
+func (a *app) recordLatency(key serverKey, result *pb.LatencyResult) {
+	a.latency[key] = latencyOf(result)
+	a.latencyAt[key] = result.GetTestedAtMs()
+}
+
 const activeLatencyInterval = 30 * time.Second
 
 // watchActiveLatency runs for the lifetime of the tray app, including while hidden.
@@ -143,7 +148,7 @@ func (a *app) probeServers(parent context.Context, quiet bool, targets []server)
 					k := serverKey{id, res.ConfigId}
 					done[res.ConfigId] = true
 					a.post(func() {
-						a.latency[k] = latencyOf(res.Result)
+						a.recordLatency(k, res.Result)
 						delete(a.testing, k)
 					})
 				}

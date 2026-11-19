@@ -81,8 +81,9 @@ type app struct {
 	down, up    uint64 // bytes per second
 
 	// latency is the last result per server, in milliseconds; negative means a failed probe.
-	latency map[serverKey]int64
-	testing map[serverKey]bool
+	latency   map[serverKey]int64
+	latencyAt map[serverKey]int64
+	testing   map[serverKey]bool
 
 	// What the person is doing.
 	path                   pagePath
@@ -217,6 +218,7 @@ func newApp(d pb.DaemonServiceClient, binary string) *app {
 		apps:           newAppInfos(),
 		favicons:       newFaviconStore(),
 		latency:        map[serverKey]int64{},
+		latencyAt:      map[serverKey]int64{},
 		testing:        map[serverKey]bool{},
 		collapsedSubs:  map[string]bool{},
 		collapsedRules: map[string]bool{},
@@ -384,8 +386,8 @@ func (a *app) refreshLists() {
 			a.subscriptions.subscriptions = subsRes.GetSubscriptions()
 			a.subscriptions.servers = servers
 			for _, s := range servers {
-				if r := s.cfg.GetLatency(); r != nil && r.TestedAtMs > 0 && !a.testing[s.key] {
-					a.latency[s.key] = latencyOf(r)
+				if r := s.cfg.GetLatency(); r.GetTestedAtMs() > a.latencyAt[s.key] && !a.testing[s.key] {
+					a.recordLatency(s.key, r)
 				}
 			}
 			if rerr == nil {
