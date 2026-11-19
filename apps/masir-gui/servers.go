@@ -138,6 +138,7 @@ func (a *app) probeServers(parent context.Context, quiet bool, targets []server)
 			defer cancel()
 			stream, err := a.d.TestSubscriptionLatency(ctx, &pb.TestSubscriptionLatencyRequest{SubscriptionId: id, ConfigIds: cfgs})
 			done := map[string]bool{}
+			var saved map[string]*pb.LatencyResult
 			if err == nil {
 				for {
 					res, recvErr := stream.Recv()
@@ -152,11 +153,18 @@ func (a *app) probeServers(parent context.Context, quiet bool, targets []server)
 						delete(a.testing, k)
 					})
 				}
+				if len(done) < len(cfgs) {
+					saved = a.savedLatencies(parent, id)
+				}
 			}
 			a.post(func() { // whatever didn't answer is no longer being measured
 				for _, cfg := range cfgs {
 					if !done[cfg] {
-						delete(a.testing, serverKey{id, cfg})
+						key := serverKey{id, cfg}
+						if result := saved[cfg]; result.GetTestedAtMs() > a.latencyAt[key] {
+							a.recordLatency(key, result)
+						}
+						delete(a.testing, key)
 					}
 				}
 				if !quiet && err != nil && !errors.Is(err, io.EOF) {
@@ -165,6 +173,21 @@ func (a *app) probeServers(parent context.Context, quiet bool, targets []server)
 			})
 		})
 	}
+}
+
+// A stream can end after the daemon saves a result but before it delivers it.
+func (a *app) savedLatencies(parent context.Context, id string) map[string]*pb.LatencyResult {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	sub, err := a.d.GetSubscription(ctx, &pb.GetSubscriptionRequest{Id: id})
+	if err != nil {
+		return nil
+	}
+	results := make(map[string]*pb.LatencyResult, len(sub.GetConfigs()))
+	for _, cfg := range sub.GetConfigs() {
+		results[cfg.GetId()] = cfg.GetLatency()
+	}
+	return results
 }
 
 func (a *app) removeSubscription(id string) {
