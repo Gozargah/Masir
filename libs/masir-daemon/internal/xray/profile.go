@@ -194,7 +194,13 @@ func (p *Profile) replacementRouting(old *Profile) (*router.Config, error) {
 	if !providerChanged && (!providerRouting || sameItems(p.rules, old.rules)) {
 		return nil, nil
 	}
-	config := conf.RouterConfig{RuleList: rawItems(p.rules)}
+	var config conf.RouterConfig
+	if raw := p.base["routing"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &config); err != nil {
+			return nil, err
+		}
+	}
+	config.RuleList = rawItems(p.rules)
 	if err := json.Unmarshal(p.balancers, &config.Balancers); err != nil {
 		return nil, err
 	}

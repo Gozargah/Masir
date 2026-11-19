@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xtls/xray-core/app/router"
 	"github.com/xtls/xray-core/common/geodata"
 	corenet "github.com/xtls/xray-core/common/net"
 	xserial "github.com/xtls/xray-core/common/serial"
@@ -298,11 +299,76 @@ func (c *Core) applyLiveLocked(ctx context.Context, old, next *Profile) error {
 		}
 	}
 
+	if scoped, ok := c.routing.(*scopedRouter); ok {
+		scoped.publication.Lock()
+		scoped.staging = true
+		scoped.publication.Unlock()
+	}
+
 	if !bytes.Equal(marshal(old.observers), marshal(next.observers)) {
 		slot := c.inst.GetFeature(extension.ObservatoryType()).(*liveObservatory)
 		if err := slot.configure(c.inst, next); err != nil {
 			return err
 		}
+	}
+
+	if err := c.publishRouting(ctx, old, next, table); err != nil {
+		return err
+	}
+
+	for _, o := range old.outbounds {
+		if _, keep := nextOut[o.Tag]; !keep {
+			if isProfileOutbound(o.Tag) {
+				c.retireOutbound(o)
+				continue
+			}
+			if err := c.removeOutbound(ctx, o.Tag); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Publish rules and the exact fallback together. Route lookups retain the old
+// scopes and observers until the table swap has excluded their lookups.
+func (c *Core) publishRouting(ctx context.Context, old, next *Profile, table *router.Config) error {
+	slot := c.inst.GetFeature(extension.ObservatoryType()).(*liveObservatory)
+	if scoped, ok := c.routing.(*scopedRouter); ok && table != nil {
+		obj, err := core.CreateObject(c.inst, table)
+		if err != nil {
+			return err
+		}
+		outer := obj.(*router.Router)
+		if err := outer.Start(); err != nil {
+			return err
+		}
+		if next.fallback.balancer != "" {
+			if err := outer.SetOverrideTarget(next.fallback.balancer, next.fallback.target); err != nil {
+				_ = outer.Close()
+				return err
+			}
+		}
+		scoped.publication.Lock()
+		previous := scoped.Router
+		scoped.Router = outer
+		c.balancer = outer
+		scoped.retainScopes(next)
+		cleanup := scoped.onIdle
+		scoped.onIdle = func() {
+			if cleanup != nil {
+				cleanup()
+			}
+			_ = previous.Close()
+		}
+		scoped.publication.Unlock()
+		c.finishRoutingPublication(scoped, slot, next)
+		return nil
+	}
+	if scoped, ok := c.routing.(*scopedRouter); ok {
+		defer c.finishRoutingPublication(scoped, slot, next)
+	} else {
+		defer slot.retain(next)
 	}
 
 	// Only the tail that differs is rewritten: Xray appends rules in order, so leaving
@@ -327,24 +393,21 @@ func (c *Core) applyLiveLocked(ctx context.Context, old, next *Profile) error {
 		}
 	}
 
-	if table == nil && old.fallback != next.fallback {
+	if table != nil || old.fallback != next.fallback {
 		if err := c.setFallback(ctx, next.fallback); err != nil {
 			return err
 		}
 	}
 
-	for _, o := range old.outbounds {
-		if _, keep := nextOut[o.Tag]; !keep {
-			if isProfileOutbound(o.Tag) {
-				c.retireOutbound(o)
-				continue
-			}
-			if err := c.removeOutbound(ctx, o.Tag); err != nil {
-				return err
-			}
-		}
-	}
 	return nil
+}
+
+func (c *Core) finishRoutingPublication(scoped *scopedRouter, slot *liveObservatory, next *Profile) {
+	scoped.publication.Lock()
+	defer scoped.publication.Unlock()
+	scoped.staging = false
+	scoped.observersOnIdle = func() { slot.retain(next) }
+	scoped.cleanupIfIdle()
 }
 
 // setFallback points the catch-all's balancer at an outbound. One call, so no rule is

@@ -191,8 +191,8 @@ func Build(in Input) (Output, error) {
 			"tag": ProxyInboundTag, "listen": listen, "port": st.Settings.ProxyPort, "protocol": "mixed",
 			"settings": obj{"auth": "noauth", "udp": true},
 		}
-		// With user rules, sniff so domain and protocol rules also match apps that connect by IP.
-		if len(st.Rules) > 0 {
+		// Sniff when a user or provider rule can use the result.
+		if len(st.Rules) > 0 || graph.sniff {
 			mixed["sniffing"] = sniffing(false)
 		}
 		inbounds = append(inbounds, mixed)

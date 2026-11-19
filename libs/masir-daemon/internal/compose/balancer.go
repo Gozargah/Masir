@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -20,6 +21,7 @@ type profileTarget struct {
 type profileGraph struct {
 	observers []profileObserver
 	scopes    map[string]obj
+	sniff     bool
 }
 
 type profileObserver struct {
@@ -66,7 +68,10 @@ func (g *profileGraph) add(p *subs.OutboundProfile, namespace string) (profileTa
 			tag = fmt.Sprintf("%suntagged/%d", namespace, i)
 		}
 		var o map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &o); err != nil {
+		if err := json.Unmarshal(raw, &o); err != nil || o == nil {
+			return profileTarget{}, nil, fmt.Errorf("invalid balanced profile outbound %d", i+1)
+		}
+		if err := canonicalFields(o, "tag", "protocol", "streamSettings", "settings"); err != nil {
 			return profileTarget{}, nil, err
 		}
 		if i == 0 {
@@ -94,9 +99,15 @@ func (g *profileGraph) add(p *subs.OutboundProfile, namespace string) (profileTa
 			if err := json.Unmarshal(stream, &settings); err != nil {
 				return profileTarget{}, nil, err
 			}
+			if err := canonicalFields(settings, "sockopt"); err != nil {
+				return profileTarget{}, nil, err
+			}
 			if rawSock := settings["sockopt"]; len(rawSock) > 0 {
 				var socket map[string]json.RawMessage
 				if err := json.Unmarshal(rawSock, &socket); err != nil {
+					return profileTarget{}, nil, err
+				}
+				if err := canonicalFields(socket, "dialerProxy"); err != nil {
 					return profileTarget{}, nil, err
 				}
 				var chain string
@@ -183,6 +194,11 @@ func (g *profileGraph) add(p *subs.OutboundProfile, namespace string) (profileTa
 		}
 		scopeBalancers = append(scopeBalancers, spec)
 	}
+	for _, rule := range routing.Rules {
+		for key := range rule {
+			g.sniff = g.sniff || strings.EqualFold(key, "protocol")
+		}
+	}
 	scopedRules, err := scopeRules(routing.Rules, p.Ingress, prefix, loopbacks)
 	if err != nil {
 		return profileTarget{}, nil, err
@@ -218,6 +234,21 @@ func (g *profileGraph) addObserver(key, prefix string, raw json.RawMessage) erro
 	var observer map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &observer); err != nil {
 		return err
+	}
+	if err := canonicalFields(observer, "subjectSelector", "probeURL"); err != nil {
+		return err
+	}
+	if key == "observatory" && len(observer["probeURL"]) > 0 {
+		var probe string
+		if err := json.Unmarshal(observer["probeURL"], &probe); err != nil {
+			return fmt.Errorf("invalid observatory probe URL")
+		}
+		if probe != "" {
+			u, err := url.Parse(probe)
+			if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+				return fmt.Errorf("observatory probe URL must use HTTP or HTTPS")
+			}
+		}
 	}
 	var refs conf.StringList
 	if err := json.Unmarshal(observer["subjectSelector"], &refs); err != nil {
@@ -358,4 +389,25 @@ func scopeRules(rules []map[string]json.RawMessage, ingress []subs.ProfileIngres
 		}
 	}
 	return out, nil
+}
+
+// canonicalFields matches the named fields using the same case folding as
+// Xray and rejects ambiguous spellings before rewriting references.
+func canonicalFields(object map[string]json.RawMessage, fields ...string) error {
+	for _, field := range fields {
+		var found string
+		for key := range object {
+			if strings.EqualFold(key, field) {
+				if found != "" {
+					return fmt.Errorf("balanced profile repeats the %s field", field)
+				}
+				found = key
+			}
+		}
+		if found != "" && found != field {
+			object[field] = object[found]
+			delete(object, found)
+		}
+	}
+	return nil
 }

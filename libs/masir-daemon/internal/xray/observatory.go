@@ -89,15 +89,33 @@ func (o *liveObservatory) configure(inst *core.Instance, p *Profile) error {
 		next[key] = observer
 	}
 	o.mu.Lock()
-	previous := o.current
-	o.current = next
-	o.mu.Unlock()
-	for key, observer := range previous {
+	for key, observer := range o.current {
 		if next[key] == nil {
-			_ = observer.Close()
+			next[key] = observer
 		}
 	}
+	o.current = next
+	o.mu.Unlock()
 	return nil
+}
+
+func (o *liveObservatory) retain(p *Profile) {
+	keep := make(map[string]bool, len(p.observers))
+	for _, spec := range p.observers {
+		keep[string(marshal(spec))] = true
+	}
+	var removed []extension.Observatory
+	o.mu.Lock()
+	for key, observer := range o.current {
+		if !keep[key] {
+			delete(o.current, key)
+			removed = append(removed, observer)
+		}
+	}
+	o.mu.Unlock()
+	for _, observer := range removed {
+		_ = observer.Close()
+	}
 }
 
 func startObserver(inst *core.Instance, raw []byte) (extension.Observatory, error) {

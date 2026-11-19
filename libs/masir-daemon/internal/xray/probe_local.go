@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"sync"
 	"time"
 
@@ -18,20 +17,19 @@ import (
 	xserial "github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
-	"github.com/xtls/xray-core/features/routing"
 	confserial "github.com/xtls/xray-core/infra/conf/serial"
 )
 
 const DefaultProbeURL = "https://www.google.com/generate_204"
 
 type LatencyOptions struct {
-	CurrentTunName func() string `json:"-"` // snapshot after acquiring the worker slot
-	TunName        string        // active Masir TUN to exclude from the probe route
-	URL            string        // probe URL; empty means DefaultProbeURL
-	Attempts       int           // requests per config; the fastest wins (default 2)
-	Timeout        time.Duration // limit for one request (default 12s)
-	WaitForRoute   bool          // wait for a balanced profile to leave its unavailable fallback
-	Full           bool          // keep dns/routing/policy instead of stripping them
+	CurrentTunName  func() string `json:"-"` // snapshot after acquiring the worker slot
+	TunName         string        // active Masir TUN to exclude from the probe route
+	URL             string        // probe URL; empty means DefaultProbeURL
+	Attempts        int           // requests per config; the fastest wins (default 2)
+	Timeout         time.Duration // limit for one request (default 12s)
+	BalancedProfile bool          // use Masir’s managed routing and observatory
+	Full            bool          // keep dns/routing/policy instead of stripping them
 }
 
 func (o LatencyOptions) withDefaults() LatencyOptions {
@@ -60,7 +58,7 @@ var essentialApps = map[string]bool{
 func measureDelayLocal(ctx context.Context, cfgJSON []byte, opt LatencyOptions) (time.Duration, error) {
 	opt = opt.withDefaults()
 
-	if opt.WaitForRoute {
+	if opt.BalancedProfile {
 		p, err := ParseProfile(cfgJSON)
 		if err != nil {
 			return 0, err
@@ -72,9 +70,7 @@ func measureDelayLocal(ctx context.Context, cfgJSON []byte, opt LatencyOptions) 
 		if err := engine.Apply(ctx, p); err != nil {
 			return 0, err
 		}
-		if err := waitForProbeRoute(ctx, engine.inst, opt); err != nil {
-			return 0, err
-		}
+
 		return measureThrough(ctx, engine.inst, "", opt)
 	}
 
@@ -113,49 +109,6 @@ func measureDelayLocal(ctx context.Context, cfgJSON []byte, opt LatencyOptions) 
 	}
 
 	return measureThrough(ctx, inst, "", opt)
-}
-
-func waitForProbeRoute(ctx context.Context, inst *core.Instance, opt LatencyOptions) error {
-	target, err := url.Parse(opt.URL)
-	if err != nil {
-		return errors.New("invalid probe URL")
-	}
-	port := uint32(443)
-	if target.Scheme == "http" {
-		port = 80
-	}
-	if target.Port() != "" {
-		p, err := corenet.PortFromString(target.Port())
-		if err != nil {
-			return err
-		}
-		port = uint32(p)
-	}
-	host := target.Hostname()
-	rc := &routeContext{TargetDomain: host, TargetPort: port, Network: corenet.Network_TCP}
-	if ip := net.ParseIP(host); ip != nil {
-		rc.TargetDomain = ""
-		if v4 := ip.To4(); v4 != nil {
-			ip = v4
-		}
-		rc.TargetIPs = []corenet.IP{ip}
-	}
-	router := inst.GetFeature(routing.RouterType()).(routing.Router)
-	ctx, cancel := context.WithTimeout(ctx, opt.Timeout)
-	defer cancel()
-	tick := time.NewTicker(100 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		route, err := router.PickRoute(rc)
-		if err == nil && route.GetOutboundTag() != "block" {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return errors.New("balanced profile did not find a usable route before the probe deadline")
-		case <-tick.C:
-		}
-	}
 }
 
 // Probe is one outbound to latency-test; Tag only identifies it in results.

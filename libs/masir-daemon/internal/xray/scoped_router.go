@@ -22,7 +22,12 @@ import (
 
 type scopedRouter struct {
 	*router.Router
-	profiles atomic.Pointer[map[string]*profileRouter]
+	publication     sync.Mutex
+	readers         int
+	onIdle          func()
+	staging         bool
+	observersOnIdle func()
+	profiles        atomic.Pointer[map[string]*profileRouter]
 }
 
 var registerScopedRouter = sync.OnceFunc(func() {
@@ -55,13 +60,21 @@ func installScopedRouter(cfg *core.Config) {
 }
 
 func (r *scopedRouter) PickRoute(ctx routing.Context) (routing.Route, error) {
-	// The table is read first. During apply the map contains the old and new
-	// namespaces so a concurrent dispatch can resolve either decision.
-	route, err := r.Router.PickRoute(ctx)
+	r.publication.Lock()
+	outer, profiles := r.Router, r.profiles.Load()
+	r.readers++
+	r.publication.Unlock()
+	defer func() {
+		r.publication.Lock()
+		defer r.publication.Unlock()
+		r.readers--
+		r.cleanupIfIdle()
+	}()
+	route, err := outer.PickRoute(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if profiles := r.profiles.Load(); profiles != nil {
+	if profiles != nil {
 		if scope := (*profiles)[route.GetOutboundTag()]; scope != nil {
 			return scope.pick(ctx), nil
 		}
@@ -131,12 +144,8 @@ func (p *profileRouter) pick(ctx routing.Context) routing.Route {
 func (r *scopedRouter) configureScopes(inst *core.Instance, p *Profile) error {
 	next := make(map[string]*profileRouter, len(p.scopes))
 	if previous := r.profiles.Load(); previous != nil {
-		// Keep a bounded set of stale routes for dispatches that already read
-		// their outbound decision. The retired handlers expire independently.
-		if len(*previous) <= 128 {
-			for tag, scope := range *previous {
-				next[tag] = scope
-			}
+		for tag, scope := range *previous {
+			next[tag] = scope
 		}
 	}
 	for tag, raw := range p.scopes {
@@ -168,4 +177,31 @@ func (r *scopedRouter) configureScopes(inst *core.Instance, p *Profile) error {
 	}
 	r.profiles.Store(&next)
 	return nil
+}
+
+// retainScopes runs under the publication lock after the new table is visible.
+func (r *scopedRouter) retainScopes(p *Profile) {
+	if existing := r.profiles.Load(); existing != nil {
+		next := make(map[string]*profileRouter, len(p.scopes))
+		for tag := range p.scopes {
+			next[tag] = (*existing)[tag]
+		}
+		r.profiles.Store(&next)
+	}
+}
+
+// cleanupIfIdle runs under publication and keeps route lookups independent of
+// each other, including DNS lookups that re-enter routing.
+func (r *scopedRouter) cleanupIfIdle() {
+	if r.readers != 0 || r.staging {
+		return
+	}
+	if r.onIdle != nil {
+		r.onIdle()
+		r.onIdle = nil
+	}
+	if r.observersOnIdle != nil {
+		r.observersOnIdle()
+		r.observersOnIdle = nil
+	}
 }
