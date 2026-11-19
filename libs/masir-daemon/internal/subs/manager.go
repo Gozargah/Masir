@@ -66,10 +66,16 @@ type Latency struct {
 // working when the subscription drops the config or is removed. Name lets a refresh
 // find its replacement when the provider rotates the server's settings.
 type Active struct {
-	SubscriptionID string          `json:"subscriptionId"`
-	ConfigID       string          `json:"configId"`
-	Name           string          `json:"name"`
-	Outbound       json.RawMessage `json:"outbound,omitempty"`
+	SubscriptionID string           `json:"subscriptionId"`
+	ConfigID       string           `json:"configId"`
+	Name           string           `json:"name"`
+	Outbound       json.RawMessage  `json:"outbound,omitempty"`
+	Profile        *OutboundProfile `json:"profile,omitempty"`
+}
+
+// Active stores a self-contained copy of this subscription selection.
+func (c Config) Active(subscriptionID string) Active {
+	return Active{SubscriptionID: subscriptionID, ConfigID: c.ID, Name: c.Name, Outbound: c.Outbound, Profile: c.Profile}
 }
 
 // Interval is how often the subscription refreshes: custom, else the provider's, else the default.
@@ -117,8 +123,9 @@ type Manager struct {
 	// Log reports background activity. OnChange runs after a subscription's configs
 	// change or it's removed, so whoever pins configs can rebuild. Both are optional and
 	// set before Run; OnChange is called without the manager's lock held.
-	Log      func(level, msg string)
-	OnChange func(ctx context.Context)
+	Log               func(level, msg string)
+	OnChange          func(ctx context.Context)
+	BuildProbeProfile func(Config) ([]byte, error)
 
 	now func() time.Time
 }
@@ -353,17 +360,23 @@ func (m *Manager) TestLatency(ctx context.Context, subID string, configIDs []str
 	if err != nil {
 		return err
 	}
-	var probes []xray.Probe
-	if len(configIDs) == 0 {
-		for _, c := range s.Configs {
-			probes = append(probes, xray.Probe{Tag: c.ID, Outbound: c.Outbound})
-		}
-	} else {
+	configs := s.Configs
+	if len(configIDs) > 0 {
+		configs = make([]Config, 0, len(configIDs))
 		for _, id := range configIDs {
 			c, ok := s.config(id)
 			if !ok {
 				return fmt.Errorf("config %q: %w", id, ErrNotFound)
 			}
+			configs = append(configs, c)
+		}
+	}
+	var probes []xray.Probe
+	var profiles []Config
+	for _, c := range configs {
+		if c.Profile != nil {
+			profiles = append(profiles, c)
+		} else {
 			probes = append(probes, xray.Probe{Tag: c.ID, Outbound: c.Outbound})
 		}
 	}
@@ -372,7 +385,7 @@ func (m *Manager) TestLatency(ctx context.Context, subID string, configIDs []str
 	defer cancel()
 	var saveErr error
 	opt := xray.LatencyOptions{URL: probeURL, Timeout: latencyTimeout, CurrentTunName: currentTunName}
-	xray.MeasureEach(ctx, probes, opt, latencyWorkers, func(id string, d time.Duration, err error) {
+	saveResult := func(id string, d time.Duration, err error) {
 		if saveErr != nil {
 			return
 		}
@@ -390,7 +403,26 @@ func (m *Manager) TestLatency(ctx context.Context, subID string, configIDs []str
 		} else if saved {
 			report(id, l)
 		}
-	})
+	}
+	xray.MeasureEach(ctx, probes, opt, latencyWorkers, saveResult)
+	opt.Full = true
+	opt.WaitForRoute = true
+	for _, c := range profiles {
+		if ctx.Err() != nil {
+			break
+		}
+		if m.BuildProbeProfile == nil {
+			saveResult(c.ID, 0, errors.New("balanced profile probe is unavailable"))
+			continue
+		}
+		raw, err := m.BuildProbeProfile(c)
+		if err != nil {
+			saveResult(c.ID, 0, err)
+			continue
+		}
+		delay, err := xray.MeasureDelay(ctx, raw, opt)
+		saveResult(c.ID, delay, err)
+	}
 	return saveErr
 }
 
@@ -500,7 +532,7 @@ func (m *Manager) configsChanged(ctx context.Context, s *Subscription) {
 			moved := false
 			for _, c := range s.Configs {
 				if c.Name == a.Name {
-					err = m.writeActive(Active{SubscriptionID: s.ID, ConfigID: c.ID, Name: c.Name, Outbound: c.Outbound})
+					err = m.writeActive(c.Active(s.ID))
 					moved = err == nil
 					break
 				}

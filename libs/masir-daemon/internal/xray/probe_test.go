@@ -243,3 +243,25 @@ func TestProbeBatchFitsWorkerLifetime(t *testing.T) {
 		t.Fatal("unserviceable request budget accepted")
 	}
 }
+
+func TestIsolatedBalancedProfileProbe(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+
+	cfg := []byte(`{
+		"outbounds":[{"tag":"node","protocol":"freedom"}],
+		"observatory":{},
+		"routing":{
+			"balancers":[{"tag":"pool","selector":["node"],"fallbackTag":"node"}],
+			"rules":[{"network":"tcp,udp","balancerTag":"pool"}]
+		}
+	}`)
+	_, err := MeasureDelay(context.Background(), cfg, LatencyOptions{
+		URL: target.URL, Attempts: 1, Full: true, WaitForRoute: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

@@ -3,16 +3,19 @@ package xray
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/xtls/xray-core/common/geodata"
 	corenet "github.com/xtls/xray-core/common/net"
 	xserial "github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/features/inbound"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/routing"
@@ -25,16 +28,19 @@ import (
 type Core struct {
 	assetDir string // where geoip.dat and geosite.dat live
 
-	mu         sync.RWMutex
-	inst       *core.Instance
-	inbounds   inbound.Manager
-	outbounds  outbound.Manager
-	routing    routing.Router
-	balancer   routing.BalancerOverrider
-	stats      stats.Manager
-	cur        *Profile
-	generation uint64
-	systemDNS  systemDNS
+	mu            sync.RWMutex
+	inst          *core.Instance
+	inbounds      inbound.Manager
+	outbounds     outbound.Manager
+	routing       routing.Router
+	balancer      routing.BalancerOverrider
+	stats         stats.Manager
+	cur           *Profile
+	generation    uint64
+	retired       map[string]retiredOutbound
+	retireTimer   *time.Timer
+	liveDNSConfig json.RawMessage
+	systemDNS     systemDNS
 }
 
 type systemDNS interface {
@@ -106,7 +112,10 @@ func (c *Core) applyLocked(ctx context.Context, p *Profile) error {
 	}
 	if err := c.applyLiveLocked(ctx, c.cur, p); err != nil {
 		// Live state is now partially applied. Rebuild from scratch rather than guess.
-		return c.restartLocked(context.WithoutCancel(ctx), p)
+		if restartErr := c.restartLocked(context.WithoutCancel(ctx), p); restartErr != nil {
+			return errors.Join(err, restartErr, c.stopLocked())
+		}
+		return nil
 	}
 	c.cur = p
 	return nil
@@ -144,10 +153,6 @@ func (c *Core) Close() error {
 }
 
 func (c *Core) restartLocked(ctx context.Context, p *Profile) error {
-	if err := c.stopLocked(); err != nil {
-		return err
-	}
-
 	raw, err := p.bootstrap()
 	if err != nil {
 		return err
@@ -156,11 +161,29 @@ func (c *Core) restartLocked(ctx context.Context, p *Profile) error {
 	if err != nil {
 		return fmt.Errorf("xray config: %w", err)
 	}
+	// The re-exec probe worker enters here from an init function. Register
+	// managed features as they are installed, before core.New resolves them.
+	installObservatory(cfg)
+	installLiveDNS(cfg)
+	installScopedRouter(cfg)
+	if err := c.stopLocked(); err != nil {
+		return err
+	}
 	inst, err := core.New(cfg)
 	if err != nil {
 		return err
 	}
+	if err := configureScopes(inst, p); err != nil {
+		_ = inst.Close()
+		return err
+	}
+
 	if err := inst.Start(); err != nil {
+		_ = inst.Close()
+		return err
+	}
+	slot := inst.GetFeature(extension.ObservatoryType()).(*liveObservatory)
+	if err := slot.configure(inst, p); err != nil {
 		_ = inst.Close()
 		return err
 	}
@@ -168,6 +191,7 @@ func (c *Core) restartLocked(ctx context.Context, p *Profile) error {
 		_ = inst.Close()
 		return err
 	}
+	c.liveDNSConfig = p.base["dns"]
 	c.inst, c.cur = inst, p
 	c.generation++
 	if err := c.setFallback(ctx, p.fallback); err != nil {
@@ -183,6 +207,12 @@ func (c *Core) stopLocked() error {
 		err = c.systemDNS.close()
 	}
 	c.generation++
+	if c.retireTimer != nil {
+		c.retireTimer.Stop()
+		c.retireTimer = nil
+	}
+	c.retired = nil
+	c.liveDNSConfig = nil
 	if c.inst != nil {
 		_ = c.inst.Close()
 	}
@@ -220,6 +250,11 @@ func (c *Core) bindFeatures(inst *core.Instance) error {
 // applyLiveLocked order: sync inbounds, add/replace outbounds, swap rules, then drop outbounds nothing needs.
 // The fallback goes last: retargeting its balancer is atomic, so the mode changes all at once.
 func (c *Core) applyLiveLocked(ctx context.Context, old, next *Profile) error {
+	table, err := next.replacementRouting(old)
+	if err != nil {
+		return err
+	}
+
 	if err := c.syncInbounds(ctx, old.inbounds, next.inbounds); err != nil {
 		return err
 	}
@@ -227,7 +262,22 @@ func (c *Core) applyLiveLocked(ctx context.Context, old, next *Profile) error {
 	oldOut := byTag(old.outbounds)
 	nextOut := byTag(next.outbounds)
 
+	var leaving []item
+	for _, o := range old.outbounds {
+		if _, keep := nextOut[o.Tag]; !keep && isProfileOutbound(o.Tag) {
+			leaving = append(leaving, o)
+		}
+	}
+	if err := c.refreshBootstrapDNS(next, leaving); err != nil {
+		return err
+	}
+
 	for _, o := range next.outbounds {
+		if retired, ok := c.retired[o.Tag]; ok && bytes.Equal(retired.item.JSON, o.JSON) {
+			delete(c.retired, o.Tag)
+			continue
+		}
+
 		prev, exists := oldOut[o.Tag]
 		if exists && bytes.Equal(prev.JSON, o.JSON) {
 			continue
@@ -242,9 +292,26 @@ func (c *Core) applyLiveLocked(ctx context.Context, old, next *Profile) error {
 		}
 	}
 
+	if !bytes.Equal(marshal(old.scopes), marshal(next.scopes)) {
+		if err := configureScopes(c.inst, next); err != nil {
+			return err
+		}
+	}
+
+	if !bytes.Equal(marshal(old.observers), marshal(next.observers)) {
+		slot := c.inst.GetFeature(extension.ObservatoryType()).(*liveObservatory)
+		if err := slot.configure(c.inst, next); err != nil {
+			return err
+		}
+	}
+
 	// Only the tail that differs is rewritten: Xray appends rules in order, so leaving
 	// the unchanged head alone keeps the order and leaves its rules untouched.
-	if n := commonPrefix(old.rules, next.rules); n < len(old.rules) || n < len(next.rules) {
+	if table != nil {
+		if err := c.routing.AddRule(xserial.ToTypedMessage(table), false); err != nil {
+			return err
+		}
+	} else if n := commonPrefix(old.rules, next.rules); n < len(old.rules) || n < len(next.rules) {
 		for i := len(old.rules) - 1; i >= n; i-- {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -260,17 +327,21 @@ func (c *Core) applyLiveLocked(ctx context.Context, old, next *Profile) error {
 		}
 	}
 
-	for _, o := range old.outbounds {
-		if _, keep := nextOut[o.Tag]; !keep {
-			if err := c.removeOutbound(ctx, o.Tag); err != nil {
-				return err
-			}
+	if table == nil && old.fallback != next.fallback {
+		if err := c.setFallback(ctx, next.fallback); err != nil {
+			return err
 		}
 	}
 
-	if old.fallback != next.fallback {
-		if err := c.setFallback(ctx, next.fallback); err != nil {
-			return err
+	for _, o := range old.outbounds {
+		if _, keep := nextOut[o.Tag]; !keep {
+			if isProfileOutbound(o.Tag) {
+				c.retireOutbound(o)
+				continue
+			}
+			if err := c.removeOutbound(ctx, o.Tag); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -383,4 +454,14 @@ func freePort() (int, error) {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+func configureScopes(inst *core.Instance, p *Profile) error {
+	if router, ok := inst.GetFeature(routing.RouterType()).(*scopedRouter); ok {
+		return router.configureScopes(inst, p)
+	}
+	if len(p.scopes) > 0 {
+		return errors.New("xray: provider route tables require a router")
+	}
+	return nil
 }

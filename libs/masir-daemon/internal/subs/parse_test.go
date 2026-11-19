@@ -2,6 +2,7 @@ package subs
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -166,4 +167,85 @@ func keys(m map[string]Config) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func TestParsePreservesBalancedProfile(t *testing.T) {
+	const input = `{
+		"remarks":"Pool",
+		"inbounds":[{"tag":"provider-socks","protocol":"socks","port":1080},{"tag":"provider-http","protocol":"http"}],
+		"outbounds":[
+			{"tag":"proxy-a","protocol":"vless","settings":{"address":"a.example.com","port":443,"id":"00000000-0000-4000-8000-000000000001","encryption":"none"},"streamSettings":{"security":"tls","sockopt":{"dialerProxy":"helper"}}},
+			{"tag":"proxy-b","protocol":"vless","settings":{"address":"b.example.com","port":443,"id":"00000000-0000-4000-8000-000000000001","encryption":"none"},"streamSettings":{"security":"tls"}},
+			{"tag":"helper","protocol":"freedom"}
+		],
+		"routing":{"rules":[{"domain":["full:blocked.example"],"outboundTag":"helper"},{"type":"field","inboundTag":["provider-socks","provider-http"],"balancerTag":"pool"}],"balancers":[
+			{"tag":"pool","selector":["proxy-"],"strategy":{"type":"leastPing"}}
+		]},
+		"observatory":{"subjectSelector":["proxy-"],"probeUrl":"https://probe.example.com"}
+	}`
+	configs, err := Parse([]byte(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("got %d configurations, want one", len(configs))
+	}
+	c := configs[0]
+	p := c.Profile
+	if p == nil || len(p.Outbounds) != 3 || len(p.Ingress) != 2 {
+		t.Fatal("balanced profile lost outbound or ingress metadata")
+	}
+	if p.DefaultBalancer != "pool" {
+		t.Fatalf("default balancer = %q, want pool", p.DefaultBalancer)
+	}
+	if !strings.Contains(string(p.Outbounds[0]), `"dialerProxy"`) ||
+		!strings.Contains(string(p.Routing), `"balancerTag":"pool"`) ||
+		!strings.Contains(string(p.Observatory), `"subjectSelector"`) {
+		t.Fatal("profile lost its dial chain, balancer route or observer")
+	}
+	if strings.Contains(string(c.Outbound), `"dialerProxy"`) {
+		t.Fatal("legacy outbound projection contains an unresolved chain")
+	}
+	active := c.Active("subscription")
+	encoded, err := json.Marshal(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Active
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.Marshal(restored.Profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.ConfigID != c.ID || string(got) != string(want) {
+		t.Fatal("active record lost the profile")
+	}
+	changed, err := Parse([]byte(strings.Replace(input, "b.example.com", "new.example.com", 1)))
+	if err != nil || len(changed) != 1 || changed[0].ID == c.ID {
+		t.Fatal("changing a secondary outbound did not change the configuration ID")
+	}
+}
+
+func TestBalancerSummaryWithoutSharedDefault(t *testing.T) {
+	profile := &OutboundProfile{
+		Outbounds: []json.RawMessage{
+			json.RawMessage(`{"tag":"proxy_00"}`),
+			json.RawMessage(`{"tag":"proxy_01"}`),
+			json.RawMessage(`{"tag":"hop_01"}`),
+		},
+		Routing: json.RawMessage(`{"balancers":[
+			{"tag":"b_00","selector":["proxy_00"],"strategy":{"type":"leastLoad"}},
+			{"tag":"b_01","selector":["proxy_00","proxy_01"],"strategy":{"type":"leastLoad"}}
+		]}`),
+	}
+	strategy, count := profile.BalancerSummary()
+	if strategy != "leastLoad" || count != 2 {
+		t.Fatalf("got %s with %d members, want leastLoad with 2", strategy, count)
+	}
 }

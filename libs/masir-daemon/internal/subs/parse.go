@@ -16,15 +16,32 @@ import (
 
 // Config is one server a subscription provides.
 type Config struct {
-	ID       string          `json:"id"`
-	Name     string          `json:"name"`
-	Protocol string          `json:"protocol"`
-	Address  string          `json:"address,omitempty"`
-	Port     int             `json:"port,omitempty"`
-	Network  string          `json:"network,omitempty"`
-	Security string          `json:"security,omitempty"`
-	Outbound json.RawMessage `json:"outbound"` // untagged; whoever uses it picks the tag
-	Latency  *Latency        `json:"latency,omitempty"`
+	ID       string           `json:"id"`
+	Name     string           `json:"name"`
+	Protocol string           `json:"protocol"`
+	Address  string           `json:"address,omitempty"`
+	Port     int              `json:"port,omitempty"`
+	Network  string           `json:"network,omitempty"`
+	Security string           `json:"security,omitempty"`
+	Outbound json.RawMessage  `json:"outbound"` // untagged; whoever uses it picks the tag
+	Profile  *OutboundProfile `json:"profile,omitempty"`
+	Latency  *Latency         `json:"latency,omitempty"`
+}
+
+// OutboundProfile preserves the provider's tag space and routing order.
+type OutboundProfile struct {
+	Outbounds        []json.RawMessage `json:"outbounds"`
+	Routing          json.RawMessage   `json:"routing"`
+	Observatory      json.RawMessage   `json:"observatory,omitempty"`
+	BurstObservatory json.RawMessage   `json:"burstObservatory,omitempty"`
+	Ingress          []ProfileIngress  `json:"ingress,omitempty"`
+	DefaultBalancer  string            `json:"defaultBalancer,omitempty"`
+}
+
+// ProfileIngress describes a provider rule's inbound context without listener settings.
+type ProfileIngress struct {
+	Tag      string `json:"tag"`
+	Protocol string `json:"protocol"`
 }
 
 var errNoConfigs = errors.New("subscription has no usable configs")
@@ -68,8 +85,9 @@ func Parse(body []byte) ([]Config, error) {
 }
 
 type namedOutbound struct {
-	name string
-	raw  map[string]json.RawMessage
+	name    string
+	raw     map[string]json.RawMessage
+	profile *OutboundProfile
 }
 
 func parseJSONArray(text string) ([]namedOutbound, error) {
@@ -124,7 +142,11 @@ func parseJSONObject(raw json.RawMessage) ([]namedOutbound, error) {
 	if main == nil {
 		return nil, errors.New("full config has no proxy outbound")
 	}
-	return []namedOutbound{{name: str(obj["remarks"]), raw: main}}, nil
+	profile, err := parseOutboundProfile(obj, outsRaw)
+	if err != nil {
+		return nil, err
+	}
+	return []namedOutbound{{name: str(obj["remarks"]), raw: main, profile: profile}}, nil
 }
 
 // pickMainOutbound prefers the outbound tagged "proxy", else the first real server.
@@ -213,6 +235,14 @@ func newConfig(n namedOutbound) (Config, error) {
 		Name:     strings.TrimSpace(name),
 		Protocol: str(o["protocol"]),
 		Outbound: outbound,
+		Profile:  n.profile,
+	}
+	if c.Profile != nil {
+		encoded, err := json.Marshal(c.Profile)
+		if err != nil {
+			return Config{}, err
+		}
+		c.ID = configID(encoded)
 	}
 	c.Address, c.Port = serverAddress(o["settings"])
 	var stream struct {

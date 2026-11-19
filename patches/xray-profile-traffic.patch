@@ -1,0 +1,97 @@
+diff --git a/app/dispatcher/default.go b/app/dispatcher/default.go
+--- a/app/dispatcher/default.go
++++ b/app/dispatcher/default.go
+@@ -504,5 +504,24 @@
+ 		log.Record(accessMessage)
+ 	}
+ 
++	// Count traffic once at the profile boundary. Forced routes, including
++	// observatory probes and chained dials, do not enter this boundary.
++	if isPickRoute == 2 && strings.HasPrefix(handler.Tag(), "masir-profile/") {
++		name := "outbound>>>masir-flow/" + handler.Tag() + ">>>traffic>>>"
++		if c, _ := d.stats.GetOrRegisterCounter(name + "uplink"); c != nil {
++			link.Reader = &profileTrafficReader{Reader: link.Reader, counter: c}
++		}
++		if c, _ := d.stats.GetOrRegisterCounter(name + "downlink"); c != nil {
++			link.Writer = &SizeStatWriter{Writer: link.Writer, Counter: c}
++		}
++		parts := strings.SplitN(handler.Tag(), "/", 5)
++		if len(parts) == 5 {
++			name := "masir-active-flows>>>" + strings.Join(parts[:4], "/")
++			if c, _ := d.stats.GetOrRegisterCounter(name); c != nil {
++				link.Writer = trackProfileFlow(ctx, c, link.Writer)
++			}
++		}
++	}
++
+ 	handler.Dispatch(ctx, link)
+ }
+diff --git a/app/dispatcher/stats.go b/app/dispatcher/stats.go
+--- a/app/dispatcher/stats.go
++++ b/app/dispatcher/stats.go
+@@ -1,6 +1,10 @@
+ package dispatcher
+ 
+ import (
++	"context"
++	"sync"
++	"time"
++
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/buf"
+ 	"github.com/xtls/xray-core/features/stats"
+@@ -23,3 +27,54 @@
+ func (w *SizeStatWriter) Interrupt() {
+ 	common.Interrupt(w.Writer)
+ }
++
++// profileFlowWriter follows the link lifetime even when a mux dispatch has
++// already returned and its worker still owns the live stream.
++type profileFlowWriter struct {
++	buf.Writer
++	release func()
++}
++
++func trackProfileFlow(ctx context.Context, counter stats.Counter, w buf.Writer) *profileFlowWriter {
++	counter.Add(1)
++	finish := sync.OnceFunc(func() { counter.Add(-1) })
++	stop := context.AfterFunc(ctx, finish)
++	return &profileFlowWriter{Writer: w, release: func() {
++		stop()
++		finish()
++	}}
++}
++
++func (w *profileFlowWriter) Close() error {
++	defer w.release()
++	return common.Close(w.Writer)
++}
++
++func (w *profileFlowWriter) Interrupt() {
++	defer w.release()
++	common.Interrupt(w.Writer)
++}
++
++type profileTrafficReader struct {
++	buf.Reader
++	counter stats.Counter
++}
++
++func (r *profileTrafficReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
++	mb, err := r.Reader.ReadMultiBuffer()
++	r.counter.Add(int64(mb.Len()))
++	return mb, err
++}
++
++func (r *profileTrafficReader) ReadMultiBufferTimeout(timeout time.Duration) (buf.MultiBuffer, error) {
++	if reader, ok := r.Reader.(buf.TimeoutReader); ok {
++		mb, err := reader.ReadMultiBufferTimeout(timeout)
++		r.counter.Add(int64(mb.Len()))
++		return mb, err
++	}
++	return nil, buf.ErrReadTimeout
++}
++
++func (r *profileTrafficReader) Interrupt() {
++	common.Interrupt(r.Reader)
++}
