@@ -226,3 +226,24 @@ func TestRefreshActiveLatencyWithoutWindow(t *testing.T) {
 		t.Fatal("started a probe while the daemon was unreachable")
 	}
 }
+
+func TestDelayedListsKeepNewerActiveLatency(t *testing.T) {
+	d := &subscriptionLatencyDaemon{featureDaemon: &featureDaemon{fakeDaemon: ukServers()}}
+	a := newTestApp(d.fakeDaemon)
+	a.d = d
+	key, ok := a.activeKey()
+	if !ok {
+		t.Fatal("fixture has no active server")
+	}
+
+	var applyLists func()
+	a.post = func(fn func()) { applyLists = fn }
+	a.refreshLists() // captures the previous 2048 ms result
+	a.post = func(fn func()) { fn() }
+	a.refreshActiveLatency(context.Background())
+	applyLists()
+
+	if got := a.latency[key]; got != 42 {
+		t.Fatalf("delayed list replaced new latency with %d ms", got)
+	}
+}

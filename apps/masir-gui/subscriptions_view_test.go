@@ -363,7 +363,7 @@ func (s *subscriptionLatencyStream) Recv() (*pb.TestSubscriptionLatencyResponse,
 	}
 	id := s.ids[0]
 	s.ids = s.ids[1:]
-	return &pb.TestSubscriptionLatencyResponse{ConfigId: id, Result: &pb.LatencyResult{LatencyMs: 42}}, nil
+	return &pb.TestSubscriptionLatencyResponse{ConfigId: id, Result: &pb.LatencyResult{LatencyMs: 42, TestedAtMs: 2}}, nil
 }
 func TestSubscriptionDetailsTestsOnlyItsNodes(t *testing.T) {
 	f := &subscriptionLatencyDaemon{featureDaemon: &featureDaemon{fakeDaemon: ukServers()}}
