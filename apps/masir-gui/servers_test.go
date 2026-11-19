@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -187,5 +188,41 @@ func TestFoldedStateSurvivesRefreshesAndLatencyTests(t *testing.T) {
 
 	if !a.isGroupCollapsed("s3") || tt.HasText("New York") {
 		t.Fatal("list refresh reopened folded group")
+	}
+}
+
+func TestRefreshActiveLatencyWithoutWindow(t *testing.T) {
+	d := &subscriptionLatencyDaemon{featureDaemon: &featureDaemon{fakeDaemon: ukServers()}}
+	a := newTestApp(d.fakeDaemon)
+	a.d = d
+	ctx := context.Background()
+
+	key, ok := a.activeKey()
+	if !ok {
+		t.Fatal("fixture has no active server")
+	}
+	a.testing[key] = true
+	a.refreshActiveLatency(ctx)
+	if len(d.requests) != 0 {
+		t.Fatal("started a second probe for a server already being tested")
+	}
+	delete(a.testing, key)
+
+	a.refreshActiveLatency(ctx)
+	if len(d.requests) != 1 {
+		t.Fatalf("got %d probe requests, want one", len(d.requests))
+	}
+	req := d.requests[0]
+	if req.SubscriptionId != key.sub || len(req.ConfigIds) != 1 || req.ConfigIds[0] != key.cfg {
+		t.Fatalf("probe did not target only the active server: %v", req)
+	}
+	if got := a.latency[key]; got != 42 || a.testing[key] {
+		t.Fatalf("active latency = %d ms, testing = %t", got, a.testing[key])
+	}
+
+	a.reachable = false
+	a.refreshActiveLatency(ctx)
+	if len(d.requests) != 1 {
+		t.Fatal("started a probe while the daemon was unreachable")
 	}
 }
