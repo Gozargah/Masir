@@ -245,21 +245,25 @@ func TestProbeBatchFitsWorkerLifetime(t *testing.T) {
 }
 
 func TestIsolatedBalancedProfileProbe(t *testing.T) {
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			// The first probe reaches the fallback before health is known.
+			time.Sleep(350 * time.Millisecond)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer target.Close()
 
-	cfg := []byte(`{
-		"outbounds":[{"tag":"node","protocol":"freedom"}],
-		"observatory":{},
+	cfg := []byte(strings.ReplaceAll(`{
+		"outbounds":[{"tag":"node","protocol":"freedom"},{"tag":"block","protocol":"blackhole"}],
+		"observatory":{"subjectSelector":["node"],"probeURL":"HEALTH_URL"},
 		"routing":{
-			"balancers":[{"tag":"pool","selector":["node"],"fallbackTag":"node"}],
-			"rules":[{"network":"tcp,udp","balancerTag":"pool"}]
+			"balancers":[{"tag":"pool","selector":["node"],"fallbackTag":"block","strategy":{"type":"leastPing"}}],
+			"rules":[{"protocol":["http"],"balancerTag":"pool"},{"network":"tcp,udp","outboundTag":"block"}]
 		}
-	}`)
+	}`, "HEALTH_URL", target.URL+"/health"))
 	_, err := MeasureDelay(context.Background(), cfg, LatencyOptions{
-		URL: target.URL, Attempts: 1, Full: true, BalancedProfile: true,
+		URL: target.URL, Attempts: 1, Timeout: 4 * time.Second, Full: true, BalancedProfile: true,
 	})
 	if err != nil {
 		t.Fatal(err)

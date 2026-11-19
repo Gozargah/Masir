@@ -164,6 +164,9 @@ func (r *scopedRouter) configureScopes(inst *core.Instance, p *Profile) error {
 		if err != nil {
 			return fmt.Errorf("build provider routing: %w", err)
 		}
+		if err := validateRuleAttributes(cfg); err != nil {
+			return err
+		}
 		obj, err := core.CreateObject(inst, cfg)
 		if err != nil {
 			return fmt.Errorf("prepare provider routing: %w", err)
