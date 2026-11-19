@@ -13,6 +13,7 @@ import (
 var (
 	installedComponents  = installedComponentDirectory
 	installBundledDaemon = importLegacyDesktop
+	retryServiceUnit     = retryPackagedServiceUnit
 )
 
 // installedComponentDirectory runs off the UI thread. Only release bundles carry
@@ -46,7 +47,7 @@ func (a *app) offerBundledDaemonUpdate(st *pb.Status) bool {
 	if a.updates.state.bundleSync {
 		return true
 	}
-	eligible := st.GetServiceInstalled() && st.GetPrivileged() && !a.daemonIsBundled() && newerRelease(a.version, st.GetVersion())
+	eligible := st.GetServiceInstalled() && st.GetPrivileged() && !a.daemonIsBundled() && (a.updates.state.unitPending || newerRelease(a.version, st.GetVersion()))
 	if !eligible {
 		if a.updates.state.bundleOffer {
 			a.updates.state.bundleOffer = false
@@ -76,21 +77,52 @@ func (a *app) startBundledDaemonUpdate() {
 	}
 	a.updates.state.bundleOffer = false
 	a.updates.state.bundleSync = true
-	a.updates.state.phase = updateInstalling
+	a.updates.state.phase = updateAuthorizing
 	a.updates.state.err = ""
 	a.updates.state.tunWasOn = a.status.GetTunRunning()
 	version := a.version
+	running := a.status.GetVersion()
+	unitPending := a.updates.state.unitPending
+	importNeeded := !unitPending || newerRelease(version, running)
+	if !importNeeded {
+		version = running
+	}
 	a.async(func() {
-		dir, err := installedComponents()
-		if err == nil {
-			err = installBundledDaemon(dir)
+		var err error
+		if importNeeded {
+			var dir string
+			dir, err = installedComponents()
+			if err == nil {
+				err = installBundledDaemon(dir, func() {
+					a.post(func() {
+						if a.updates.state.phase == updateAuthorizing {
+							a.updates.state.phase = updateInstalling
+						}
+					})
+				})
+			}
+		}
+		if err == nil && unitPending {
+			a.post(func() { a.updates.state.phase = updateAuthorizing })
+			err = retryServiceUnit()
 		}
 		a.post(func() {
+			if kind, _, ok := elevationKindOf(err); ok && kind == elevationCancelled {
+				a.updates.state.bundleOffer = true
+				a.updates.state.bundleSync = false
+				a.updates.state.phase = updateAvailable
+				a.updates.state.err = ""
+				return
+			}
 			if err != nil {
 				a.updates.state.phase = updateFailed
 				a.updates.state.err = describe(err)
 				a.notifyError("Couldn't update the daemon: " + a.updates.state.err)
 				return
+			}
+			if unitPending {
+				a.updates.state.unitPending = false
+				a.saveGUISettings()
 			}
 			a.followDaemonRestart(version, false)
 		})

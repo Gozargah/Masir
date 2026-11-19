@@ -295,6 +295,7 @@ func guiSettingsFile() string {
 
 // guiSettings holds GUI-only preferences that are not managed by the daemon.
 type guiSettings struct {
+	UnitPending            bool     `json:"unit_pending,omitempty"`
 	DisconnectOnQuit       *bool    `json:"disconnect_on_quit,omitempty"`
 	CollapsedSubscriptions []string `json:"collapsed_subscriptions,omitempty"`
 	CollapsedRuleSections  []string `json:"collapsed_rule_sections,omitempty"`
@@ -321,6 +322,7 @@ func (a *app) currentGUISettings() guiSettings {
 	}
 	sort.Strings(collapsedRules)
 	return guiSettings{
+		UnitPending:            a.updates.state.unitPending,
 		DisconnectOnQuit:       &val,
 		CollapsedSubscriptions: collapsed,
 		CollapsedRuleSections:  collapsedRules,
@@ -345,6 +347,7 @@ func (a *app) loadGUISettings() {
 	if err := json.Unmarshal(b, &s); err != nil {
 		return
 	}
+	a.updates.state.unitPending = s.UnitPending
 	if s.DisconnectOnQuit != nil {
 		a.disconnectQuit = *s.DisconnectOnQuit
 	}

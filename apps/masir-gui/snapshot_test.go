@@ -30,6 +30,10 @@ func TestSnapshots(t *testing.T) {
 			a.updates.state.bundleOffer = true
 			a.updates.state.phase = updateAvailable
 		}},
+		{"update-enter-password", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.bundleSync = true
+			a.updates.state.phase = updateAuthorizing
+		}},
 		{"rolling-mid", true, func(a *app, tt *ui.Tester) {
 			a.latency[serverKey{"s1", "c1"}] = 2075
 			a.rules.rules = append(a.rules.rules, a.rules.rules[0])
@@ -233,6 +237,36 @@ func TestSnapshots(t *testing.T) {
 			a.updates.state.rel = &pb.ReleaseInfo{CurrentVersion: "0.1.0", LatestVersion: "v0.2.0", Available: true, CheckedAtMs: time.Now().UnixMilli()}
 			a.updates.state.parts, a.updates.state.phase = 2, updateAppDownloading
 			a.updates.state.progress, a.updates.state.total = 74, 100
+		}},
+		{"update-package-downloading", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
+			a.updates.state.phase = updateAppDownloading
+			a.updates.state.progress, a.updates.state.total = 42, 100
+		}},
+		{"update-package-verifying", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
+			a.updates.state.phase = updateVerifying
+		}},
+		{"update-ready", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.phase = updateReady
+		}},
+		{"update-package-password", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
+			a.updates.state.phase = updateAuthorizing
+		}},
+		{"update-package-installing", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
+			a.updates.state.phase = updateAppInstalling
+		}},
+		{"update-package-restarting", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
+			a.updates.state.phase = updateRestarting
+		}},
+		{"update-package-failed", true, func(a *app, tt *ui.Tester) {
+			a.updates.state.block, a.updates.state.pkgSync, a.updates.state.parts = blockPackageDeb, true, 1
+			a.updates.state.pkgSync = false
+			a.updates.state.phase = updateFailed
+			a.updates.state.err = "Another installer is running. Try again in a minute."
 		}},
 		{"settings-update", true, func(a *app, tt *ui.Tester) {
 			_ = tt.Click("Settings")

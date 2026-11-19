@@ -91,6 +91,13 @@ subscriptions while smoke-testing unless that is the change under test.
   bundle tells the person to update the app. The root service's own copy is updated by the
   daemon from verified release data. Desktop imports must independently verify the
   signed component descriptor and all received bytes in private staging before execution.
+- **A packaged Linux app is updated by its package manager, through the bundled CLI.**
+  `/opt/masir-desktop` has one writer, apt or dnf: `/opt/masir-desktop/bin/masir` counts as
+  the app's own copy, as `*.app` does. The app downloads as the person, then `pkexec` runs
+  only the root-owned bundled CLI (`platformHelperTrusted`); its `desktop install-package`
+  copies the files into root-only staging and verifies, parses and installs that copy,
+  never the person's file. One password covers the package, the service import and the
+  unit. Never start the proxy for the download. See `docs/updates.md`.
 - **An idle daemon reports off but saves nothing.** `--idle` keeps Xray down for the
   process; it must not write `Power=false`. The app starts the daemon in normal mode so a
   restart doesn't silently turn masir (or the tunnel) off.

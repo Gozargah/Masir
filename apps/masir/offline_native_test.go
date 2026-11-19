@@ -32,6 +32,9 @@ import (
 )
 
 const nativeOldVersion = "0.1.0"
+
+// This public key verifies the fixed v0.1.0 fixture, including in fork CI.
+const nativeOldPublisherKey = "RWTZsqFUrG9b8HKgjHcKrTYW7ISgHH8oJT5NeKxSunKPaiRD8M/gT1rI"
 const nativeNewVersion = "0.2.0"
 const nativeUpdatePackage = "github.com/Gozargah/Masir/libs/masir-daemon/internal/update.publicKeys"
 
@@ -403,15 +406,11 @@ func nativeReleaseFixture(t *testing.T, dest, releaseVersion string) {
 		return b
 	}
 	list, sig := read("checksums.txt"), read("checksums.txt.minisig")
-	verified := false
-	for _, text := range strings.Split(os.Getenv("MASIR_FIXTURE_PUBKEY"), ",") {
-		var k minisign.PublicKey
-		if k.UnmarshalText([]byte(strings.TrimSpace(text))) == nil && minisign.Verify(k, list, sig) {
-			verified = true
-			break
-		}
+	var publisher minisign.PublicKey
+	if err := publisher.UnmarshalText([]byte(nativeOldPublisherKey)); err != nil {
+		t.Fatalf("invalid historical fixture public key: %v", err)
 	}
-	if !verified {
+	if !minisign.Verify(publisher, list, sig) {
 		t.Fatal("historical fixture publisher signature is invalid")
 	}
 	archive := read(asset)

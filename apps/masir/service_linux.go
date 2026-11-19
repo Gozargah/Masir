@@ -56,18 +56,24 @@ func serviceDefinition(bin string, uid int) string { return serviceUnit(bin, uid
 // applyServiceDefinition writes text to the unit and reloads systemd. It restarts the
 // service when the file changed, so a new sandbox (capabilities, ProtectSystem) applies
 // now instead of at some later reinstall. It must run as root, outside the unit.
-func applyServiceDefinition(path, text string) error {
+func applyServiceDefinition(path, text string, retry bool) error {
+	_, err := applyLinuxServiceDefinition(path, text, retry)
+	return err
+}
+
+func applyLinuxServiceDefinition(path, text string, retry bool) (restarted bool, err error) {
 	changed, err := writeServiceDefinition(path, text)
-	if err != nil || !changed {
-		return err
+	if err != nil || (!changed && !retry) {
+		return false, err
 	}
 	if err := run("systemctl", "daemon-reload"); err != nil {
-		return err
+		return false, err
 	}
 	if exec.Command("systemctl", "is-active", "--quiet", "masird.service").Run() == nil {
-		return run("systemctl", "restart", "masird.service")
+		err := run("systemctl", "restart", "masird.service")
+		return err == nil, err
 	}
-	return nil
+	return false, nil
 }
 
 // writeServiceDefinition writes text only when it differs, and reports whether it did.

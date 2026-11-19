@@ -64,7 +64,6 @@ jobs:
           MASIR_OFFLINE_NATIVE: '1'
           MASIR_ANALYTICS: 'off'
           GH_TOKEN: ${{ github.token }}
-          MASIR_FIXTURE_PUBKEY: ${{ vars.MASIR_UPDATE_PUBKEY }}
         run: |
           cd apps/masir
           go test -count=1 -timeout=12m -run '^TestOfflineNativeServiceLifecycle$' -v .

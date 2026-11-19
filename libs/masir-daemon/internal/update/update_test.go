@@ -718,6 +718,10 @@ func TestInsideAppBundle(t *testing.T) {
 	if !insideAppBundle(res) {
 		t.Error("a daemon in resources/bin was not seen as bundled")
 	}
+	// The .deb and .rpm put it in /opt/masir-desktop/bin: dpkg or rpm owns that copy.
+	if !insideAppBundle("/opt/masir-desktop/bin/masir") {
+		t.Error("the packaged daemon was not seen as bundled")
+	}
 }
 
 func TestUpdatesNeedHTTPS(t *testing.T) {

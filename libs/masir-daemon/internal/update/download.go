@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -37,7 +38,7 @@ func (c Clients) do(ctx context.Context, fn func(*http.Client) error) error {
 		return err
 	}
 	if perr := fn(c.Proxy); perr != nil {
-		return fmt.Errorf("%w (through the proxy: %v)", err, perr)
+		return fmt.Errorf("%w (through the proxy: %w)", err, perr)
 	}
 	return nil
 }
@@ -64,10 +65,21 @@ func secureURL(raw string) error {
 	return fmt.Errorf("refusing %s: updates need HTTPS", raw)
 }
 
+// statusError is an HTTP status that isn't success: the server answered.
+type statusError struct{ name, status string }
+
+func (e *statusError) Error() string { return e.name + ": " + e.status }
+
 // download fetches url into path. A partial file already at path is continued with a
 // Range request, which is how a paused job resumes, including after switching from the
 // direct client to the proxy. progress gets the bytes written each time.
 func download(ctx context.Context, c Clients, url, path string, progress func(n int64)) error {
+	return downloadSized(ctx, c, url, path, progress, nil)
+}
+
+// downloadSized is download that also reports the whole file's size once a response
+// says it: from Content-Length on a 200, from Content-Range on a 206.
+func downloadSized(ctx context.Context, c Clients, url, path string, progress func(n int64), size func(total int64)) error {
 	if err := secureURL(url); err != nil {
 		return err
 	}
@@ -97,7 +109,17 @@ func download(ctx context.Context, c Clients, url, path string, progress func(n 
 		defer resp.Body.Close()
 		switch resp.StatusCode {
 		case http.StatusPartialContent:
+			if size != nil {
+				if _, total, ok := strings.Cut(resp.Header.Get("Content-Range"), "/"); ok {
+					if n, err := strconv.ParseInt(total, 10, 64); err == nil {
+						size(n)
+					}
+				}
+			}
 		case http.StatusOK: // no resume support, or nothing to resume: start over
+			if size != nil && resp.ContentLength >= 0 {
+				size(resp.ContentLength)
+			}
 			if have > 0 {
 				progress(-have)
 			}
@@ -110,7 +132,7 @@ func download(ctx context.Context, c Clients, url, path string, progress func(n 
 		case http.StatusRequestedRangeNotSatisfiable:
 			return nil // already complete; the checksum decides
 		default:
-			return fmt.Errorf("%s: %s", lastPart(url), resp.Status)
+			return &statusError{lastPart(url), resp.Status}
 		}
 		_, err = io.Copy(f, &progressReader{r: resp.Body, progress: progress})
 		return err
@@ -148,7 +170,7 @@ func fetchSmall(ctx context.Context, c Clients, url string) ([]byte, error) {
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("%s: %s", lastPart(url), resp.Status)
+			return &statusError{lastPart(url), resp.Status}
 		}
 		body, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return err

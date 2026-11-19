@@ -157,7 +157,8 @@ func bundled() bool {
 		exe = real
 	}
 	slash := filepath.ToSlash(exe)
-	if strings.Contains(slash, "/resources/bin/") || strings.Contains(slash, "/Resources/bin/") {
+	// /opt/masir-desktop/bin is the .deb and .rpm layout: dpkg or rpm owns those files.
+	if strings.Contains(slash, "/resources/bin/") || strings.Contains(slash, "/Resources/bin/") || strings.Contains(slash, "/opt/masir-desktop/bin/") {
 		return true
 	}
 	if runtime.GOOS != "darwin" {

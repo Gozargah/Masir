@@ -3,6 +3,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -83,21 +85,75 @@ func startService(bin string) error {
 func openLoginItems() error { return nil }
 
 // pkexec runs a command as root through the desktop's polkit prompt.
-func pkexec(argv ...string) ([]byte, error) {
+func pkexec(argv ...string) ([]byte, error) { return pkexecAnnounced(nil, argv...) }
+
+// pkexecAnnounced is pkexec for a helper that prints the line `authorized` once it runs
+// as root: authorized is called then, at most once, while the helper still works. That
+// line is a signal, not output. stdout and stderr share one pipe, as CombinedOutput did.
+func pkexecAnnounced(authorized func(), argv ...string) ([]byte, error) {
 	if _, err := exec.LookPath("pkexec"); err != nil {
-		return nil, errors.New("this desktop has no pkexec to ask for root; run `sudo masir daemon enable` once")
+		return nil, &elevationError{kind: elevationUnavailable, msg: "this desktop has no pkexec to ask for root; run `sudo masir daemon enable` once"}
 	}
 	cmd := exec.Command("pkexec", argv...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	out, err := cmd.CombinedOutput()
+	r, w, err := os.Pipe()
 	if err != nil {
-		msg := strings.TrimSpace(string(out))
+		return nil, err
+	}
+	defer r.Close()
+	cmd.Stdout, cmd.Stderr = w, w
+	err = cmd.Start()
+	w.Close()
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	announced := false
+	br := bufio.NewReader(r)
+	for {
+		line, rerr := br.ReadString('\n')
+		if !announced && strings.TrimSpace(line) == "authorized" {
+			announced = true
+			if authorized != nil {
+				authorized()
+			}
+		} else {
+			out.WriteString(line)
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		msg := strings.TrimSpace(out.String())
 		if msg == "" {
 			msg = err.Error()
 		}
-		return nil, fmt.Errorf("root permission wasn't granted: %s", msg)
+		code := -1
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		}
+		return out.Bytes(), classifyPkexec(code, msg)
 	}
-	return out, nil
+	return out.Bytes(), nil
+}
+
+// classifyPkexec reads pkexec's exit: 126 is a dismissed dialog, 127 a refusal or, by
+// its message, no authentication agent ("No authentication agent found", or "Error
+// creating textual authentication agent" when its own fallback has no terminal, as
+// under Setsid); anything else is the helper's own status.
+func classifyPkexec(exit int, output string) *elevationError {
+	e := &elevationError{kind: elevationFailed, code: exit, msg: "root permission wasn't granted: " + output}
+	switch {
+	case exit == 126:
+		e.kind, e.msg = elevationCancelled, "permission wasn't granted"
+	case exit == 127 && strings.Contains(output, "authentication agent"):
+		e.kind = elevationUnavailable
+	case exit == 127:
+		e.kind = elevationDenied
+	}
+	return e
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
