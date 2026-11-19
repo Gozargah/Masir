@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/xtls/xray-core/app/observatory"
 	"github.com/xtls/xray-core/common"
@@ -129,6 +130,10 @@ func startObserver(inst *core.Instance, raw []byte) (extension.Observatory, erro
 			settings, err := app.GetInstance()
 			if err != nil {
 				return nil, err
+			}
+			if probe, ok := settings.(*observatory.Config); ok && probe.ProbeInterval != 0 {
+				// Xray uses zero for its default and waits for positive intervals.
+				probe.ProbeInterval = max(probe.ProbeInterval, int64(time.Second))
 			}
 			obj, err := core.CreateObject(inst, settings)
 			if err != nil {
