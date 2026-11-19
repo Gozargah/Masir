@@ -237,7 +237,13 @@ func (a *app) watch(ctx context.Context) {
 			if err != nil {
 				break
 			}
-			a.post(func() { a.applyStatus(res.Status) })
+			a.post(func() {
+				previous, _ := a.activeLatencyTarget()
+				a.applyStatus(res.Status)
+				if current, ok := a.activeLatencyTarget(); ok && current != previous {
+					a.refreshActiveLatency(ctx)
+				}
+			})
 		}
 		a.post(a.setUnreachable)
 		sleep(ctx, time.Second)

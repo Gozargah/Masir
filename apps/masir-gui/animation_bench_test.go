@@ -20,8 +20,8 @@ func BenchmarkConnectedAnimation(b *testing.B) {
 	}
 }
 
-// BenchmarkLatencyShimmer measures the open server list during pending probes.
-func BenchmarkLatencyShimmer(b *testing.B) {
+// BenchmarkPendingLatency measures the open server list during pending probes.
+func BenchmarkPendingLatency(b *testing.B) {
 	a := newTestApp(ukServers())
 	a.open = sectionServers
 	for _, s := range a.subscriptions.servers {

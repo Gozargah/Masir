@@ -238,8 +238,10 @@ func latencyBadge(c *ui.Context, key string, ms int64, testing bool, p palette) 
 		text = formatMs(ms)
 	}
 	if testing {
-		fg, bg = p.tertiary, p.neutralSurface
-		dot = ui.Color{R: p.tertiary.R, G: p.tertiary.G, B: p.tertiary.B, A: 102}
+		fg.A = uint8(uint16(fg.A) * 65 / 100)
+		if dot == (ui.Color{}) {
+			dot = p.tertiary
+		}
 	}
 	b := ui.ButtonBase(c.Key(key)).Label("Test latency").Tooltip("Click to test latency").Cursor(ui.CursorPointer).
 		Shrink(0).AlignItems(ui.Center).Radius(4)
@@ -253,13 +255,21 @@ func latencyBadge(c *ui.Context, key string, ms int64, testing bool, p palette) 
 		b.Padding(2, 4.5, 3).Gap(tw(0.5))
 	}
 	b.Background(bg)
-	if testing { // the probe in flight shimmers
-		start := *ui.Local(b, "shimmer-start", func() time.Time { return c.Now() })
-		b.Cache().Effect(latencyShimmer{start: start, still: c.Preferences().ReduceMotion})
+	shimmer := ui.Local(b, "latency-shimmer", func() latencyShimmer { return latencyShimmer{from: 1} })
+	now := c.Now()
+	reduceMotion := c.Preferences().ReduceMotion
+	switch {
+	case reduceMotion:
+		*shimmer = latencyShimmer{from: 1}
+	case shimmer.testing != testing:
+		*shimmer = latencyShimmer{start: now, from: shimmer.opacity(now), testing: testing}
 	}
 	b.Children(func() {
-		if dot != (ui.Color{}) && ms > 0 {
-			ui.Box(c).Size(4, 4).Radius(2.5).MarginEnd(tw(0.5)).Background(dot).Shrink(0)
+		if dot != (ui.Color{}) {
+			indicator := ui.Box(c).Size(4, 4).Radius(2.5).MarginEnd(tw(0.5)).Background(dot).Shrink(0)
+			if !reduceMotion && (shimmer.testing || now.Sub(shimmer.start) < latencyPulseSettle) {
+				indicator.Cache().Effect(*shimmer)
+			}
 		}
 		if ms > 0 { // also while testing: the old number stays on its reels, so the result rolls from it
 			// The number rolls; its separator and unit stay still.
