@@ -23,12 +23,22 @@ import (
 type scopedRouter struct {
 	*router.Router
 	publication     sync.Mutex
-	readers         int
+	readers         atomic.Int64
+	cleanupPending  atomic.Bool
+	active          atomic.Pointer[routeTable]
 	onIdle          func()
 	staging         bool
 	observersOnIdle func()
-	profiles        atomic.Pointer[map[string]*profileRouter]
+	profiles        map[string]*profileRouter // updated under Core.mu or before the instance starts
 }
+
+type routeTable struct {
+	outer    *router.Router
+	profiles map[string]*profileRouter
+}
+
+// This bit prevents reader registration while retired routing state is closed.
+const cleaningRoutes = 1 << 62
 
 var registerScopedRouter = sync.OnceFunc(func() {
 	common.Must(common.RegisterConfig((*wrapperspb.StringValue)(nil), func(ctx context.Context, value interface{}) (interface{}, error) {
@@ -44,7 +54,9 @@ var registerScopedRouter = sync.OnceFunc(func() {
 		if err != nil {
 			return nil, err
 		}
-		return &scopedRouter{Router: native.(*router.Router)}, nil
+		r := &scopedRouter{Router: native.(*router.Router)}
+		r.publishTable()
+		return r, nil
 	}))
 })
 
@@ -60,26 +72,35 @@ func installScopedRouter(cfg *core.Config) {
 }
 
 func (r *scopedRouter) PickRoute(ctx routing.Context) (routing.Route, error) {
-	r.publication.Lock()
-	outer, profiles := r.Router, r.profiles.Load()
-	r.readers++
-	r.publication.Unlock()
-	defer func() {
+	for r.readers.Add(1) >= cleaningRoutes {
+		r.releaseRoute()
+		// Cleanup holds publication and excludes new lookups.
 		r.publication.Lock()
-		defer r.publication.Unlock()
-		r.readers--
-		r.cleanupIfIdle()
-	}()
-	route, err := outer.PickRoute(ctx)
+		r.publication.Unlock()
+	}
+	defer r.releaseRoute()
+	table := r.active.Load()
+	route, err := table.outer.PickRoute(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if profiles != nil {
-		if scope := (*profiles)[route.GetOutboundTag()]; scope != nil {
-			return scope.pick(ctx), nil
-		}
+	if scope := table.profiles[route.GetOutboundTag()]; scope != nil {
+		return scope.pick(ctx), nil
 	}
 	return route, nil
+}
+
+func (r *scopedRouter) releaseRoute() {
+	if r.readers.Add(-1) == 0 && r.cleanupPending.Load() {
+		r.publication.Lock()
+		defer r.publication.Unlock()
+		r.cleanupIfIdle()
+	}
+}
+
+// publishTable runs under Core.mu or before the instance is bound.
+func (r *scopedRouter) publishTable() {
+	r.active.Store(&routeTable{outer: r.Router, profiles: r.profiles})
 }
 
 type profileRouter struct {
@@ -143,10 +164,8 @@ func (p *profileRouter) pick(ctx routing.Context) routing.Route {
 
 func (r *scopedRouter) configureScopes(inst *core.Instance, p *Profile) error {
 	next := make(map[string]*profileRouter, len(p.scopes))
-	if previous := r.profiles.Load(); previous != nil {
-		for tag, scope := range *previous {
-			next[tag] = scope
-		}
+	for tag, scope := range r.profiles {
+		next[tag] = scope
 	}
 	for tag, raw := range p.scopes {
 		if _, exists := next[tag]; exists {
@@ -178,27 +197,28 @@ func (r *scopedRouter) configureScopes(inst *core.Instance, p *Profile) error {
 		next[tag] = &profileRouter{router: scope, prefix: strings.TrimPrefix(tag, "masir-profile-route/"),
 			firstOutbound: settings.FirstOutbound, loopbacks: settings.Loopbacks}
 	}
-	r.profiles.Store(&next)
+	r.profiles = next
+	r.publishTable()
 	return nil
 }
 
-// retainScopes runs under the publication lock after the new table is visible.
+// retainScopes runs under the publication lock before publishing the new table.
 func (r *scopedRouter) retainScopes(p *Profile) {
-	if existing := r.profiles.Load(); existing != nil {
-		next := make(map[string]*profileRouter, len(p.scopes))
-		for tag := range p.scopes {
-			next[tag] = (*existing)[tag]
-		}
-		r.profiles.Store(&next)
+	next := make(map[string]*profileRouter, len(p.scopes))
+	for tag := range p.scopes {
+		next[tag] = r.profiles[tag]
 	}
+	r.profiles = next
 }
 
 // cleanupIfIdle runs under publication and keeps route lookups independent of
 // each other, including DNS lookups that re-enter routing.
 func (r *scopedRouter) cleanupIfIdle() {
-	if r.readers != 0 || r.staging {
+	if r.staging || !r.cleanupPending.Load() || !r.readers.CompareAndSwap(0, cleaningRoutes) {
 		return
 	}
+	defer r.readers.Add(-cleaningRoutes)
+	r.cleanupPending.Store(false)
 	if r.onIdle != nil {
 		r.onIdle()
 		r.onIdle = nil

@@ -354,6 +354,7 @@ func (c *Core) publishRouting(ctx context.Context, old, next *Profile, table *ro
 		scoped.Router = outer
 		c.balancer = outer
 		scoped.retainScopes(next)
+		scoped.publishTable()
 		cleanup := scoped.onIdle
 		scoped.onIdle = func() {
 			if cleanup != nil {
@@ -407,6 +408,7 @@ func (c *Core) finishRoutingPublication(scoped *scopedRouter, slot *liveObservat
 	defer scoped.publication.Unlock()
 	scoped.staging = false
 	scoped.observersOnIdle = func() { slot.retain(next) }
+	scoped.cleanupPending.Store(true)
 	scoped.cleanupIfIdle()
 }
 
