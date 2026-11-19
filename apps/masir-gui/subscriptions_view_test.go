@@ -300,6 +300,31 @@ func TestSubscriptionCardRefreshStaysOnListAndPreventsDuplicates(t *testing.T) {
 	}
 }
 
+func TestRefreshAllSubscriptionsFromHeader(t *testing.T) {
+	f := &featureDaemon{fakeDaemon: ukServers()}
+	f.subs = append(f.subs, &pb.Subscription{Id: "s2", Name: "Other"})
+	a := newTestApp(f.fakeDaemon)
+	a.d = f
+	a.openPage(subscriptionsPath)
+	release := held(a)
+	tt := tester(a)
+	refresh, ok := tt.Find("Refresh all subscriptions")
+	add, hasAdd := tt.Find("Add Subscription")
+	if !ok || !hasAdd || refresh.X+refresh.W > add.X || refresh.Y != add.Y {
+		t.Fatalf("refresh and add should sit side by side: refresh=%v add=%v", refresh, add)
+	}
+	for range 2 {
+		if err := tt.Click("Refresh all subscriptions"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release()
+	tt.Frame()
+	if a.path != subscriptionsPath || f.count("refresh s1") != 1 || f.count("refresh s2") != 1 {
+		t.Fatalf("path=%s calls=%v", a.path, f.calls)
+	}
+}
+
 func TestSubscriptionCardMarksOnlyActiveOwner(t *testing.T) {
 	a := newTestApp(ukServers())
 	for _, id := range []string{"s1", "s2"} {
