@@ -527,12 +527,32 @@ func activeReplacement(a Active, configs []Config) (Config, bool) {
 	type endpoint struct {
 		Protocol       string
 		Settings       json.RawMessage
-		StreamSettings struct{ Network, Security string }
+		StreamSettings struct {
+			Network, Security string
+			WSSettings        struct {
+				Path, Host string
+				Headers    struct{ Host string }
+			}
+		}
+	}
+	normalize := func(e *endpoint) {
+		switch e.StreamSettings.Network {
+		case "", "raw", "tcp":
+			e.StreamSettings.Network = "tcp"
+		case "ws", "websocket":
+			e.StreamSettings.Network = "ws"
+		}
+		ws := &e.StreamSettings.WSSettings
+		if ws.Host == "" {
+			ws.Host = ws.Headers.Host
+		}
+		ws.Headers.Host = ""
 	}
 	var old endpoint
 	if err := json.Unmarshal(a.Outbound, &old); err != nil {
 		return Config{}, false
 	}
+	normalize(&old)
 	address, port := serverAddress(old.Settings)
 	var named, matched []Config
 	for _, c := range configs {
@@ -541,7 +561,11 @@ func activeReplacement(a Active, configs []Config) (Config, bool) {
 		}
 		named = append(named, c)
 		var next endpoint
-		if json.Unmarshal(c.Outbound, &next) == nil && address != "" && c.Address == address && c.Port == port && next.Protocol == old.Protocol && next.StreamSettings == old.StreamSettings {
+		if json.Unmarshal(c.Outbound, &next) != nil {
+			continue
+		}
+		normalize(&next)
+		if address != "" && c.Address == address && c.Port == port && next.Protocol == old.Protocol && next.StreamSettings == old.StreamSettings {
 			matched = append(matched, c)
 		}
 	}

@@ -433,3 +433,57 @@ func TestActiveReplacementAmbiguousNames(t *testing.T) {
 		t.Fatal("ambiguous names must keep the saved selection")
 	}
 }
+
+func TestFollowActiveTransportIdentity(t *testing.T) {
+	for _, tc := range []struct{ name, selected, other, updated string }{
+		{"ws path", strings.Replace(trojanWS, "%2Fws", "%2Fchosen", 1), trojanWS, ""},
+		{"ws host", strings.Replace(trojanWS, "path=%2Fws", "path=%2Fws&host=chosen.example.com", 1), strings.Replace(trojanWS, "path=%2Fws", "path=%2Fws&host=other.example.com", 1), ""},
+		{"tcp raw alias", strings.Replace(vlessReality, "DE%20Reality", "same", 1), strings.ReplaceAll(strings.Replace(vlessReality, "DE%20Reality", "same", 1), "de.example.com", "other.example.com"), "raw"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			p := newProvider(t, tc.other+"\n"+tc.selected)
+			m := newTestManager(t, nil)
+			s, err := m.Add(ctx, p.srv.URL, "", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.SetActive(s.Configs[1].Active(s.ID)); err != nil {
+				t.Fatal(err)
+			}
+			rotated := strings.ReplaceAll(strings.ReplaceAll(tc.selected, "secret", "rotated"), "b831381d", "a831381d")
+			if tc.updated != "" {
+				var docs []map[string]json.RawMessage
+				for _, c := range s.Configs {
+					var doc map[string]json.RawMessage
+					if err := json.Unmarshal(c.Outbound, &doc); err != nil {
+						t.Fatal(err)
+					}
+					doc["tag"], _ = json.Marshal(c.Name)
+					docs = append(docs, doc)
+				}
+				raw, err := json.Marshal(docs)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body := strings.ReplaceAll(string(raw), "b831381d", "a831381d")
+				body = strings.ReplaceAll(body, `"network":"tcp"`, `"network":"raw"`)
+				p.set(body, http.StatusOK)
+			}
+			if tc.updated == "" {
+				p.set(tc.other+"\n"+rotated, http.StatusOK)
+			}
+			u, err := m.Update(ctx, s.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := m.Active()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.ConfigID != u.Configs[1].ID {
+				t.Fatal("did not follow the selected endpoint after credential rotation")
+			}
+		})
+	}
+}
