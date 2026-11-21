@@ -504,6 +504,23 @@ func TestActiveReplacementWebSocketDefaults(t *testing.T) {
 			old := makeConfig("old", tc.oldPath, tc.oldHost, tc.sni)
 			want := makeConfig("rotated", tc.newPath, tc.newHost, tc.sni)
 			other := makeConfig("other", "/ws", "", "b.example.com")
+			if tc.name == "TLS host fallback" {
+				t.Run("uppercase TLS", func(t *testing.T) {
+					upper := func(c Config) Config {
+						c.Outbound = bytes.ReplaceAll(c.Outbound, []byte(`"security":"tls"`), []byte(`"security":"TLS"`))
+						return c
+					}
+					wrong := makeConfig("wrong", "/ws", "server.example.com", tc.sni)
+					got, ok := activeReplacement(upper(old).Active("sub"), []Config{upper(wrong), upper(want)})
+					if !ok || got.ID != want.ID {
+						t.Fatalf("uppercase TLS replacement = %q, %v", got.ID, ok)
+					}
+					got, ok = activeReplacement(upper(old).Active("sub"), []Config{wrong, want})
+					if !ok || got.ID != want.ID {
+						t.Fatalf("mixed-case TLS replacement = %q, %v", got.ID, ok)
+					}
+				})
+			}
 			got, ok := activeReplacement(old.Active("sub"), []Config{other, want})
 			if !ok || got.ID != want.ID {
 				t.Fatalf("replacement = %q, %v; want rotated", got.ID, ok)

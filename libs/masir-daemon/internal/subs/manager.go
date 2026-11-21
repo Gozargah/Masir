@@ -537,6 +537,7 @@ func activeReplacement(a Active, configs []Config) (Config, bool) {
 		}
 	}
 	normalize := func(e *endpoint) {
+		e.StreamSettings.Security = strings.ToLower(e.StreamSettings.Security)
 		switch e.StreamSettings.Network {
 		case "", "raw", "tcp":
 			e.StreamSettings.Network = "tcp"
