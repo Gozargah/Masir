@@ -383,3 +383,53 @@ func TestBackgroundRefreshIsParallelWithATimeoutEach(t *testing.T) {
 		}
 	}
 }
+
+func TestFollowActiveDuplicateNames(t *testing.T) {
+	ctx := context.Background()
+	second := strings.ReplaceAll(strings.Replace(trojanWS, "Trojan%20WS", "آلمان", 1), "tr.example.com", "second.example.com")
+	third := strings.ReplaceAll(second, "second.example.com", "third.example.com")
+	p := newProvider(t, ssLink()+"\n"+second+"\n"+third)
+	m := newTestManager(t, nil)
+	s, err := m.Add(ctx, p.srv.URL, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetActive(s.Configs[2].Active(s.ID)); err != nil {
+		t.Fatal(err)
+	}
+	p.set(strings.ReplaceAll(ssLink()+"\n"+second+"\n"+third, "secret", "rotated"), http.StatusOK)
+	updated, err := m.Update(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := m.Active()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.ConfigID != updated.Configs[2].ID {
+		t.Fatal("refresh switched from the selected third server to the other server named آلمان")
+	}
+	p.set(strings.ReplaceAll(ssLink()+"\n"+third+"\n"+second, "secret", "rotated-again"), http.StatusOK)
+	updated, err = m.Update(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err = m.Active()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.ConfigID != updated.Configs[1].ID {
+		t.Fatal("reordering duplicate names changed the selected server")
+	}
+}
+
+func TestActiveReplacementAmbiguousNames(t *testing.T) {
+	old := Config{ID: "old", Name: "آلمان", Outbound: json.RawMessage(`{"protocol":"trojan","settings":{"servers":[{"address":"gone.example.com","port":443}]}}`)}
+	configs := []Config{
+		{ID: "second", Name: "آلمان", Address: "second.example.com", Port: 443},
+		{ID: "third", Name: "آلمان", Address: "third.example.com", Port: 443},
+	}
+	if _, ok := activeReplacement(old.Active("sub"), configs); ok {
+		t.Fatal("ambiguous names must keep the saved selection")
+	}
+}

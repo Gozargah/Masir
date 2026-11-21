@@ -521,8 +521,41 @@ func (m *Manager) refreshDue(ctx context.Context) {
 	debug.FreeOSMemory()
 }
 
+// activeReplacement follows rotated settings without confusing servers that share a
+// display name. Ambiguous replacements keep the saved copy running.
+func activeReplacement(a Active, configs []Config) (Config, bool) {
+	type endpoint struct {
+		Protocol       string
+		Settings       json.RawMessage
+		StreamSettings struct{ Network, Security string }
+	}
+	var old endpoint
+	if err := json.Unmarshal(a.Outbound, &old); err != nil {
+		return Config{}, false
+	}
+	address, port := serverAddress(old.Settings)
+	var named, matched []Config
+	for _, c := range configs {
+		if c.Name != a.Name {
+			continue
+		}
+		named = append(named, c)
+		var next endpoint
+		if json.Unmarshal(c.Outbound, &next) == nil && address != "" && c.Address == address && c.Port == port && next.Protocol == old.Protocol && next.StreamSettings == old.StreamSettings {
+			matched = append(matched, c)
+		}
+	}
+	if len(matched) == 1 {
+		return matched[0], true
+	}
+	if len(named) == 1 {
+		return named[0], true
+	}
+	return Config{}, false
+}
+
 // configsChanged runs after s got new configs. If the selection's ID is gone but a
-// config with its name remains, the selection moves to it; if nothing matches, the
+// unambiguous replacement remains, the selection moves to it; otherwise the
 // copy keeps running. Then OnChange lets pinned rules re-resolve.
 func (m *Manager) configsChanged(ctx context.Context, s *Subscription) {
 	m.mu.Lock()
@@ -530,12 +563,9 @@ func (m *Manager) configsChanged(ctx context.Context, s *Subscription) {
 	if err == nil && a.SubscriptionID == s.ID && a.ConfigID != "" {
 		if _, ok := s.config(a.ConfigID); !ok {
 			moved := false
-			for _, c := range s.Configs {
-				if c.Name == a.Name {
-					err = m.writeActive(c.Active(s.ID))
-					moved = err == nil
-					break
-				}
+			if c, ok := activeReplacement(a, s.Configs); ok {
+				err = m.writeActive(c.Active(s.ID))
+				moved = err == nil
 			}
 			switch {
 			case moved:
