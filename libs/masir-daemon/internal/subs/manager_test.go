@@ -487,3 +487,27 @@ func TestFollowActiveTransportIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestActiveReplacementWebSocketDefaults(t *testing.T) {
+	makeConfig := func(id, path, host, sni string) Config {
+		raw := fmt.Sprintf(`{"protocol":"trojan","settings":{"servers":[{"address":"server.example.com","port":443,"password":%q}]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"serverName":%q},"wsSettings":{"path":%q,"host":%q}}}`, id, sni, path, host)
+		return Config{ID: id, Name: "آلمان", Address: "server.example.com", Port: 443, Outbound: json.RawMessage(raw)}
+	}
+	for _, tc := range []struct{ name, oldPath, newPath, oldHost, newHost, sni string }{
+		{"TLS host fallback", "/ws", "/ws", "", "a.example.com", "a.example.com"},
+		{"destination host fallback", "/ws", "/ws", "", "server.example.com", ""},
+		{"explicit host precedence", "/ws", "/ws", "a.example.com", "a.example.com", "different.example.com"},
+		{"relative path", "/ws", "ws", "a.example.com", "a.example.com", ""},
+		{"empty path", "", "/", "a.example.com", "a.example.com", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := makeConfig("old", tc.oldPath, tc.oldHost, tc.sni)
+			want := makeConfig("rotated", tc.newPath, tc.newHost, tc.sni)
+			other := makeConfig("other", "/ws", "", "b.example.com")
+			got, ok := activeReplacement(old.Active("sub"), []Config{other, want})
+			if !ok || got.ID != want.ID {
+				t.Fatalf("replacement = %q, %v; want rotated", got.ID, ok)
+			}
+		})
+	}
+}

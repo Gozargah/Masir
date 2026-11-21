@@ -529,6 +529,7 @@ func activeReplacement(a Active, configs []Config) (Config, bool) {
 		Settings       json.RawMessage
 		StreamSettings struct {
 			Network, Security string
+			TLSSettings       struct{ ServerName string }
 			WSSettings        struct {
 				Path, Host string
 				Headers    struct{ Host string }
@@ -542,9 +543,23 @@ func activeReplacement(a Active, configs []Config) (Config, bool) {
 		case "ws", "websocket":
 			e.StreamSettings.Network = "ws"
 		}
+		serverName := e.StreamSettings.TLSSettings.ServerName
+		e.StreamSettings.TLSSettings.ServerName = ""
+		if e.StreamSettings.Network != "ws" {
+			return
+		}
 		ws := &e.StreamSettings.WSSettings
 		if ws.Host == "" {
 			ws.Host = ws.Headers.Host
+		}
+		if ws.Host == "" && e.StreamSettings.Security == "tls" {
+			ws.Host = serverName
+		}
+		if ws.Host == "" {
+			ws.Host, _ = serverAddress(e.Settings)
+		}
+		if !strings.HasPrefix(ws.Path, "/") {
+			ws.Path = "/" + ws.Path
 		}
 		ws.Headers.Host = ""
 	}
