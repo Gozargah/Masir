@@ -186,8 +186,8 @@ func (s *Server) GetSubscriptionConfigJSON(ctx context.Context, req *pb.GetSubsc
 	if len(cfg.SourceJSON) == 0 {
 		return &pb.GetSubscriptionConfigJSONResponse{}, nil
 	}
-	// Store indentation can exceed the import size; transfer compact JSON within
-	// the 10 MiB input bound, and let the GUI format its inspection copy.
+	// Remove store indentation without decoding numbers or changing source values.
+	// The inspection client allows the worst-case sixfold JSON escape expansion.
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, cfg.SourceJSON); err != nil {
 		return nil, toStatus(err)

@@ -43,17 +43,19 @@ var (
 )
 
 type Subscription struct {
-	ID                      string    `json:"id"`
-	Name                    string    `json:"name"`
-	URL                     string    `json:"url"`
-	CustomIntervalMinutes   uint32    `json:"customIntervalMinutes,omitempty"` // 0 means automatic
-	ProviderIntervalMinutes uint32    `json:"providerIntervalMinutes,omitempty"`
-	CreatedAt               time.Time `json:"createdAt"`
-	UpdatedAt               time.Time `json:"updatedAt,omitzero"` // last successful fetch
-	CheckedAt               time.Time `json:"checkedAt,omitzero"` // last attempt
-	LastError               string    `json:"lastError,omitempty"`
-	Usage                   *Usage    `json:"usage,omitempty"`
-	Configs                 []Config  `json:"configs"`
+	// Sources stores each imported document once; configs reference its hash.
+	Sources                 map[string]json.RawMessage `json:"sources,omitempty"`
+	ID                      string                     `json:"id"`
+	Name                    string                     `json:"name"`
+	URL                     string                     `json:"url"`
+	CustomIntervalMinutes   uint32                     `json:"customIntervalMinutes,omitempty"` // 0 means automatic
+	ProviderIntervalMinutes uint32                     `json:"providerIntervalMinutes,omitempty"`
+	CreatedAt               time.Time                  `json:"createdAt"`
+	UpdatedAt               time.Time                  `json:"updatedAt,omitzero"` // last successful fetch
+	CheckedAt               time.Time                  `json:"checkedAt,omitzero"` // last attempt
+	LastError               string                     `json:"lastError,omitempty"`
+	Usage                   *Usage                     `json:"usage,omitempty"`
+	Configs                 []Config                   `json:"configs"`
 }
 
 type Latency struct {
@@ -706,12 +708,32 @@ func (m *Manager) load(id string) (*Subscription, error) {
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return nil, fmt.Errorf("subscription %s: %w", id, err)
 	}
+	for i := range s.Configs {
+		if c := &s.Configs[i]; len(c.SourceJSON) == 0 && c.SourceRef != "" {
+			c.SourceJSON = s.Sources[c.SourceRef]
+		}
+	}
 	return &s, nil
 }
 
 // save expects m.mu to be held.
 func (m *Manager) save(s *Subscription) error {
-	raw, err := json.MarshalIndent(s, "", "  ")
+	// Project into references without mutating the caller or duplicating shared bytes.
+	persisted := *s
+	persisted.Configs = slices.Clone(s.Configs)
+	persisted.Sources = make(map[string]json.RawMessage)
+	for i := range persisted.Configs {
+		c := &persisted.Configs[i]
+		if len(c.SourceJSON) == 0 {
+			continue
+		}
+		if c.SourceRef == "" {
+			c.SourceRef = sourceID(c.SourceJSON)
+		}
+		persisted.Sources[c.SourceRef] = c.SourceJSON
+		c.SourceJSON = nil
+	}
+	raw, err := json.MarshalIndent(&persisted, "", "  ")
 	if err != nil {
 		return err
 	}

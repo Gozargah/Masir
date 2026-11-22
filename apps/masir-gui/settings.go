@@ -479,11 +479,12 @@ func (a *app) openServerConfig(raw string) {
 	})
 }
 
-// The importer accepts 10 MiB; inspection permits that payload plus RPC overhead.
+// The importer accepts 10 MiB. Persistence can expand HTML characters sixfold;
+// 64 MiB covers the compact escaped source plus RPC overhead without re-encoding.
 func (a *app) fetchServerConfig(key serverKey) {
 	a.async(func() {
 		res, err := callRPC(func(ctx context.Context) (*pb.GetSubscriptionConfigJSONResponse, error) {
-			return a.d.GetSubscriptionConfigJSON(ctx, &pb.GetSubscriptionConfigJSONRequest{SubscriptionId: key.sub, ConfigId: key.cfg}, grpc.MaxCallRecvMsgSize(16<<20))
+			return a.d.GetSubscriptionConfigJSON(ctx, &pb.GetSubscriptionConfigJSONRequest{SubscriptionId: key.sub, ConfigId: key.cfg}, grpc.MaxCallRecvMsgSize(64<<20))
 		})
 		a.post(func() {
 			if err != nil {

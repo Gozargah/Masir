@@ -528,3 +528,58 @@ func TestActiveReplacementWebSocketDefaults(t *testing.T) {
 		})
 	}
 }
+
+func TestSharedSourceIsStoredOnce(t *testing.T) {
+	var outbounds []json.RawMessage
+	for i := range 1000 {
+		outbounds = append(outbounds, json.RawMessage(fmt.Sprintf(`{"tag":"node-%d","protocol":"vless","settings":{"address":"node-%d.example.com","port":443,"id":"00000000-0000-4000-8000-000000000001","encryption":"none"},"streamSettings":{"security":"tls"}}`, i, i)))
+	}
+	source, err := json.Marshal(map[string]any{"notes": strings.Repeat("x", 1<<20), "outbounds": outbounds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configs, err := Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1000 {
+		t.Fatalf("configs: %d", len(configs))
+	}
+	m, err := NewManager(filepath.Join(t.TempDir(), "subscriptions"), filepath.Join(t.TempDir(), "active.json"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := &Subscription{ID: "0123456789abcdef", Configs: configs}
+	if err := m.save(sub); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(m.path(sub.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > 3*len(source) {
+		t.Fatalf("duplicated source storage: input=%d saved=%d", len(source), len(data))
+	}
+	loaded, err := m.Get(sub.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Sources) != 1 {
+		t.Fatalf("stored sources: %d", len(loaded.Sources))
+	}
+	for i, cfg := range loaded.Configs {
+		if cfg.ID != configs[i].ID || cfg.SourceRef == "" || !bytes.Equal(cfg.SourceJSON, loaded.Sources[cfg.SourceRef]) {
+			t.Fatalf("source or runtime ID lost for config %d", i)
+		}
+		if &cfg.SourceJSON[0] != &loaded.Configs[0].SourceJSON[0] {
+			t.Fatal("loaded configs do not share source bytes")
+		}
+	}
+	if err := m.save(loaded); err != nil {
+		t.Fatal(err)
+	}
+	again, err := m.Get(sub.ID)
+	if err != nil || len(again.Sources) != 1 {
+		t.Fatalf("resave lost shared source: %v", err)
+	}
+}

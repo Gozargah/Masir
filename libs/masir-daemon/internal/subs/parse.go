@@ -16,6 +16,8 @@ import (
 
 // Config is one server a subscription provides.
 type Config struct {
+	// SourceRef identifies the shared document in Subscription.Sources on disk.
+	SourceRef string `json:"sourceRef,omitempty"`
 	// SourceJSON retains the complete imported entry before runtime normalization.
 	// Share links retain their converted outbound JSON. Older saved configs omit it.
 	SourceJSON json.RawMessage  `json:"sourceJson,omitempty"`
@@ -88,10 +90,11 @@ func Parse(body []byte) ([]Config, error) {
 }
 
 type namedOutbound struct {
-	source  json.RawMessage
-	name    string
-	raw     map[string]json.RawMessage
-	profile *OutboundProfile
+	source    json.RawMessage
+	sourceRef string
+	name      string
+	raw       map[string]json.RawMessage
+	profile   *OutboundProfile
 }
 
 func parseJSONArray(text string) ([]namedOutbound, error) {
@@ -137,6 +140,10 @@ func parseJSONObject(raw json.RawMessage) ([]namedOutbound, error) {
 		if err := json.Unmarshal(outsRaw, &entries); err != nil {
 			return nil, err
 		}
+		sharedRef := ""
+		if len(obj) > 1 {
+			sharedRef = sourceID(raw)
+		}
 		var list []namedOutbound
 		for i, o := range outs {
 			if !utilityProtocols[str(o["protocol"])] {
@@ -144,7 +151,7 @@ func parseJSONObject(raw json.RawMessage) ([]namedOutbound, error) {
 				if len(obj) > 1 {
 					source = raw
 				}
-				list = append(list, namedOutbound{raw: o, source: source})
+				list = append(list, namedOutbound{raw: o, source: source, sourceRef: sharedRef})
 			}
 		}
 		return list, nil
@@ -248,6 +255,7 @@ func newConfig(n namedOutbound) (Config, error) {
 
 	c := Config{
 		SourceJSON: source,
+		SourceRef:  n.sourceRef,
 		ID:         configID(outbound),
 		Name:       strings.TrimSpace(name),
 		Protocol:   str(o["protocol"]),
@@ -357,3 +365,5 @@ func anyInt(v any) int {
 	}
 	return 0
 }
+
+func sourceID(raw json.RawMessage) string { return fmt.Sprintf("%x", sha256.Sum256(raw)) }
