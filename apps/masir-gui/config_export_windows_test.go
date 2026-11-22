@@ -3,8 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -48,7 +48,17 @@ func TestConfigExportHasOwnerOnlyACLInSharedDirectory(t *testing.T) {
 		t.Fatalf("wrong export owner: %v", err)
 	}
 	got, _, err := sd.DACL()
-	if err != nil || got == nil || got.AceCount != 1 || !strings.Contains(sd.String(), "(A;;FA;;;"+user.User.Sid.String()+")") {
+	if err != nil || got == nil || got.AceCount != 1 {
 		t.Fatalf("export is not owner-only: %s, %v", sd.String(), err)
+	}
+	var ace *windows.ACCESS_ALLOWED_ACE
+	if err := windows.GetAce(got, 0, &ace); err != nil {
+		t.Fatal(err)
+	}
+	// Compare the binary SID: SDDL may abbreviate built-in accounts as LA, etc.
+	aceSID := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+	const fileAllAccess = 0x1f01ff
+	if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Mask != fileAllAccess || !aceSID.Equals(user.User.Sid) {
+		t.Fatalf("unexpected export grant: %s", sd.String())
 	}
 }
