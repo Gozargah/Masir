@@ -383,3 +383,148 @@ func TestBackgroundRefreshIsParallelWithATimeoutEach(t *testing.T) {
 		}
 	}
 }
+
+func TestFollowActiveDuplicateNames(t *testing.T) {
+	ctx := context.Background()
+	second := strings.ReplaceAll(strings.Replace(trojanWS, "Trojan%20WS", "آلمان", 1), "tr.example.com", "second.example.com")
+	third := strings.ReplaceAll(second, "second.example.com", "third.example.com")
+	p := newProvider(t, ssLink()+"\n"+second+"\n"+third)
+	m := newTestManager(t, nil)
+	s, err := m.Add(ctx, p.srv.URL, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetActive(s.Configs[2].Active(s.ID)); err != nil {
+		t.Fatal(err)
+	}
+	p.set(strings.ReplaceAll(ssLink()+"\n"+second+"\n"+third, "secret", "rotated"), http.StatusOK)
+	updated, err := m.Update(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := m.Active()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.ConfigID != updated.Configs[2].ID {
+		t.Fatal("refresh switched from the selected third server to the other server named آلمان")
+	}
+	p.set(strings.ReplaceAll(ssLink()+"\n"+third+"\n"+second, "secret", "rotated-again"), http.StatusOK)
+	updated, err = m.Update(ctx, s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err = m.Active()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.ConfigID != updated.Configs[1].ID {
+		t.Fatal("reordering duplicate names changed the selected server")
+	}
+}
+
+func TestActiveReplacementAmbiguousNames(t *testing.T) {
+	old := Config{ID: "old", Name: "آلمان", Outbound: json.RawMessage(`{"protocol":"trojan","settings":{"servers":[{"address":"gone.example.com","port":443}]}}`)}
+	configs := []Config{
+		{ID: "second", Name: "آلمان", Address: "second.example.com", Port: 443},
+		{ID: "third", Name: "آلمان", Address: "third.example.com", Port: 443},
+	}
+	if _, ok := activeReplacement(old.Active("sub"), configs); ok {
+		t.Fatal("ambiguous names must keep the saved selection")
+	}
+}
+
+func TestFollowActiveTransportIdentity(t *testing.T) {
+	for _, tc := range []struct{ name, selected, other, updated string }{
+		{"ws path", strings.Replace(trojanWS, "%2Fws", "%2Fchosen", 1), trojanWS, ""},
+		{"ws host", strings.Replace(trojanWS, "path=%2Fws", "path=%2Fws&host=chosen.example.com", 1), strings.Replace(trojanWS, "path=%2Fws", "path=%2Fws&host=other.example.com", 1), ""},
+		{"tcp raw alias", strings.Replace(vlessReality, "DE%20Reality", "same", 1), strings.ReplaceAll(strings.Replace(vlessReality, "DE%20Reality", "same", 1), "de.example.com", "other.example.com"), "raw"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			p := newProvider(t, tc.other+"\n"+tc.selected)
+			m := newTestManager(t, nil)
+			s, err := m.Add(ctx, p.srv.URL, "", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.SetActive(s.Configs[1].Active(s.ID)); err != nil {
+				t.Fatal(err)
+			}
+			rotated := strings.ReplaceAll(strings.ReplaceAll(tc.selected, "secret", "rotated"), "b831381d", "a831381d")
+			if tc.updated != "" {
+				var docs []map[string]json.RawMessage
+				for _, c := range s.Configs {
+					var doc map[string]json.RawMessage
+					if err := json.Unmarshal(c.Outbound, &doc); err != nil {
+						t.Fatal(err)
+					}
+					doc["tag"], _ = json.Marshal(c.Name)
+					docs = append(docs, doc)
+				}
+				raw, err := json.Marshal(docs)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body := strings.ReplaceAll(string(raw), "b831381d", "a831381d")
+				body = strings.ReplaceAll(body, `"network":"tcp"`, `"network":"raw"`)
+				p.set(body, http.StatusOK)
+			}
+			if tc.updated == "" {
+				p.set(tc.other+"\n"+rotated, http.StatusOK)
+			}
+			u, err := m.Update(ctx, s.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := m.Active()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.ConfigID != u.Configs[1].ID {
+				t.Fatal("did not follow the selected endpoint after credential rotation")
+			}
+		})
+	}
+}
+
+func TestActiveReplacementWebSocketDefaults(t *testing.T) {
+	makeConfig := func(id, path, host, sni string) Config {
+		raw := fmt.Sprintf(`{"protocol":"trojan","settings":{"servers":[{"address":"server.example.com","port":443,"password":%q}]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"serverName":%q},"wsSettings":{"path":%q,"host":%q}}}`, id, sni, path, host)
+		return Config{ID: id, Name: "آلمان", Address: "server.example.com", Port: 443, Outbound: json.RawMessage(raw)}
+	}
+	for _, tc := range []struct{ name, oldPath, newPath, oldHost, newHost, sni string }{
+		{"TLS host fallback", "/ws", "/ws", "", "a.example.com", "a.example.com"},
+		{"destination host fallback", "/ws", "/ws", "", "server.example.com", ""},
+		{"explicit host precedence", "/ws", "/ws", "a.example.com", "a.example.com", "different.example.com"},
+		{"relative path", "/ws", "ws", "a.example.com", "a.example.com", ""},
+		{"empty path", "", "/", "a.example.com", "a.example.com", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := makeConfig("old", tc.oldPath, tc.oldHost, tc.sni)
+			want := makeConfig("rotated", tc.newPath, tc.newHost, tc.sni)
+			other := makeConfig("other", "/ws", "", "b.example.com")
+			if tc.name == "TLS host fallback" {
+				t.Run("uppercase TLS", func(t *testing.T) {
+					upper := func(c Config) Config {
+						c.Outbound = bytes.ReplaceAll(c.Outbound, []byte(`"security":"tls"`), []byte(`"security":"TLS"`))
+						return c
+					}
+					wrong := makeConfig("wrong", "/ws", "server.example.com", tc.sni)
+					got, ok := activeReplacement(upper(old).Active("sub"), []Config{upper(wrong), upper(want)})
+					if !ok || got.ID != want.ID {
+						t.Fatalf("uppercase TLS replacement = %q, %v", got.ID, ok)
+					}
+					got, ok = activeReplacement(upper(old).Active("sub"), []Config{wrong, want})
+					if !ok || got.ID != want.ID {
+						t.Fatalf("mixed-case TLS replacement = %q, %v", got.ID, ok)
+					}
+				})
+			}
+			got, ok := activeReplacement(old.Active("sub"), []Config{other, want})
+			if !ok || got.ID != want.ID {
+				t.Fatalf("replacement = %q, %v; want rotated", got.ID, ok)
+			}
+		})
+	}
+}
