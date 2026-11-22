@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/Gozargah/Masir/libs/masir-core/geopack"
+	"github.com/Gozargah/Masir/libs/masir-core/service"
 
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
 )
@@ -131,6 +132,10 @@ func (m Masir) Run(ctx context.Context, r *Reporter) error {
 	return m.Install(ctx, r, staged)
 }
 
+// serviceBinaryPath is the system service's copy of masir — the file whose SELinux
+// label decides the domain the daemon starts in. Tests point it at a scratch file.
+var serviceBinaryPath = service.BinaryPath
+
 // Install applies already verified, privately staged release components. Callers must
 // authenticate their source before entering this method.
 func (m Masir) Install(ctx context.Context, r *Reporter, staged string) error {
@@ -236,9 +241,29 @@ func (m Masir) Install(ctx context.Context, r *Reporter, staged string) error {
 		}
 		return fmt.Errorf("install %s: %w", m.Binary, err)
 	}
+	// replaceFile renames a fresh copy into place: a new inode, born with the
+	// directory's default label. On SELinux distros that label starts the daemon in
+	// a domain with no network. This daemon is still running its old image in its
+	// old domain, so it labels the new file here, before anything restarts on it;
+	// failing loudly beats shipping a daemon that cannot connect. The CLI's sync
+	// pass and `masir daemon label` are the repairs if this path is ever skipped.
+	if m.Binary == serviceBinaryPath() {
+		if err := service.EnsureBinaryLabel(m.Binary); err != nil {
+			if rollbackGeo != nil {
+				err = errors.Join(err, rollbackGeo())
+			}
+			return fmt.Errorf("label %s: %w", m.Binary, err)
+		}
+	}
 	if m.ServiceBinary != "" && m.ServiceBinary != m.Binary {
 		// Best effort: the CLI checks afterwards and copies it with sudo if this failed.
-		_ = replaceFile(filepath.Join(staged, exe("masir")), m.ServiceBinary)
+		if err := replaceFile(filepath.Join(staged, exe("masir")), m.ServiceBinary); err == nil {
+			// ServiceBinary comes from service.BinaryPath(), so this replace just
+			// produced the service's new inode: label it the same way as above.
+			if err := service.EnsureBinaryLabel(m.ServiceBinary); err != nil {
+				return fmt.Errorf("label %s: %w", m.ServiceBinary, err)
+			}
+		}
 	}
 	if m.Privileged && m.ClientBinary != "" && m.ClientBinary != m.Binary && m.ClientBinary != m.ServiceBinary {
 		// The daemon already runs with the rights the CLI's copy needs. Still best
