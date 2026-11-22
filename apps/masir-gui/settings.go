@@ -456,7 +456,7 @@ func (a *app) openServerConfig(raw string) {
 			return
 		}
 		pretty.WriteByte('\n')
-		file, err := os.CreateTemp("", "masir-server-*.json")
+		file, err := createConfigExportTemp("")
 		if err != nil {
 			a.post(func() { a.fail("Couldn't write the config: ", err) })
 			return
