@@ -13,7 +13,11 @@ import (
 
 func TestRootControlledRejectsMutableLink(t *testing.T) {
 	// A trusted target must not hide the caller's control over the link.
-	link := filepath.Join(t.TempDir(), "masir")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "masir")
 	if err := os.Symlink("/bin/sh", link); err != nil {
 		t.Fatal(err)
 	}
