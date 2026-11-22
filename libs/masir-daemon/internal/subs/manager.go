@@ -521,8 +521,81 @@ func (m *Manager) refreshDue(ctx context.Context) {
 	debug.FreeOSMemory()
 }
 
+// activeReplacement follows rotated settings without confusing servers that share a
+// display name. Ambiguous replacements keep the saved copy running.
+func activeReplacement(a Active, configs []Config) (Config, bool) {
+	type endpoint struct {
+		Protocol       string
+		Settings       json.RawMessage
+		StreamSettings struct {
+			Network, Security string
+			TLSSettings       struct{ ServerName string }
+			WSSettings        struct {
+				Path, Host string
+				Headers    struct{ Host string }
+			}
+		}
+	}
+	normalize := func(e *endpoint) {
+		e.StreamSettings.Security = strings.ToLower(e.StreamSettings.Security)
+		switch e.StreamSettings.Network {
+		case "", "raw", "tcp":
+			e.StreamSettings.Network = "tcp"
+		case "ws", "websocket":
+			e.StreamSettings.Network = "ws"
+		}
+		serverName := e.StreamSettings.TLSSettings.ServerName
+		e.StreamSettings.TLSSettings.ServerName = ""
+		if e.StreamSettings.Network != "ws" {
+			return
+		}
+		ws := &e.StreamSettings.WSSettings
+		if ws.Host == "" {
+			ws.Host = ws.Headers.Host
+		}
+		if ws.Host == "" && e.StreamSettings.Security == "tls" {
+			ws.Host = serverName
+		}
+		if ws.Host == "" {
+			ws.Host, _ = serverAddress(e.Settings)
+		}
+		if !strings.HasPrefix(ws.Path, "/") {
+			ws.Path = "/" + ws.Path
+		}
+		ws.Headers.Host = ""
+	}
+	var old endpoint
+	if err := json.Unmarshal(a.Outbound, &old); err != nil {
+		return Config{}, false
+	}
+	normalize(&old)
+	address, port := serverAddress(old.Settings)
+	var named, matched []Config
+	for _, c := range configs {
+		if c.Name != a.Name {
+			continue
+		}
+		named = append(named, c)
+		var next endpoint
+		if json.Unmarshal(c.Outbound, &next) != nil {
+			continue
+		}
+		normalize(&next)
+		if address != "" && c.Address == address && c.Port == port && next.Protocol == old.Protocol && next.StreamSettings == old.StreamSettings {
+			matched = append(matched, c)
+		}
+	}
+	if len(matched) == 1 {
+		return matched[0], true
+	}
+	if len(named) == 1 {
+		return named[0], true
+	}
+	return Config{}, false
+}
+
 // configsChanged runs after s got new configs. If the selection's ID is gone but a
-// config with its name remains, the selection moves to it; if nothing matches, the
+// unambiguous replacement remains, the selection moves to it; otherwise the
 // copy keeps running. Then OnChange lets pinned rules re-resolve.
 func (m *Manager) configsChanged(ctx context.Context, s *Subscription) {
 	m.mu.Lock()
@@ -530,12 +603,9 @@ func (m *Manager) configsChanged(ctx context.Context, s *Subscription) {
 	if err == nil && a.SubscriptionID == s.ID && a.ConfigID != "" {
 		if _, ok := s.config(a.ConfigID); !ok {
 			moved := false
-			for _, c := range s.Configs {
-				if c.Name == a.Name {
-					err = m.writeActive(c.Active(s.ID))
-					moved = err == nil
-					break
-				}
+			if c, ok := activeReplacement(a, s.Configs); ok {
+				err = m.writeActive(c.Active(s.ID))
+				moved = err == nil
 			}
 			switch {
 			case moved:
