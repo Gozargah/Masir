@@ -15,6 +15,7 @@ import (
 
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
 	"github.com/egoist/mygo"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -475,5 +476,25 @@ func (a *app) openServerConfig(raw string) {
 			os.Remove(path)
 			a.post(func() { a.fail("Couldn't open the config: ", err) })
 		}
+	})
+}
+
+// The importer accepts 10 MiB; inspection permits that payload plus RPC overhead.
+func (a *app) fetchServerConfig(key serverKey) {
+	a.async(func() {
+		res, err := callRPC(func(ctx context.Context) (*pb.GetSubscriptionConfigJSONResponse, error) {
+			return a.d.GetSubscriptionConfigJSON(ctx, &pb.GetSubscriptionConfigJSONRequest{SubscriptionId: key.sub, ConfigId: key.cfg}, grpc.MaxCallRecvMsgSize(16<<20))
+		})
+		a.post(func() {
+			if err != nil {
+				a.fail("Couldn't read the config: ", err)
+				return
+			}
+			if res.GetJson() == "" {
+				a.notifyWarning("Update the daemon and refresh this subscription to view its complete JSON config")
+				return
+			}
+			a.openServerConfig(res.GetJson())
+		})
 	})
 }

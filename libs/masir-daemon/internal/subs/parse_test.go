@@ -270,3 +270,22 @@ func TestProfileRejectsInvalidRulePredicate(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePreservesTopLevelFieldsWithoutRouting(t *testing.T) {
+	const outbound = `{"tag":"node","protocol":"trojan","settings":{"servers":[{"address":"example.com","port":443,"password":"test"}]},"streamSettings":{"security":"tls"}}`
+	bare, err := Parse([]byte(`{"outbounds":[` + outbound + `]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := `{"dns":{"servers":["1.1.1.1"]},"observatory":{"subjectSelector":["node"]},"outbounds":[` + outbound + `]}`
+	configs, err := Parse([]byte(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 || string(configs[0].SourceJSON) != input {
+		t.Fatal("lost top-level provider fields")
+	}
+	if configs[0].ID != bare[0].ID || string(configs[0].Outbound) != string(bare[0].Outbound) {
+		t.Fatal("source preservation changed runtime selection")
+	}
+}

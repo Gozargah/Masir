@@ -14,7 +14,7 @@ func TestServerContextMenuOpensOnlyItsJSON(t *testing.T) {
 		t.Run(page, func(t *testing.T) {
 			f := multiSubDaemon()
 			raw := `{"remarks":"Pool","outbounds":[{"tag":"node","protocol":"vless","settings":{"address":"example.com"}}],"routing":{"balancers":[{"tag":"pool","selector":["node"]}],"rules":[{"balancerTag":"pool"}]},"observatory":{"subjectSelector":["node"]}}`
-			f.subs[0].Configs[0].ConfigJson = raw
+			f.sourceConfigJSON = raw
 			f.subs[0].Configs[0].OutboundJson = `{"protocol":"freedom"}`
 			a := newTestApp(f)
 			switch page {
@@ -51,6 +51,9 @@ func TestServerContextMenuOpensOnlyItsJSON(t *testing.T) {
 				t.Fatal(err)
 			}
 			tt.Advance(time.Second)
+			if !f.called("config json s1/c1") {
+				t.Fatal("did not fetch the selected config")
+			}
 			if opened == "" {
 				t.Fatal("JSON was not opened")
 			}

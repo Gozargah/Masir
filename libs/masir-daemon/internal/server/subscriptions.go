@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/store"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/subs"
@@ -161,7 +163,6 @@ func (s *Server) toPBConfig(subID string, c *subs.Config) *pb.SubscriptionConfig
 		Network:          c.Network,
 		Security:         c.Security,
 		OutboundJson:     string(c.Outbound),
-		ConfigJson:       string(c.SourceJSON),
 		Latency:          toPBLatency(c.Latency),
 		UploadBytes:      up,
 		DownloadBytes:    down,
@@ -175,4 +176,21 @@ func toPBLatency(l *subs.Latency) *pb.LatencyResult {
 		return nil
 	}
 	return &pb.LatencyResult{LatencyMs: l.Ms, Error: l.Error, TestedAtMs: unixMilli(l.TestedAt)}
+}
+
+func (s *Server) GetSubscriptionConfigJSON(ctx context.Context, req *pb.GetSubscriptionConfigJSONRequest) (*pb.GetSubscriptionConfigJSONResponse, error) {
+	cfg, err := s.subs.Config(req.SubscriptionId, req.ConfigId)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if len(cfg.SourceJSON) == 0 {
+		return &pb.GetSubscriptionConfigJSONResponse{}, nil
+	}
+	// Store indentation can exceed the import size; transfer compact JSON within
+	// the 10 MiB input bound, and let the GUI format its inspection copy.
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, cfg.SourceJSON); err != nil {
+		return nil, toStatus(err)
+	}
+	return &pb.GetSubscriptionConfigJSONResponse{Json: compact.String()}, nil
 }

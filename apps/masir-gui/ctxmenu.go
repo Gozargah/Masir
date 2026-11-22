@@ -61,11 +61,7 @@ func (a *app) contextMenu(c *ui.Context, p palette) {
 			if cfg := a.menu.config; cfg != nil {
 				if a.menuItem(c, p, "open-json", "Open JSON", iconTerminal, false) {
 					a.menu.open = false
-					if cfg.GetConfigJson() == "" {
-						a.notifyWarning("Update the daemon and refresh this subscription to view its complete JSON config")
-					} else {
-						a.openServerConfig(cfg.GetConfigJson())
-					}
+					a.fetchServerConfig(a.menu.configKey)
 				}
 				return
 			}

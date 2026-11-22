@@ -140,7 +140,11 @@ func parseJSONObject(raw json.RawMessage) ([]namedOutbound, error) {
 		var list []namedOutbound
 		for i, o := range outs {
 			if !utilityProtocols[str(o["protocol"])] {
-				list = append(list, namedOutbound{raw: o, source: entries[i]})
+				source := entries[i]
+				if len(obj) > 1 {
+					source = raw
+				}
+				list = append(list, namedOutbound{raw: o, source: source})
 			}
 		}
 		return list, nil
