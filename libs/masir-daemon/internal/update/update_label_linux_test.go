@@ -8,8 +8,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -47,9 +48,14 @@ func TestMasirUpdateLabelsTheServiceBinary(t *testing.T) {
 	os.MkdirAll(filepath.Dir(clientBin), 0o755)
 	os.WriteFile(clientBin, []byte("old client masir"), 0o755)
 
-	var restarted atomic.Bool
 	r := NewRunner(pb.UpdateTarget_UPDATE_TARGET_MASIR, t.TempDir())
-	task := Masir{Clients: clients(), Current: "0.1.0", Binary: bin, ServiceBinary: svcBin, ClientBinary: clientBin, Privileged: true, WorkDir: r.workDir, Restart: func() { restarted.Store(true) }}
+	// Install publishes RESTARTING before it calls Restart, and wait returns on
+	// that state — so the assertion waits for the callback itself, not just the
+	// published state.
+	restarted := make(chan struct{})
+	var once sync.Once
+	restart := func() { once.Do(func() { close(restarted) }) }
+	task := Masir{Clients: clients(), Current: "0.1.0", Binary: bin, ServiceBinary: svcBin, ClientBinary: clientBin, Privileged: true, WorkDir: r.workDir, Restart: restart}
 	if _, err := r.Start(task.Run); err != nil {
 		t.Fatal(err)
 	}
@@ -70,8 +76,10 @@ func TestMasirUpdateLabelsTheServiceBinary(t *testing.T) {
 	if got := labelOf(t, clientBin); strings.Contains(got, ":bin_t:") {
 		t.Errorf("CLI copy label = %q; only the service copy should be labeled", got)
 	}
-	if !restarted.Load() {
-		t.Error("the update did not restart; the label would never be exercised")
+	select {
+	case <-restarted:
+	case <-time.After(5 * time.Second):
+		t.Error("the update published RESTARTING but never ran the restart callback")
 	}
 }
 

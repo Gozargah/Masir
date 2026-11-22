@@ -8,8 +8,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
+	"time"
 
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
 )
@@ -44,12 +45,16 @@ func TestMasirUpdateLabelsTheRunningServiceBinary(t *testing.T) {
 	oldPath := serviceBinaryPath
 	t.Cleanup(func() { serviceBinaryPath = oldPath })
 
-	var restarted atomic.Bool
 	r := NewRunner(pb.UpdateTarget_UPDATE_TARGET_MASIR, t.TempDir())
+	// Install publishes RESTARTING before it calls Restart, and wait returns on
+	// that state — so the assertion waits for the callback itself.
+	restarted := make(chan struct{})
+	var once sync.Once
+	restart := func() { once.Do(func() { close(restarted) }) }
 
 	// The service shape: Binary is the service's path, ServiceBinary empty.
 	serviceBinaryPath = func() string { return svcBin }
-	task := Masir{Clients: clients(), Current: "0.1.0", Binary: svcBin, Privileged: true, WorkDir: r.workDir, Restart: func() { restarted.Store(true) }}
+	task := Masir{Clients: clients(), Current: "0.1.0", Binary: svcBin, Privileged: true, WorkDir: r.workDir, Restart: restart}
 	if _, err := r.Start(task.Run); err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +63,11 @@ func TestMasirUpdateLabelsTheRunningServiceBinary(t *testing.T) {
 	}
 	if got := labelOf(t, svcBin); !strings.Contains(got, ":bin_t:") {
 		t.Errorf("service binary label = %q, want bin_t — the next start would be confined", got)
+	}
+	select {
+	case <-restarted:
+	case <-time.After(5 * time.Second):
+		t.Error("the update published RESTARTING but never ran the restart callback")
 	}
 
 	// Not the service's path: updated, but not labeled.

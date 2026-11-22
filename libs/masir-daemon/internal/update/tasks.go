@@ -217,6 +217,14 @@ func (m Masir) Install(ctx context.Context, r *Reporter, staged string) error {
 				from, e1 := fileSHA256(filepath.Join(staged, exe("masir")))
 				to, e2 := fileSHA256(m.Binary)
 				if e1 == nil && e2 == nil && from == to {
+					// Nothing to replace — but "same bytes" is not "ready": the
+					// file an earlier update left behind may still carry the wrong
+					// SELinux label, and this success path must not skip the repair.
+					if m.Binary == serviceBinaryPath() {
+						if err := service.EnsureBinaryLabel(m.Binary); err != nil {
+							return fmt.Errorf("label %s: %w", m.Binary, err)
+						}
+					}
 					if m.Restart != nil {
 						r.State(pb.UpdateState_UPDATE_STATE_RESTARTING)
 						m.Restart()
