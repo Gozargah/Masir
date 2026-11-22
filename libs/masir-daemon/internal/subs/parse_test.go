@@ -3,6 +3,7 @@ package subs
 import (
 	"encoding/base64"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -187,6 +188,15 @@ func TestParsePreservesBalancedProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var original, preserved any
+	json.Unmarshal([]byte(input), &original)
+	if len(configs) > 0 {
+		json.Unmarshal(configs[0].SourceJSON, &preserved)
+	}
+	if !reflect.DeepEqual(original, preserved) {
+		t.Fatal("complete provider JSON was not preserved")
+	}
+
 	if len(configs) != 1 {
 		t.Fatalf("got %d configurations, want one", len(configs))
 	}

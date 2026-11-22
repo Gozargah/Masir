@@ -4386,8 +4386,10 @@ type SubscriptionConfig struct {
 	// Set for a provider's default balancer. Zero members indicates a single outbound.
 	BalancerMembers  uint32 `protobuf:"varint,12,opt,name=balancer_members,json=balancerMembers,proto3" json:"balancer_members,omitempty"`
 	BalancerStrategy string `protobuf:"bytes,13,opt,name=balancer_strategy,json=balancerStrategy,proto3" json:"balancer_strategy,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Complete imported JSON entry for inspection; empty for configs imported by older daemons.
+	ConfigJson    string `protobuf:"bytes,14,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SubscriptionConfig) Reset() {
@@ -4507,6 +4509,13 @@ func (x *SubscriptionConfig) GetBalancerMembers() uint32 {
 func (x *SubscriptionConfig) GetBalancerStrategy() string {
 	if x != nil {
 		return x.BalancerStrategy
+	}
+	return ""
+}
+
+func (x *SubscriptionConfig) GetConfigJson() string {
+	if x != nil {
+		return x.ConfigJson
 	}
 	return ""
 }
@@ -6900,7 +6909,7 @@ const file_masir_daemon_v1_daemon_proto_rawDesc = "" +
 	"\vtotal_bytes\x18\x03 \x01(\x03R\n" +
 	"totalBytes\x12 \n" +
 	"\fexpire_at_ms\x18\x04 \x01(\x03R\n" +
-	"expireAtMs\"\xb9\x03\n" +
+	"expireAtMs\"\xda\x03\n" +
 	"\x12SubscriptionConfig\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
@@ -6915,7 +6924,9 @@ const file_masir_daemon_v1_daemon_proto_rawDesc = "" +
 	" \x01(\x04R\vuploadBytes\x12%\n" +
 	"\x0edownload_bytes\x18\v \x01(\x04R\rdownloadBytes\x12)\n" +
 	"\x10balancer_members\x18\f \x01(\rR\x0fbalancerMembers\x12+\n" +
-	"\x11balancer_strategy\x18\r \x01(\tR\x10balancerStrategy\"f\n" +
+	"\x11balancer_strategy\x18\r \x01(\tR\x10balancerStrategy\x12\x1f\n" +
+	"\vconfig_json\x18\x0e \x01(\tR\n" +
+	"configJson\"f\n" +
 	"\rLatencyResult\x12\x1d\n" +
 	"\n" +
 	"latency_ms\x18\x01 \x01(\x03R\tlatencyMs\x12\x14\n" +

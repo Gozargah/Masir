@@ -441,3 +441,39 @@ func (a *app) setDisconnectOnQuit(on bool) {
 	a.disconnectQuit = on
 	a.saveGUISettings()
 }
+
+// openServerConfig opens a private snapshot; edits never change the subscription.
+func (a *app) openServerConfig(raw string) {
+	a.async(func() {
+		if raw == "" {
+			a.post(func() { a.notifyWarning("There's no JSON for this config") })
+			return
+		}
+		var pretty bytes.Buffer
+		if err := json.Indent(&pretty, []byte(raw), "", "  "); err != nil {
+			a.post(func() { a.fail("Couldn't read the config: ", err) })
+			return
+		}
+		pretty.WriteByte('\n')
+		file, err := os.CreateTemp("", "masir-server-*.json")
+		if err != nil {
+			a.post(func() { a.fail("Couldn't write the config: ", err) })
+			return
+		}
+		path := file.Name()
+		_, writeErr := file.Write(pretty.Bytes())
+		closeErr := file.Close()
+		if writeErr == nil {
+			writeErr = closeErr
+		}
+		if writeErr != nil {
+			os.Remove(path)
+			a.post(func() { a.fail("Couldn't write the config: ", writeErr) })
+			return
+		}
+		if err := openFileIn(path); err != nil {
+			os.Remove(path)
+			a.post(func() { a.fail("Couldn't open the config: ", err) })
+		}
+	})
+}

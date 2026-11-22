@@ -449,6 +449,8 @@ message SubscriptionConfig {
   // Set for a provider's default balancer. Zero members indicates a single outbound.
   uint32 balancer_members = 12;
   string balancer_strategy = 13;
+  // Complete imported JSON entry for inspection; empty for configs imported by older daemons.
+  string config_json = 14;
 }
 
 message LatencyResult {

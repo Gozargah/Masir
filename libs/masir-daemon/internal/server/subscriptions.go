@@ -161,6 +161,7 @@ func (s *Server) toPBConfig(subID string, c *subs.Config) *pb.SubscriptionConfig
 		Network:          c.Network,
 		Security:         c.Security,
 		OutboundJson:     string(c.Outbound),
+		ConfigJson:       string(c.SourceJSON),
 		Latency:          toPBLatency(c.Latency),
 		UploadBytes:      up,
 		DownloadBytes:    down,
