@@ -13,7 +13,17 @@ import (
 
 func TestRootControlledRejectsMutableLink(t *testing.T) {
 	// A trusted target must not hide the caller's control over the link.
-	dir := t.TempDir()
+	if os.Geteuid() != 0 {
+		t.Skip("requires root-owned fixtures outside writable temp ancestry")
+	}
+	dir, err := os.MkdirTemp("/var", "masir-mutable-link-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	if !rootControlled(dir) {
+		t.Fatal("fixture directory must be root-controlled before changing its mode")
+	}
 	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatal(err)
 	}
