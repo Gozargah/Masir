@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -663,7 +665,7 @@ func TestSharedDesktopUpdateUsesOneDownloadAndImportsBeforeCommit(t *testing.T) 
 	}
 }
 
-func TestSharedDesktopUpdateRequiresCapabilityAndMatchingRelease(t *testing.T) {
+func TestSharedDesktopUpdateRequiresCapabilityOrServiceAndMatchingRelease(t *testing.T) {
 	f := ukServers()
 	f.status.Privileged = true
 	a := newTestApp(f)
@@ -795,5 +797,148 @@ func TestPreparedDesktopUpdateWaitsForInstall(t *testing.T) {
 				t.Error("the installer did not commit")
 			}
 		}
+	}
+}
+
+func TestUpdateWaitsForDesktopFeedBeforeStartingDaemon(t *testing.T) {
+	f := ukServers()
+	a := newTestApp(f)
+	a.updates.state.rel = releaseInfo("0.1.0", "0.2.0")
+	a.updates.state.phase = updateAvailable
+	oldEnabled, oldCheck := appUpdatesEnabled, checkAppUpdate
+	defer func() { appUpdatesEnabled, checkAppUpdate = oldEnabled, oldCheck }()
+	appUpdatesEnabled = func() bool { return true }
+	checked := false
+	checkAppUpdate = func(context.Context) (*mygo.Update, error) {
+		checked = true
+		return nil, errors.New("feed unavailable")
+	}
+	a.startUpdate()
+	if f.called("start update") {
+		t.Fatal("installed daemon before the desktop feed answered")
+	}
+	if !checked || a.updates.state.phase != updateFailed {
+		t.Fatalf("checked=%v phase=%v; failed feed must keep the update retryable", checked, a.updates.state.phase)
+	}
+}
+
+func TestOlderServiceCanPrepareDesktopComponentsBeforeInstalling(t *testing.T) {
+	f := ukServers()
+	f.status.Privileged = true
+	f.status.ServiceInstalled = true
+	a := newTestApp(f)
+	a.updates.state.rel = releaseInfo("0.1.0", "0.2.0")
+	a.updates.state.app = &mygo.Update{Version: "0.2.0"}
+	old := preparedUpdatesEnabled
+	defer func() { preparedUpdatesEnabled = old }()
+	preparedUpdatesEnabled = func() bool { return true }
+	if !a.canShareDesktopUpdate() {
+		t.Fatal("older service uses immediate daemon install instead of the prepared desktop payload")
+	}
+}
+
+func TestUpdateClickJoinsPendingDesktopCheck(t *testing.T) {
+	a := newTestApp(ukServers())
+	a.updates.state.rel = releaseInfo("0.1.0", "0.2.0")
+	a.updates.state.phase = updateAvailable
+	oldEnabled, oldCheck := appUpdatesEnabled, checkAppUpdate
+	defer func() { appUpdatesEnabled, checkAppUpdate = oldEnabled, oldCheck }()
+	appUpdatesEnabled = func() bool { return true }
+	queued := []func(){}
+	a.async = func(fn func()) { queued = append(queued, fn) }
+	checks := 0
+	checkAppUpdate = func(context.Context) (*mygo.Update, error) {
+		checks++
+		return nil, errors.New("feed unavailable")
+	}
+	a.checkAppRelease()
+	a.startUpdate()
+	if len(queued) != 1 || !a.updates.state.wantUpdate || a.updates.state.phase != updateStarting {
+		t.Fatalf("queued=%d state=%+v", len(queued), a.updates.state)
+	}
+	queued[0]()
+	if checks != 1 || a.updates.state.phase != updateFailed || a.updates.state.wantUpdate {
+		t.Fatalf("checks=%d phase=%v pending=%v", checks, a.updates.state.phase, a.updates.state.wantUpdate)
+	}
+}
+
+func TestLegacyDesktopUpdateWaitsForInstallBeforeChangingEitherCopy(t *testing.T) {
+	f := ukServers()
+	f.status.Privileged = true
+	f.status.ServiceInstalled = true
+	f.status.Version = "0.2.0"
+	a := newTestApp(f)
+	a.updates.state.rel = releaseInfo("0.1.0", "0.2.0")
+	a.updates.state.phase = updateAvailable
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "Masir.app"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	components, err := desktopComponents(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldEnabled, oldConfirm, oldInstall := preparedUpdatesEnabled, confirmPreparedUpdates, installPreparedAppUpdate
+	oldLegacy, oldRelaunch := installBundledDaemon, relaunchApp
+	oldAppEnabled, oldCheck := appUpdatesEnabled, checkAppUpdate
+	defer func() {
+		preparedUpdatesEnabled, confirmPreparedUpdates, installPreparedAppUpdate = oldEnabled, oldConfirm, oldInstall
+		installBundledDaemon, relaunchApp = oldLegacy, oldRelaunch
+		appUpdatesEnabled, checkAppUpdate = oldAppEnabled, oldCheck
+	}()
+	appUpdatesEnabled = func() bool { return true }
+	checkAppUpdate = func(context.Context) (*mygo.Update, error) {
+		return &mygo.Update{Version: "0.2.0"}, nil
+	}
+	preparedUpdatesEnabled = func() bool { return true }
+	confirmPreparedUpdates = func() bool { return true }
+	posts := make(chan func(), 8)
+	a.post = func(fn func()) { posts <- fn }
+	a.async = func(fn func()) { go fn() }
+	imported, committed, relaunched := false, false, false
+	installPreparedAppUpdate = func(ctx context.Context, _ *mygo.Update, progress func(int64, int64), prepare func(string) error) error {
+		progress(100, 100)
+		if err := prepare(dir); err != nil {
+			return err
+		}
+		if !imported {
+			t.Error("app committed before daemon and CLI import")
+		}
+		committed = true
+		return nil
+	}
+	installBundledDaemon = func(got string, authorized func()) error {
+		if got != components {
+			t.Errorf("components=%s want %s", got, components)
+		}
+		imported = true
+		authorized()
+		return nil
+	}
+	relaunchApp = func() { relaunched = true }
+	next := func() {
+		t.Helper()
+		select {
+		case fn := <-posts:
+			fn()
+		case <-time.After(5 * time.Second):
+			t.Fatal("update did not advance")
+		}
+	}
+	a.startUpdate()
+	next() // desktop feed answered after the update click
+	next() // download complete
+	next() // prepared and waiting for confirmation
+	a.applyJob(&pb.UpdateJob{State: pb.UpdateState_UPDATE_STATE_DONE})
+	a.daemonWatchEnded()
+	if a.updates.state.phase != updateReady || imported || committed || relaunched || f.called("start update") {
+		t.Fatalf("phase=%v imported=%v committed=%v relaunched=%v calls=%v", a.updates.state.phase, imported, committed, relaunched, f.calls)
+	}
+	a.confirmInstall()
+	next() // requesting helper authorization
+	next() // helper authorized
+	next() // committed and relaunched
+	if !imported || !committed || !relaunched {
+		t.Fatalf("imported=%v committed=%v relaunched=%v", imported, committed, relaunched)
 	}
 }
