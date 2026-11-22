@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -64,8 +65,12 @@ func TestServerContextMenuOpensOnlyItsJSON(t *testing.T) {
 			if compact.String() != raw || !bytes.Contains(data, []byte("\n  ")) {
 				t.Fatalf("unexpected JSON: %s", data)
 			}
-			info, _ := os.Stat(opened)
-			if info.Mode().Perm() != 0600 {
+			info, err := os.Stat(opened)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Windows reports synthesized Unix bits; access is controlled by ACLs.
+			if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 				t.Fatalf("permissions: %v", info.Mode())
 			}
 			if f.called("get config") {
