@@ -23,22 +23,11 @@ func lockOfflineService() (offlineServiceControl, error) {
 	if e := paths.EnsureRootDir(service.InstallDir(), 0, 0755); e != nil {
 		return offlineServiceControl{}, e
 	}
-	fd, e := unix.Open(filepath.Join(service.InstallDir(), ".offline-update.lock"), unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+	unlock, e := lockServiceUpdateFile()
 	if e != nil {
 		return offlineServiceControl{}, e
 	}
-	f := os.NewFile(uintptr(fd), "offline-update-lock")
-	fail := func(e error) (offlineServiceControl, error) { f.Close(); return offlineServiceControl{}, e }
-	var st unix.Stat_t
-	if e := unix.Fstat(fd, &st); e != nil {
-		return fail(e)
-	}
-	if st.Uid != 0 || st.Mode&0022 != 0 || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Nlink != 1 {
-		return fail(errors.New("unsafe offline service lock"))
-	}
-	if e := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); e != nil {
-		return fail(errors.New("another offline service update is running"))
-	}
+	fail := func(e error) (offlineServiceControl, error) { unlock(); return offlineServiceControl{}, e }
 	if service.LegacyLocation() {
 		if !rootControlled(service.DefinitionPath()) {
 			return fail(errors.New("installed launchd definition is not root-controlled"))
@@ -48,11 +37,31 @@ func lockOfflineService() (offlineServiceControl, error) {
 			return fail(e)
 		}
 		closeSnapshot := c.close
-		c.close = func() { closeSnapshot(); f.Close() }
+		c.close = func() { closeSnapshot(); unlock() }
 		return c, nil
 	}
 	if !rootControlled(service.BinaryPath()) {
 		return fail(errors.New("installed service is not root-controlled"))
 	}
-	return offlineServiceControl{close: func() { f.Close() }, version: readOfflineVersion, publish: func() error { return nil }}, nil
+	return offlineServiceControl{close: unlock, version: readOfflineVersion, publish: func() error { return nil }}, nil
+}
+
+func lockServiceUpdateFile() (func(), error) {
+	fd, e := unix.Open(filepath.Join(service.InstallDir(), ".offline-update.lock"), unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+	if e != nil {
+		return nil, e
+	}
+	f := os.NewFile(uintptr(fd), "offline-update-lock")
+	fail := func(e error) (func(), error) { f.Close(); return nil, e }
+	var st unix.Stat_t
+	if e := unix.Fstat(fd, &st); e != nil {
+		return fail(e)
+	}
+	if st.Uid != 0 || st.Mode&0022 != 0 || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Nlink != 1 {
+		return fail(errors.New("unsafe offline service lock"))
+	}
+	if e := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); e != nil {
+		return fail(errors.New("another service update is running"))
+	}
+	return func() { f.Close() }, nil
 }
