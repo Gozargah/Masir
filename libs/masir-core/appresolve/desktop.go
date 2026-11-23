@@ -3,6 +3,7 @@ package appresolve
 import (
 	"bufio"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -16,7 +17,22 @@ type Desktop struct {
 	Hidden     bool
 	OnlyShowIn []string
 	NotShowIn  []string
+	Flatpak    string // X-Flatpak app id, when Flatpak exported the entry
 	path       string
+}
+
+// Scope is the application identity this entry runs under: the Flatpak app id
+// it declares, or the snap its launcher points at. Empty when it names neither.
+func (d Desktop) Scope() Scope {
+	if id := strings.TrimSpace(d.Flatpak); id != "" {
+		return Scope{Kind: "flatpak", ID: id}
+	}
+	for _, token := range Tokenize(d.Exec) {
+		if isSnapBinPath(token) {
+			return Scope{Kind: "snap", ID: filepath.Base(token)}
+		}
+	}
+	return Scope{}
 }
 
 // Listed reports whether a menu would show this entry: an application that is
@@ -78,6 +94,8 @@ func FromDesktop(path string) (Desktop, error) {
 			d.NoDisplay = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "NoDisplay=")), "true")
 		case !d.Hidden && strings.HasPrefix(line, "Hidden="):
 			d.Hidden = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "Hidden=")), "true")
+		case d.Flatpak == "" && strings.HasPrefix(line, "X-Flatpak="):
+			d.Flatpak = strings.TrimSpace(strings.TrimPrefix(line, "X-Flatpak="))
 		}
 	}
 	return d, sc.Err()
