@@ -9,8 +9,3 @@ var selinuxEnforcing = service.SelinuxEnforcing
 // labelServiceBinary relabels the system service's copy of masir; only Linux has
 // SELinux, and everywhere else the install is already correct as written.
 var labelServiceBinary = service.EnsureBinaryLabel
-
-// serviceLabelOK reports whether the service's binary already carries the label it
-// needs, so an update whose content matches can tell "done" from "done but the
-// label an earlier update lost".
-var serviceLabelOK = service.LabelOK

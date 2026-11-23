@@ -578,16 +578,6 @@ func syncServiceBinary(job *pb.UpdateJob) error {
 	return err
 }
 
-// serviceUpToDate reports that the service's copy needs no work: the content is
-// already the new version *and* the binary carries the SELinux label a service
-// needs. Content alone used to be enough here, which let an update whose file had
-// already been rewritten through the daemon's installer — a new inode with the
-// directory's default label — skip the label repair and leave the next service
-// start confined (docs/selinux.md).
-func serviceUpToDate(same bool, dst string) bool {
-	return same && serviceLabelOK(dst)
-}
-
 // syncServiceCopy is the binary half: the service's own copy of masir.
 func syncServiceCopy(job *pb.UpdateJob) error {
 	dst := service.BinaryPath()
@@ -599,7 +589,7 @@ func syncServiceCopy(job *pb.UpdateJob) error {
 		name += ".exe"
 	}
 	src := filepath.Join(job.StagedDir, name)
-	if same, _ := sameContent(src, dst); serviceUpToDate(same, dst) {
+	if same, _ := sameContent(src, dst); same && service.BinaryReady(dst) {
 		return nil
 	}
 	if !elevated() {

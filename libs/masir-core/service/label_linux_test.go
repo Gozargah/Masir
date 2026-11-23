@@ -190,3 +190,30 @@ func writeEnforce(t *testing.T, content string) {
 	}
 	selinuxEnforce = p
 }
+
+func TestEnsureBinaryReadyRepairsExecutableMode(t *testing.T) {
+	oldEnforce := selinuxEnforce
+	t.Cleanup(func() { selinuxEnforce = oldEnforce })
+	selinuxEnforce = filepath.Join(t.TempDir(), "no-selinux")
+	bin := filepath.Join(t.TempDir(), "masir")
+	if err := os.WriteFile(bin, []byte("matching binary"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if BinaryReady(bin) {
+		t.Fatal("a nonexecutable binary was accepted")
+	}
+	if err := EnsureBinaryReady(bin); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !BinaryReady(bin) || after.Mode().Perm() != 0o755 || !os.SameFile(before, after) {
+		t.Fatalf("repair must make the same inode executable: got mode %v", after.Mode())
+	}
+}
