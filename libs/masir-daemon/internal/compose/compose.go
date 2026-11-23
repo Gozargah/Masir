@@ -314,7 +314,7 @@ func Build(in Input) (Output, error) {
 	if level == "" {
 		level = "warning"
 	}
-	log := obj{"loglevel": level}
+	log := obj{"loglevel": level, "error": ""}
 	if in.LogDir != "" {
 		// A file log lets the daemon tee Xray's own warnings into `masir logs` (see
 		// xray.SetLogSink) without also capturing temporary latency-test instances.

@@ -368,8 +368,8 @@ func TestXrayLogSettings(t *testing.T) {
 	// Without a log directory the config stays on stdout, which is what tests and
 	// callers that only inspect the config want.
 	_, c = build(t, Input{State: st})
-	if _, ok := c.Log["error"]; ok {
-		t.Fatalf("error log should be unset without LogDir: %v", c.Log)
+	if c.Log["error"] != "" {
+		t.Fatalf("error log should explicitly select stdout without LogDir: %v", c.Log)
 	}
 }
 
@@ -1010,6 +1010,37 @@ func TestNestedSubscriptionDialerReferencesAreScoped(t *testing.T) {
 	for _, name := range []string{"download-helper", "upload-helper"} {
 		if strings.Contains(string(out.Config), `"dialerProxy":"`+name+`"`) || !strings.Contains(string(out.Config), `/`+name+`"`) {
 			t.Fatalf("unscoped %s reference", name)
+		}
+	}
+}
+
+func TestProviderCannotOverrideManagedLoggingOrListeners(t *testing.T) {
+	for _, logDir := range []string{"", t.TempDir()} {
+		for _, key := range []string{"metrics", "METRICS", "api", "API"} {
+			profile := &subs.OutboundProfile{Outbounds: []json.RawMessage{json.RawMessage(`{"tag":"node","protocol":"freedom"}`)}, Routing: json.RawMessage(`{}`), Base: map[string]json.RawMessage{
+				"log": json.RawMessage(`{"error":"none"}`), key: json.RawMessage(`{"listen":"0.0.0.0:10085"}`),
+			}}
+			out, _ := build(t, Input{State: testState(t), ActiveProfile: profile, LogDir: logDir})
+			var top map[string]json.RawMessage
+			if err := json.Unmarshal(out.Config, &top); err != nil {
+				t.Fatal(err)
+			}
+			for field := range top {
+				if strings.EqualFold(field, "metrics") || strings.EqualFold(field, "api") {
+					t.Fatal("provider management listener survived composition")
+				}
+			}
+			var log map[string]string
+			if err := json.Unmarshal(top["log"], &log); err != nil {
+				t.Fatal(err)
+			}
+			expected := ""
+			if logDir != "" {
+				expected = filepath.Join(logDir, "xray-error.log")
+			}
+			if log["error"] != expected {
+				t.Fatalf("error destination = %q, want %q", log["error"], expected)
+			}
 		}
 	}
 }

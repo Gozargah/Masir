@@ -76,15 +76,25 @@ func Parse(body []byte) ([]Config, error) {
 
 	out := make([]Config, 0, len(named))
 	seen := map[string]bool{}
+	var validationErr error
 	for _, n := range named {
 		c, err := newConfig(n)
-		if err != nil || seen[c.ID] {
+		if err != nil {
+			if validationErr == nil {
+				validationErr = err
+			}
+			continue
+		}
+		if seen[c.ID] {
 			continue
 		}
 		seen[c.ID] = true
 		out = append(out, c)
 	}
 	if len(out) == 0 {
+		if validationErr != nil {
+			return nil, fmt.Errorf("%w: %v", errNoConfigs, validationErr)
+		}
 		return nil, errNoConfigs
 	}
 	return out, nil

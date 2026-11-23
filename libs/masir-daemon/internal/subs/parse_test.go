@@ -322,3 +322,25 @@ func TestParseDialerDependencies(t *testing.T) {
 		}
 	}
 }
+
+func TestParseDialerIdentityIsStable(t *testing.T) {
+	const body = `{"outbounds":[{"tag":"node","protocol":"trojan","settings":{"servers":[{"address":"example.com","port":443,"password":"test"}]},"streamSettings":{"security":"tls","sockopt":{"dialerProxy":"upload"},"xhttpSettings":{"downloadSettings":{"sockopt":{"dialerProxy":"download"}}}}},{"tag":"upload","protocol":"freedom"},{"tag":"download","protocol":"freedom"}]}`
+	var id string
+	for range 100 {
+		cs, err := Parse([]byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id != "" && cs[0].ID != id {
+			t.Fatal("unchanged dialer graph changed identity")
+		}
+		id = cs[0].ID
+	}
+}
+
+func TestParseReportsRemovedProxySettings(t *testing.T) {
+	_, err := Parse([]byte(`{"protocol":"freedom","proxySettings":{"tag":"helper"}}`))
+	if err == nil || !strings.Contains(err.Error(), "proxySettings") {
+		t.Fatalf("want removed-field reason, got %v", err)
+	}
+}

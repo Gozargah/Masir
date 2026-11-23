@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/subs"
 )
@@ -41,9 +42,14 @@ func profileBaseline(managed obj, profiles []*subs.OutboundProfile) (obj, error)
 				return nil, err
 			}
 		}
-		// Internal route tables are always built by Masir, never provider extensions.
-		delete(base, "masirProfileRoutes")
-		delete(base, "masirObservers")
+		// Masir owns all listeners, including API and debug listeners outside
+		// the ordinary inbounds list, and builds its internal routing tables.
+		for key := range base {
+			switch strings.ToLower(key) {
+			case "api", "metrics", "masirprofileroutes", "masirobservers":
+				delete(base, key)
+			}
+		}
 		candidate := overlay(base, managed)
 		// Normalize map types and numbers before comparing global settings.
 		encoded, err := json.Marshal(candidate)

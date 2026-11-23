@@ -3,6 +3,7 @@ package subs
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/xray"
@@ -81,6 +82,7 @@ func dialerTargets(o map[string]json.RawMessage) ([]string, error) {
 			return nil, err
 		}
 	}
+	slices.Sort(refs)
 	return refs, nil
 }
 
