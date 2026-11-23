@@ -425,10 +425,6 @@ func mergeInstalledRuleApps(installed, running []ruleApp, platform string) []rul
 		}
 		seen[key] = true
 		v.Running = active[key]
-		if !v.Running && platform == "linux" && strings.HasPrefix(key, "/app/") {
-			hostPath := appresolve.FlatpakHostPath(v.Icon, key)
-			v.Running = hostPath != "" && active[ruleAppIdentity(hostPath, platform)]
-		}
 		// Bare process rules match the basename of the running path.
 		if !v.Running && key != "" && !strings.ContainsAny(key, `/\`) {
 			v.Running = activeBase[key]

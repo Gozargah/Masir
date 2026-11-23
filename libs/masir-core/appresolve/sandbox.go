@@ -30,21 +30,9 @@ func flatpakExecutable(desktopPath, command string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "/app/" + filepath.ToSlash(actual), nil
-}
-
-// FlatpakHostPath maps a resolved /app executable to the deployment backing
-// the desktop export. The GUI uses it when /proc reports a host path.
-func FlatpakHostPath(desktopPath, value string) string {
-	relative, ok := strings.CutPrefix(value, "/app/")
-	if !ok || !filepath.IsLocal(relative) {
-		return ""
-	}
-	root := flatpakFiles(desktopPath)
-	if root == "" {
-		return ""
-	}
-	return filepath.Join(root, relative)
+	// Xray sees the executable through /proc, where the path can be in
+	// either the sandbox or the host deployment. Both have this basename.
+	return filepath.Base(actual), nil
 }
 
 func flatpakFiles(desktopPath string) string {

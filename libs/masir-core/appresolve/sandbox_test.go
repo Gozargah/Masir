@@ -38,8 +38,11 @@ func TestFlatpakDeploymentExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := d.Value(); err != nil || got != "/app/bin/program" {
-		t.Fatalf("resolved %q, %v", got, err)
+	for _, command := range []string{"alias", "/app/bin/alias"} {
+		d.Exec = "env FOO=bar flatpak run --command=" + command + " test.App"
+		if got, err := d.Value(); err != nil || got != "program" {
+			t.Fatalf("resolved %q to %q, %v, want program", command, got, err)
+		}
 	}
 	writeFixture(t, filepath.Join(root, "files/bin/program"), "#!/bin/sh\nexec /app/bin/heroic\n", 0o755)
 	if _, err := d.Value(); !errors.Is(err, ErrUnresolvable) {

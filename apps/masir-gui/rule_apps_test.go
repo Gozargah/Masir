@@ -508,48 +508,15 @@ func TestDesktopExecutableResolvesLaunchers(t *testing.T) {
 	}
 }
 
-// The "running" badge must light for a bare-name entry whose process path is the
-// sandbox path: installed identity is "spotify", /proc shows /app/bin/spotify.
-func TestMergeInstalledRuleAppsMatchesSandboxBasenames(t *testing.T) {
-	out := mergeInstalledRuleApps(
-		[]ruleApp{{Name: "Spotify", Path: "spotify", Icon: "/x/spotify.desktop"}},
-		[]ruleApp{{Path: "/app/bin/spotify", Name: "spotify", Running: true}},
-		"linux")
-	if len(out) != 1 || !out[0].Running {
-		t.Fatalf("merged = %+v; want the flatpak entry marked Running", out)
-	}
-	other := mergeInstalledRuleApps(
-		[]ruleApp{{Name: "Spot", Path: "spot"}},
-		[]ruleApp{{Path: "/app/bin/spotify", Name: "spotify"}},
-		"linux")
-	if len(other) != 1 || other[0].Running {
-		t.Fatalf("merged = %+v; want no Running flag for a different program", other)
-	}
-}
-
-func TestMergeInstalledRuleAppsMatchesFlatpakDeployment(t *testing.T) {
-	deployment := t.TempDir()
-	export := filepath.Join(deployment, "export", "share", "applications")
-	if err := os.MkdirAll(export, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	entry := filepath.Join(export, "example.desktop")
-	if err := os.WriteFile(entry, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	deployment, err := filepath.EvalSymlinks(deployment)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	installed := []ruleApp{{Name: "Example", Path: "/app/bin/program", Icon: entry}}
+func TestMergeInstalledRuleAppsMatchesFlatpakBasenames(t *testing.T) {
+	installed := []ruleApp{{Name: "Spotify", Path: "spotify"}}
 	for _, tc := range []struct {
 		path string
 		want bool
 	}{
-		{"/app/bin/program", true},
-		{filepath.Join(deployment, "files", "bin", "program"), true},
-		{"/some/other/files/bin/program", false},
+		{"/app/bin/spotify", true},
+		{"/var/lib/flatpak/app/com.spotify.Client/x86_64/stable/revision/files/bin/spotify", true},
+		{"/app/bin/spotify-helper", false},
 	} {
 		got := mergeInstalledRuleApps(installed, []ruleApp{{Path: tc.path}}, "linux")
 		if len(got) != 1 || got[0].Running != tc.want {
