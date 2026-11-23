@@ -14,9 +14,12 @@ func TestResolveLaunchers(t *testing.T) {
 		{"flatpak named command", "/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=spotify --file-forwarding com.spotify.Client @@u %U @@", "spotify"},
 		{"flatpak absolute command", "/usr/bin/flatpak run --command=/app/opt/stremio/stremio com.stremio.Stremio %U", "/app/opt/stremio/stremio"},
 		{"flatpak spaced flag form", "/usr/bin/flatpak run --command geary org.gnome.Geary", "geary"},
+		{"flatpak value option before command", "flatpak run --arch x86_64 --branch stable --command=spotify com.spotify.Client", "spotify"},
 		{"snap run", "snap run bitwarden --no-sandbox", "bitwarden"},
 		{"snap bin symlink form", "/snap/bin/bitwarden %U", "bitwarden"},
 		{"env assignment", "env BAMF_DESKTOP_FILE_HINT=x flatpak run --command=spotify com.spotify.Client", "spotify"},
+		{"env unset operand", "env -u DISPLAY flatpak run --command=spotify com.spotify.Client", "spotify"},
+		{"env ignore-environment", "env -i flatpak run --command=geary org.gnome.Geary", "geary"},
 	}
 	for _, c := range cases {
 		got, err := Resolve(c.exec)
@@ -40,8 +43,12 @@ func TestResolveUnresolvable(t *testing.T) {
 		"gtk-launch spotify",
 		"/usr/bin/flatpak run com.spotify.Client",
 		"/usr/bin/flatpak run --command= com.spotify.Client",
+		"flatpak run org.example.App --command=worker", // app argument, not a launcher option
+		"flatpak install org.example.App",
 		"snap run",
 		"env FOO=bar",
+		"env PATH=/opt/custom viewer", // the overridden PATH decides which viewer
+		"env -u",                      // option without its operand
 		"%U",
 	} {
 		if got, err := Resolve(exec); !errors.Is(err, ErrUnresolvable) {

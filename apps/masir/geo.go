@@ -250,7 +250,9 @@ func installedDesktopApps() []ui.PickItem {
 func desktopAppDirs() []string {
 	var dirs []string
 	add := func(dir string) {
-		if dir == "" {
+		// XDG paths must be absolute; a relative entry would make the picker
+		// scan something like ./applications.
+		if !filepath.IsAbs(dir) {
 			return
 		}
 		for _, d := range dirs {

@@ -47,8 +47,10 @@ func resolveTokens(tokens []string, depth int) (string, error) {
 		// flatpak run [opts] --command=CMD [opts] APP-ID [args]
 		// The sandboxed program is the --command target; without one the entry
 		// gives no reliable name.
-		if v := flagValue(tokens, "--command"); v != "" {
-			return v, nil
+		if len(tokens) > 1 && tokens[1] == "run" {
+			if v := flatpakCommand(tokens[2:]); v != "" {
+				return v, nil
+			}
 		}
 		return "", ErrUnresolvable
 	case "snap":
@@ -58,14 +60,7 @@ func resolveTokens(tokens []string, depth int) (string, error) {
 		}
 		return "", ErrUnresolvable
 	case "env":
-		// env [-i] [VAR=value …] CMD [args] — the program follows the assignments.
-		for i := 1; i < len(tokens); i++ {
-			if strings.HasPrefix(tokens[i], "-") || strings.Contains(tokens[i], "=") {
-				continue
-			}
-			return resolveTokens(tokens[i:], depth+1)
-		}
-		return "", ErrUnresolvable
+		return resolveEnv(tokens[1:], depth)
 	case "sh", "bash", "dash", "zsh", "gtk-launch":
 		// Command strings and desktop-id indirection hide the real program.
 		return "", ErrUnresolvable
@@ -88,18 +83,77 @@ func resolveTokens(tokens []string, depth int) (string, error) {
 	return resolved, nil
 }
 
-// flagValue returns the value of --flag=value or --flag value.
-func flagValue(tokens []string, flag string) string {
-	for i, t := range tokens {
-		if v, ok := strings.CutPrefix(t, flag+"="); ok {
-			return v
+// flatpakCommand reads run's own options up to the application reference. Only
+// an option before the app id belongs to the launcher — after it, arguments are
+// passed to the app, so `flatpak run APP --command=worker` is not a command
+// override.
+func flatpakCommand(args []string) string {
+	command := ""
+	for i := 0; i < len(args); i++ {
+		t := args[i]
+		if !strings.HasPrefix(t, "-") {
+			break // the app reference: launcher options end here
 		}
-		if t == flag && i+1 < len(tokens) {
-			return tokens[i+1]
+		if v, ok := strings.CutPrefix(t, "--command="); ok {
+			command = v
+			continue
+		}
+		if t == "--command" && i+1 < len(args) {
+			command = args[i+1]
+			i++
+			continue
+		}
+		if flatpakValueOptions[t] && i+1 < len(args) {
+			i++ // the option's value is not the app id
 		}
 	}
-	return ""
+	return command
 }
+
+var flatpakValueOptions = map[string]bool{
+	"--arch": true, "--branch": true, "--runtime": true, "--app-path": true,
+	"--usr-path": true, "--sdk-path": true, "--filesystem": true, "--env": true,
+}
+
+// resolveEnv walks env's own options and assignments down to the command it
+// runs. Options with operands consume them; an unknown option is unresolvable
+// because its operand is unknowable.
+func resolveEnv(rest []string, depth int) (string, error) {
+	pathOverride := false
+	for len(rest) > 0 {
+		t := rest[0]
+		switch {
+		case envOperandOptions[t]:
+			if len(rest) < 2 {
+				return "", ErrUnresolvable
+			}
+			rest = rest[2:]
+		case strings.HasPrefix(t, "--unset="), strings.HasPrefix(t, "--chdir="):
+			rest = rest[1:]
+		case envFlagOptions[t]:
+			rest = rest[1:]
+		case strings.HasPrefix(t, "-"):
+			return "", ErrUnresolvable // unknown option: its operand is unknowable
+		case strings.Contains(t, "="):
+			if strings.HasPrefix(t, "PATH=") {
+				pathOverride = true
+			}
+			rest = rest[1:]
+		default:
+			// A relative command under an overridden PATH would be looked up in
+			// the wrong path; launchers below do not use PATH, so they are safe.
+			if pathOverride && !strings.Contains(t, "/") && !launcherNames[filepath.Base(t)] {
+				return "", ErrUnresolvable
+			}
+			return resolveTokens(rest, depth+1)
+		}
+	}
+	return "", ErrUnresolvable
+}
+
+var envOperandOptions = map[string]bool{"-u": true, "--unset": true, "-C": true, "--chdir": true}
+var envFlagOptions = map[string]bool{"-i": true, "--ignore-environment": true, "-0": true, "--null": true, "-v": true, "--debug": true}
+var launcherNames = map[string]bool{"flatpak": true, "snap": true, "env": true, "sh": true, "bash": true, "dash": true, "zsh": true, "gtk-launch": true}
 
 // Tokenize splits a desktop Exec line into arguments the way desktop-entry files
 // intend: quotes group, a backslash escapes the next character.

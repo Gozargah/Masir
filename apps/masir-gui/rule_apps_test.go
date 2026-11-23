@@ -503,8 +503,14 @@ func TestDesktopExecutableResolvesLaunchers(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		if probe, err := exec.LookPath("ls"); err == nil {
 			plain := write("ls.desktop", "[Desktop Entry]\nName=Ls\nExec="+probe+" %U\n")
-			if got := desktopExecutable(plain); filepath.Base(got) != "ls" || !filepath.IsAbs(got) {
-				t.Errorf("plain entry resolved to %q; want the ls path", got)
+			// Resolution follows symlinks; compare with the resolved probe (a
+			// BusyBox host reports /bin/busybox for /bin/ls).
+			want := probe
+			if real, err := filepath.EvalSymlinks(probe); err == nil {
+				want = real
+			}
+			if got := desktopExecutable(plain); got != want {
+				t.Errorf("plain entry resolved to %q; want %q", got, want)
 			}
 		}
 	}
