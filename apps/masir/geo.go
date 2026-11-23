@@ -226,7 +226,7 @@ func installedDesktopApps() []ui.PickItem {
 				continue
 			}
 			d, err := appresolve.FromDesktop(filepath.Join(dir, e.Name()))
-			if err != nil {
+			if err != nil || !d.Listed() {
 				continue
 			}
 			value, err := d.Value()

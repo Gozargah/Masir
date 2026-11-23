@@ -65,9 +65,9 @@ func resolveTokens(tokens []string, depth int) (string, error) {
 		// Command strings and desktop-id indirection hide the real program.
 		return "", ErrUnresolvable
 	}
-	// /snap/bin/NAME is a symlink to the snap launcher: the program is NAME,
-	// not the /usr/bin/snap it links to.
-	if strings.HasPrefix(name, "/snap/bin/") {
+	// /snap/bin/NAME — and newer snapd's /var/lib/snapd/snap/bin/NAME — symlink
+	// to the snap launcher: the program is NAME, not the snap binary it links to.
+	if isSnapBinPath(name) {
 		return base, nil
 	}
 	if name == "" || strings.Contains(name, "%") {
@@ -81,6 +81,12 @@ func resolveTokens(tokens []string, depth int) (string, error) {
 		resolved = real
 	}
 	return resolved, nil
+}
+
+// isSnapBinPath reports the two layouts snapd uses for its command symlinks.
+func isSnapBinPath(p string) bool {
+	p = strings.ReplaceAll(p, "\\", "/")
+	return strings.Contains(p, "/snap/bin/") || strings.Contains(p, "/snapd/snap/bin/")
 }
 
 // flatpakCommand reads run's own options up to the application reference. Only

@@ -17,6 +17,7 @@ func TestResolveLaunchers(t *testing.T) {
 		{"flatpak value option before command", "flatpak run --arch x86_64 --branch stable --command=spotify com.spotify.Client", "spotify"},
 		{"snap run", "snap run bitwarden --no-sandbox", "bitwarden"},
 		{"snap bin symlink form", "/snap/bin/bitwarden %U", "bitwarden"},
+		{"snapd var path form", "/var/lib/snapd/snap/bin/bitwarden %U", "bitwarden"},
 		{"env assignment", "env BAMF_DESKTOP_FILE_HINT=x flatpak run --command=spotify com.spotify.Client", "spotify"},
 		{"env unset operand", "env -u DISPLAY flatpak run --command=spotify com.spotify.Client", "spotify"},
 		{"env ignore-environment", "env -i flatpak run --command=geary org.gnome.Geary", "geary"},
@@ -128,5 +129,33 @@ func TestFromDesktop(t *testing.T) {
 	}
 	if v, err := d.Value(); err != nil || v != "spotify" {
 		t.Errorf("value = %q, %v; want spotify", v, err)
+	}
+}
+
+// Menus hide settings panels and actions; the picker must too.
+func TestDesktopListed(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) Desktop {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		d, err := FromDesktop(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if !write("app.desktop", "[Desktop Entry]\nType=Application\nName=App\nExec=/bin/ls\n").Listed() {
+		t.Error("a normal application must be listed")
+	}
+	if write("nodisplay.desktop", "[Desktop Entry]\nType=Application\nNoDisplay=true\nName=Panel\nExec=/bin/ls\n").Listed() {
+		t.Error("NoDisplay entries must not be listed")
+	}
+	if write("hidden.desktop", "[Desktop Entry]\nType=Application\nHidden=true\nName=Gone\nExec=/bin/ls\n").Listed() {
+		t.Error("Hidden entries must not be listed")
+	}
+	if write("link.desktop", "[Desktop Entry]\nType=Link\nName=Link\nURL=https://example.com\n").Listed() {
+		t.Error("non-application entries must not be listed")
 	}
 }
