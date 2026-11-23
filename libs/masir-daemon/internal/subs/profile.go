@@ -3,6 +3,7 @@ package subs
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -10,25 +11,36 @@ import (
 	"github.com/xtls/xray-core/infra/conf"
 )
 
-// parseOutboundProfile extracts the provider's routing graph for a balanced
-// entry. Inbounds contribute only metadata for translating routing predicates.
+// parseOutboundProfile preserves a full provider config. Masir owns listeners;
+// provider inbounds contribute metadata for translating routing predicates.
 func parseOutboundProfile(obj map[string]json.RawMessage, outbounds json.RawMessage) (*OutboundProfile, error) {
 	routing := obj["routing"]
-	if len(routing) == 0 {
-		return nil, nil
+	if len(routing) == 0 || string(routing) == "null" {
+		routing = json.RawMessage(`{}`)
 	}
 	var layout conf.RouterConfig
 	if err := json.Unmarshal(routing, &layout); err != nil {
 		return nil, fmt.Errorf("subscription routing: %w", err)
-	}
-	if len(layout.Balancers) == 0 {
-		return nil, nil
 	}
 
 	profile := &OutboundProfile{
 		Routing:          routing,
 		Observatory:      obj["observatory"],
 		BurstObservatory: obj["burstObservatory"],
+	}
+	profile.Base = make(map[string]json.RawMessage)
+	for key, raw := range obj {
+		switch key {
+		case "remarks", "inbounds", "outbounds", "routing", "observatory", "burstObservatory":
+			continue
+		}
+		// Metadata remains in Config.SourceJSON; only fields consumed by Xray
+		// belong in the runtime baseline and its identity. Large provider notes
+		// must not be duplicated, escaped and hashed on the runtime path.
+		if !xrayConfigFields[strings.ToLower(key)] {
+			continue
+		}
+		profile.Base[key] = raw
 	}
 	if err := json.Unmarshal(outbounds, &profile.Outbounds); err != nil {
 		return nil, fmt.Errorf("subscription profile outbounds: %w", err)
@@ -50,7 +62,16 @@ func validateProfileRouting(profile *OutboundProfile, layout *conf.RouterConfig)
 		return fmt.Errorf("subscription profile uses a routing script")
 	}
 	tags := make(map[string]bool, len(profile.Outbounds))
+	outbounds := make([]map[string]json.RawMessage, len(profile.Outbounds))
 	for i, raw := range profile.Outbounds {
+		if err := json.Unmarshal(raw, &outbounds[i]); err != nil {
+			return fmt.Errorf("invalid subscription profile outbound %d", i+1)
+		}
+	}
+	for i, raw := range profile.Outbounds {
+		if _, err := dialerProfile(outbounds[i], outbounds); err != nil {
+			return err
+		}
 		var outbound struct {
 			Tag string `json:"tag"`
 		}
@@ -214,3 +235,23 @@ func (p *OutboundProfile) BalancerSummary() (string, uint32) {
 	}
 	return strategy, members
 }
+
+var xrayConfigFields = func() map[string]bool {
+	fields := map[string]bool{}
+	schema := reflect.TypeFor[conf.Config]()
+	for i := 0; i < schema.NumField(); i++ {
+		field := schema.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		fields[strings.ToLower(name)] = true
+	}
+	return fields
+}()

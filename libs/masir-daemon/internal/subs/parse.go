@@ -33,14 +33,15 @@ type Config struct {
 	Latency    *Latency         `json:"latency,omitempty"`
 }
 
-// OutboundProfile preserves the provider's tag space and routing order.
+// OutboundProfile preserves a server's dial dependencies or the provider's routing graph.
 type OutboundProfile struct {
-	Outbounds        []json.RawMessage `json:"outbounds"`
-	Routing          json.RawMessage   `json:"routing"`
-	Observatory      json.RawMessage   `json:"observatory,omitempty"`
-	BurstObservatory json.RawMessage   `json:"burstObservatory,omitempty"`
-	Ingress          []ProfileIngress  `json:"ingress,omitempty"`
-	DefaultBalancer  string            `json:"defaultBalancer,omitempty"`
+	Base             map[string]json.RawMessage `json:"base,omitempty"`
+	Outbounds        []json.RawMessage          `json:"outbounds"`
+	Routing          json.RawMessage            `json:"routing"`
+	Observatory      json.RawMessage            `json:"observatory,omitempty"`
+	BurstObservatory json.RawMessage            `json:"burstObservatory,omitempty"`
+	Ingress          []ProfileIngress           `json:"ingress,omitempty"`
+	DefaultBalancer  string                     `json:"defaultBalancer,omitempty"`
 }
 
 // ProfileIngress describes a provider rule's inbound context without listener settings.
@@ -75,15 +76,25 @@ func Parse(body []byte) ([]Config, error) {
 
 	out := make([]Config, 0, len(named))
 	seen := map[string]bool{}
+	var validationErr error
 	for _, n := range named {
 		c, err := newConfig(n)
-		if err != nil || seen[c.ID] {
+		if err != nil {
+			if validationErr == nil {
+				validationErr = err
+			}
+			continue
+		}
+		if seen[c.ID] {
 			continue
 		}
 		seen[c.ID] = true
 		out = append(out, c)
 	}
 	if len(out) == 0 {
+		if validationErr != nil {
+			return nil, fmt.Errorf("%w: %v", errNoConfigs, validationErr)
+		}
 		return nil, errNoConfigs
 	}
 	return out, nil
@@ -120,8 +131,12 @@ func parseJSONObject(raw json.RawMessage) ([]namedOutbound, error) {
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil, fmt.Errorf("subscription JSON: %w", err)
 	}
+	if err := normalizeRuntimeKeys(obj); err != nil {
+		return nil, err
+	}
 	if _, ok := obj["protocol"]; ok {
-		return []namedOutbound{{raw: obj, source: append(json.RawMessage(nil), raw...)}}, nil
+		profile, err := dialerProfile(obj, []map[string]json.RawMessage{obj})
+		return []namedOutbound{{raw: obj, profile: profile, source: append(json.RawMessage(nil), raw...)}}, err
 	}
 	outsRaw, ok := obj["outbounds"]
 	if !ok {
@@ -132,26 +147,32 @@ func parseJSONObject(raw json.RawMessage) ([]namedOutbound, error) {
 		return nil, fmt.Errorf("subscription JSON outbounds: %w", err)
 	}
 
-	_, hasRemarks := obj["remarks"]
-	_, hasInbounds := obj["inbounds"]
-	_, hasRouting := obj["routing"]
-	if !hasRemarks && !hasInbounds && !hasRouting {
+	// Runtime settings make this a full config. Provider-only metadata still
+	// accompanies an outbound list without changing how servers are selected.
+	fullConfig := false
+	for key := range obj {
+		switch strings.ToLower(key) {
+		case "remarks", "inbounds", "routing", "log", "dns", "policy", "api", "metrics", "stats", "reverse", "fakedns", "observatory", "burstobservatory", "transport", "env", "version", "geodata":
+			fullConfig = true
+		}
+	}
+	if !fullConfig {
 		var entries []json.RawMessage
 		if err := json.Unmarshal(outsRaw, &entries); err != nil {
 			return nil, err
 		}
-		sharedRef := ""
-		if len(obj) > 1 {
-			sharedRef = sourceID(raw)
-		}
 		var list []namedOutbound
 		for i, o := range outs {
 			if !utilityProtocols[str(o["protocol"])] {
+				profile, err := dialerProfile(o, outs)
+				if err != nil {
+					continue
+				}
 				source := entries[i]
-				if len(obj) > 1 {
+				if profile != nil || len(obj) > 1 {
 					source = raw
 				}
-				list = append(list, namedOutbound{raw: o, source: source, sourceRef: sharedRef})
+				list = append(list, namedOutbound{raw: o, profile: profile, source: source})
 			}
 		}
 		return list, nil
@@ -159,7 +180,7 @@ func parseJSONObject(raw json.RawMessage) ([]namedOutbound, error) {
 
 	main := pickMainOutbound(outs)
 	if main == nil {
-		return nil, errors.New("full config has no proxy outbound")
+		return nil, errors.New("full config has no outbound")
 	}
 	profile, err := parseOutboundProfile(obj, outsRaw)
 	if err != nil {
@@ -179,6 +200,9 @@ func pickMainOutbound(outs []map[string]json.RawMessage) map[string]json.RawMess
 		if !utilityProtocols[str(o["protocol"])] {
 			return o
 		}
+	}
+	if len(outs) > 0 {
+		return outs[0]
 	}
 	return nil
 }
@@ -242,7 +266,6 @@ func newConfig(n namedOutbound) (Config, error) {
 		name = str(o["tag"])
 	}
 	delete(o, "tag")
-	delete(o, "proxySettings") // chains point at outbounds that aren't carried over
 	stripDialerProxy(o)
 
 	outbound, err := json.Marshal(o)
@@ -367,3 +390,26 @@ func anyInt(v any) int {
 }
 
 func sourceID(raw json.RawMessage) string { return fmt.Sprintf("%x", sha256.Sum256(raw)) }
+
+// Normalize only recognized config fields. Provider metadata and dictionary
+// keys are not Xray struct fields and retain their original spelling.
+func normalizeRuntimeKeys(object map[string]json.RawMessage) error {
+	fields := []string{"protocol", "remarks", "inbounds", "outbounds", "routing", "log", "dns", "policy", "api", "metrics", "stats", "reverse", "fakedns", "observatory", "burstObservatory", "transport", "env", "version", "geodata"}
+	for _, field := range fields {
+		var found string
+		for key := range object {
+			if !strings.EqualFold(key, field) {
+				continue
+			}
+			if found != "" {
+				return fmt.Errorf("subscription repeats %s field", field)
+			}
+			found = key
+		}
+		if found != "" && found != field {
+			object[field] = object[found]
+			delete(object, found)
+		}
+	}
+	return nil
+}
