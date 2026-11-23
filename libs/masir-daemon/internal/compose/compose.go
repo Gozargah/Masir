@@ -75,6 +75,7 @@ func Build(in Input) (Output, error) {
 	hasProxy := len(in.Active) > 0 || in.ActiveProfile != nil
 	proxy := profileTarget{tag: "direct"}
 	var graph profileGraph
+	var profiles []*subs.OutboundProfile
 	if hasProxy {
 		proxy.tag = proxyTag
 	}
@@ -86,6 +87,7 @@ func Build(in Input) (Output, error) {
 	}
 	serverOutbounds := []json.RawMessage{}
 	if in.ActiveProfile != nil {
+		profiles = append(profiles, in.ActiveProfile)
 		var members []json.RawMessage
 		revision, err := json.Marshal(in.ActiveProfile)
 		if err != nil {
@@ -142,6 +144,7 @@ func Build(in Input) (Output, error) {
 			target, exists := pinned[tag]
 			if !exists {
 				if c.Profile != nil {
+					profiles = append(profiles, c.Profile)
 					balancer, members, err := graph.add(c.Profile, "masir-profile/"+r.Target.SubscriptionID+"/"+c.ID+"/pinned")
 					if err != nil {
 						return Output{}, fmt.Errorf("pinned config %s: %w", c.Name, err)
@@ -332,6 +335,10 @@ func Build(in Input) (Output, error) {
 	graph.applyObservers(config)
 	if len(graph.scopes) > 0 {
 		config["masirProfileRoutes"] = graph.scopes
+	}
+	config, err := profileBaseline(config, profiles)
+	if err != nil {
+		return Output{}, err
 	}
 	cfg, err := json.Marshal(config)
 	if err != nil {

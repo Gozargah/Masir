@@ -10,25 +10,30 @@ import (
 	"github.com/xtls/xray-core/infra/conf"
 )
 
-// parseOutboundProfile extracts the provider's routing graph for a balanced
-// entry. Inbounds contribute only metadata for translating routing predicates.
+// parseOutboundProfile preserves a full provider config. Masir owns listeners;
+// provider inbounds contribute metadata for translating routing predicates.
 func parseOutboundProfile(obj map[string]json.RawMessage, outbounds json.RawMessage) (*OutboundProfile, error) {
 	routing := obj["routing"]
-	if len(routing) == 0 {
-		return nil, nil
+	if len(routing) == 0 || string(routing) == "null" {
+		routing = json.RawMessage(`{}`)
 	}
 	var layout conf.RouterConfig
 	if err := json.Unmarshal(routing, &layout); err != nil {
 		return nil, fmt.Errorf("subscription routing: %w", err)
-	}
-	if len(layout.Balancers) == 0 {
-		return nil, nil
 	}
 
 	profile := &OutboundProfile{
 		Routing:          routing,
 		Observatory:      obj["observatory"],
 		BurstObservatory: obj["burstObservatory"],
+	}
+	profile.Base = make(map[string]json.RawMessage)
+	for key, raw := range obj {
+		switch key {
+		case "remarks", "inbounds", "outbounds", "routing", "observatory", "burstObservatory":
+			continue
+		}
+		profile.Base[key] = raw
 	}
 	if err := json.Unmarshal(outbounds, &profile.Outbounds); err != nil {
 		return nil, fmt.Errorf("subscription profile outbounds: %w", err)
@@ -50,7 +55,16 @@ func validateProfileRouting(profile *OutboundProfile, layout *conf.RouterConfig)
 		return fmt.Errorf("subscription profile uses a routing script")
 	}
 	tags := make(map[string]bool, len(profile.Outbounds))
+	outbounds := make([]map[string]json.RawMessage, len(profile.Outbounds))
 	for i, raw := range profile.Outbounds {
+		if err := json.Unmarshal(raw, &outbounds[i]); err != nil {
+			return fmt.Errorf("invalid subscription profile outbound %d", i+1)
+		}
+	}
+	for i, raw := range profile.Outbounds {
+		if _, err := dialerProfile(outbounds[i], outbounds); err != nil {
+			return err
+		}
 		var outbound struct {
 			Tag string `json:"tag"`
 		}

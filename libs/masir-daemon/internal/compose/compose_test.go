@@ -3,6 +3,7 @@ package compose
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -876,5 +877,139 @@ func TestProfileCompositionValidatesRoutingInputs(t *testing.T) {
 	profile.Observatory = json.RawMessage(`{"subjectSelector":["node"],"probeUrl":"invalid"}`)
 	if _, err := Build(Input{State: testState(t), ActiveProfile: profile}); err == nil {
 		t.Fatal("invalid observer URL was accepted")
+	}
+}
+
+func TestSubscriptionDialerChainReachesXray(t *testing.T) {
+	cs, err := subs.Parse([]byte(`{"remarks":"Fragmented","outbounds":[
+  {"tag":"proxy","protocol":"trojan","settings":{"servers":[{"address":"a.example.com","port":443,"password":"x"}]},"streamSettings":{"security":"tls","sockopt":{"dialerProxy":"fragment","tcpNoDelay":true}}},
+  {"tag":"fragment","protocol":"freedom","settings":{"fragment":{"packets":"tlshello","length":"100-200","interval":"10-20"}}}
+ ]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, c := build(t, Input{State: testState(t), Proxy: true, Active: cs[0].Outbound, ActiveProfile: cs[0].Profile})
+	var reference string
+	var helper map[string]any
+	for _, o := range c.Outbounds {
+		if strings.HasSuffix(o["tag"].(string), "/proxy") {
+			socket := o["streamSettings"].(map[string]any)["sockopt"].(map[string]any)
+			reference, _ = socket["dialerProxy"].(string)
+			if socket["tcpNoDelay"] != true {
+				t.Fatal("lost socket options")
+			}
+		}
+		if strings.HasSuffix(o["tag"].(string), "/fragment") {
+			helper = o
+		}
+	}
+	if reference == "" || helper == nil || helper["tag"] != reference || helper["settings"].(map[string]any)["fragment"] == nil {
+		t.Fatal("Xray config lost fragment chain")
+	}
+	if _, err := xray.ParseProfile(out.Config); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFullSubscriptionConfigIsCompositionBaseline(t *testing.T) {
+	cs, err := subs.Parse([]byte(`{"remarks":"Complete","policy":{"levels":{"0":{"connIdle":123}}},"fakedns":[{"ipPool":"198.18.0.0/16","poolSize":1024}],"dns":{"hosts":{"custom.example":"192.0.2.1"},"servers":["192.0.2.53"]},"log":{"loglevel":"debug"},"outbounds":[{"tag":"first","protocol":"freedom","settings":{"domainStrategy":"UseIP"}},{"tag":"proxy","protocol":"trojan","settings":{"servers":[{"address":"a.example.com","port":443,"password":"x"}]},"streamSettings":{"security":"tls"}}],"routing":{"domainStrategy":"IPIfNonMatch","domainMatcher":"linear","rules":[{"domain":["full:provider.example"],"outboundTag":"proxy"}]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The persisted selection must retain every provider field too.
+	stored, err := json.Marshal(cs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(stored, &cs); err != nil {
+		t.Fatal(err)
+	}
+
+	st := testState(t)
+	st.Settings.Fallback = store.FallbackProxy
+	st.Settings.RulesEnabled = true
+	st.Rules = []store.Rule{{Tag: "user-wins", Match: json.RawMessage(`{"domain":["full:provider.example"]}`), Target: store.Target{Kind: store.TargetBlock}}}
+	out, _ := build(t, Input{State: st, Proxy: true, Active: cs[0].Outbound, ActiveProfile: cs[0].Profile})
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(out.Config, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got["policy"]), `123`) || len(got["fakedns"]) == 0 {
+		t.Fatal("provider base settings were discarded")
+	}
+	if !strings.Contains(string(got["dns"]), `custom.example`) || strings.Contains(string(got["dns"]), `192.0.2.53`) {
+		t.Fatal("DNS must preserve provider hosts and apply Masir resolvers")
+	}
+	if strings.Contains(string(got["log"]), `debug`) {
+		t.Fatal("Masir logging override was ignored")
+	}
+	if !strings.Contains(string(got["masirProfileRoutes"]), `domainMatcher`) || !strings.Contains(string(got["masirProfileRoutes"]), `provider.example`) {
+		t.Fatal("non-balanced provider routing was discarded")
+	}
+
+	engine := xray.New("")
+	defer engine.Close()
+	apply := func(raw []byte) {
+		t.Helper()
+		p, err := xray.ParseProfile(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := engine.Apply(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply(out.Config)
+	route, err := engine.TestRoute(context.Background(), xray.RouteQuery{Domain: "provider.example", Port: 443})
+	if err != nil || route.OutboundTag != "block" {
+		t.Fatalf("user rule must win: %+v, %v", route, err)
+	}
+	st.Rules = nil
+	out, _ = build(t, Input{State: st, ActiveProfile: cs[0].Profile})
+	apply(out.Config)
+	route, err = engine.TestRoute(context.Background(), xray.RouteQuery{Domain: "provider.example", Port: 443})
+	if err != nil || !strings.HasSuffix(route.OutboundTag, "/proxy") {
+		t.Fatalf("provider rule must apply after user rule removal: %+v, %v", route, err)
+	}
+	route, err = engine.TestRoute(context.Background(), xray.RouteQuery{IP: "192.0.2.2", Port: 443})
+	if err != nil || !strings.HasSuffix(route.OutboundTag, "/first") {
+		t.Fatalf("provider first outbound must be default: %+v, %v", route, err)
+	}
+}
+
+func TestPinnedProfilesRespectGlobalSettings(t *testing.T) {
+	parse := func(idle int, level string) subs.Config {
+		t.Helper()
+		cs, err := subs.Parse([]byte(fmt.Sprintf(`{"remarks":"Pinned","policy":{"levels":{"0":{"connIdle":%d}}},"log":{"loglevel":%q},"outbounds":[{"tag":"node","protocol":"freedom"}]}`, idle, level)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cs[0]
+	}
+	active := parse(123, "debug")
+	pinned := parse(123, "error")
+	st := testState(t)
+	st.Settings.RulesEnabled = true
+	st.Rules = []store.Rule{{Tag: "pin", Match: json.RawMessage(`{"domain":["full:pinned.example"]}`), Target: store.Target{Kind: store.TargetConfig, SubscriptionID: "feed", ConfigID: pinned.ID}}}
+	in := Input{State: st, ActiveProfile: active.Profile, Resolve: func(store.Target) (subs.Config, bool) { return pinned, true }}
+	if _, err := Build(in); err != nil {
+		t.Fatalf("Masir log override should resolve provider difference: %v", err)
+	}
+	pinned = parse(456, "error")
+	if _, err := Build(in); err == nil || !strings.Contains(err.Error(), "policy.levels.0.connIdle") {
+		t.Fatalf("must report incompatible global policies: %v", err)
+	}
+}
+
+func TestNestedSubscriptionDialerReferencesAreScoped(t *testing.T) {
+	cs, err := subs.Parse([]byte(`{"remarks":"Download","outbounds":[{"tag":"node","protocol":"freedom","streamSettings":{"network":"xhttp","xhttpSettings":{"downloadSettings":{"network":"tcp","sockopt":{"dialerProxy":"download-helper"}}},"sockopt":{"dialerProxy":"upload-helper"}}},{"tag":"download-helper","protocol":"freedom"},{"tag":"upload-helper","protocol":"freedom"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := build(t, Input{State: testState(t), ActiveProfile: cs[0].Profile})
+	for _, name := range []string{"download-helper", "upload-helper"} {
+		if strings.Contains(string(out.Config), `"dialerProxy":"`+name+`"`) || !strings.Contains(string(out.Config), `/`+name+`"`) {
+			t.Fatalf("unscoped %s reference", name)
+		}
 	}
 }

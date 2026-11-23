@@ -48,7 +48,7 @@ func (g *profileGraph) add(p *subs.OutboundProfile, namespace string) (profileTa
 	outbounds := make([]json.RawMessage, 0, len(p.Outbounds))
 	tags := make(map[string]bool, len(p.Outbounds))
 	var tagOrder []string
-	chains := make(map[string]string)
+	chains := make(map[string][]string)
 	loopbacks := make(map[string]string)
 	var firstOutbound string
 	for i, raw := range p.Outbounds {
@@ -93,36 +93,16 @@ func (g *profileGraph) add(p *subs.OutboundProfile, namespace string) (profileTa
 			o = map[string]json.RawMessage{"protocol": json.RawMessage(`"blackhole"`)}
 		}
 
-		// A dial chain must stay in the same provider namespace.
+		// Rewrite all stream dialers, including XHTTP download streams.
 		if stream := o["streamSettings"]; len(stream) > 0 {
-			var settings map[string]json.RawMessage
-			if err := json.Unmarshal(stream, &settings); err != nil {
+			settings, err := subs.RewriteDialers(stream, func(chain string) (string, error) {
+				chains[outbound.Tag] = append(chains[outbound.Tag], chain)
+				return prefix + chain, nil
+			})
+			if err != nil {
 				return profileTarget{}, nil, err
 			}
-			if err := canonicalFields(settings, "sockopt"); err != nil {
-				return profileTarget{}, nil, err
-			}
-			if rawSock := settings["sockopt"]; len(rawSock) > 0 {
-				var socket map[string]json.RawMessage
-				if err := json.Unmarshal(rawSock, &socket); err != nil {
-					return profileTarget{}, nil, err
-				}
-				if err := canonicalFields(socket, "dialerProxy"); err != nil {
-					return profileTarget{}, nil, err
-				}
-				var chain string
-				if raw := socket["dialerProxy"]; len(raw) > 0 {
-					if err := json.Unmarshal(raw, &chain); err != nil {
-						return profileTarget{}, nil, err
-					}
-				}
-				if chain != "" {
-					chains[outbound.Tag] = chain
-					socket["dialerProxy"], _ = json.Marshal(prefix + chain)
-					settings["sockopt"], _ = json.Marshal(socket)
-					o["streamSettings"], _ = json.Marshal(settings)
-				}
-			}
+			o["streamSettings"] = settings
 		}
 		o["tag"], _ = json.Marshal(tag)
 		encoded, err := json.Marshal(o)
@@ -132,13 +112,31 @@ func (g *profileGraph) add(p *subs.OutboundProfile, namespace string) (profileTa
 		outbounds = append(outbounds, encoded)
 	}
 
-	for start := range chains {
-		seen := map[string]bool{start: true}
-		for hop := chains[start]; hop != ""; hop = chains[hop] {
-			if !tags[hop] || seen[hop] || loopbacks[prefix+hop] != "" {
-				return profileTarget{}, nil, fmt.Errorf("balanced profile has an invalid dialerProxy chain")
+	visited, visiting := map[string]bool{}, map[string]bool{}
+	var validateChain func(string) error
+	validateChain = func(tag string) error {
+		if visiting[tag] {
+			return fmt.Errorf("profile has a cyclic dialerProxy chain")
+		}
+		if visited[tag] {
+			return nil
+		}
+		visiting[tag] = true
+		for _, hop := range chains[tag] {
+			if !tags[hop] || loopbacks[prefix+hop] != "" {
+				return fmt.Errorf("profile has an invalid dialerProxy chain")
 			}
-			seen[hop] = true
+			if err := validateChain(hop); err != nil {
+				return err
+			}
+		}
+		delete(visiting, tag)
+		visited[tag] = true
+		return nil
+	}
+	for tag := range chains {
+		if err := validateChain(tag); err != nil {
+			return profileTarget{}, nil, err
 		}
 	}
 	hasObserver := false
@@ -220,8 +218,16 @@ func (g *profileGraph) add(p *subs.OutboundProfile, namespace string) (profileTa
 		g.scopes = make(map[string]obj)
 	}
 	scopeTag := "masir-profile-route/" + prefix
-	g.scopes[scopeTag] = obj{"rules": scopedRules, "balancers": scopeBalancers, "domainStrategy": policy.DomainStrategy,
-		"firstOutbound": firstOutbound, "loopbacks": loopbacks}
+	var scope obj
+	if err := json.Unmarshal(p.Routing, &scope); err != nil {
+		return profileTarget{}, nil, err
+	}
+	if scope == nil {
+		scope = obj{}
+	}
+	scope["rules"], scope["balancers"] = scopedRules, scopeBalancers
+	scope["firstOutbound"], scope["loopbacks"] = firstOutbound, loopbacks
+	g.scopes[scopeTag] = scope
 	return profileTarget{tag: scopeTag, scoped: true}, outbounds, nil
 }
 

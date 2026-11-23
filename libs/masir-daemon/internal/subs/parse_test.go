@@ -100,8 +100,8 @@ func TestParseJSONFullConfigs(t *testing.T) {
 	if got["Full A"].Address != "a.example.com" || got["Full B"].Port != 8443 || len(got) != 2 {
 		t.Fatalf("got %+v", got)
 	}
-	if strings.Contains(string(got["Full A"].Outbound), "dialerProxy") {
-		t.Fatal("dialerProxy to an outbound we don't carry should be stripped")
+	if p := got["Full A"].Profile; p == nil || len(p.Outbounds) != 3 || !strings.Contains(string(p.Outbounds[0]), `"dialerProxy":"fragment"`) {
+		t.Fatal("fragment dial chain must survive subscription parsing")
 	}
 }
 
@@ -285,7 +285,40 @@ func TestParsePreservesTopLevelFieldsWithoutRouting(t *testing.T) {
 	if len(configs) != 1 || string(configs[0].SourceJSON) != input {
 		t.Fatal("lost top-level provider fields")
 	}
-	if configs[0].ID != bare[0].ID || string(configs[0].Outbound) != string(bare[0].Outbound) {
-		t.Fatal("source preservation changed runtime selection")
+	if configs[0].ID == bare[0].ID || configs[0].Profile == nil || string(configs[0].Outbound) != string(bare[0].Outbound) {
+		t.Fatal("full source must preserve its runtime profile and standalone projection")
+	}
+}
+
+func TestParseDialerDependencies(t *testing.T) {
+	const node = `{"tag":"proxy","protocol":"trojan","settings":{"servers":[{"address":"a.example.com","port":443,"password":"x"}]},"streamSettings":{"security":"tls","sockopt":{"dialerProxy":"fragment","tcpNoDelay":true}}}`
+	for _, prefix := range []string{`{"remarks":"Chain",`, `{`} {
+		body := prefix + `"outbounds":[` + node + `,{"tag":"fragment","protocol":"freedom","streamSettings":{"sockopt":{"dialerProxy":"last"}}},{"tag":"last","protocol":"freedom"},{"tag":"unused","protocol":"freedom"}]}`
+		cs, err := Parse([]byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantOutbounds := 3
+		if strings.Contains(prefix, "remarks") {
+			wantOutbounds = 4
+		}
+		if len(cs) != 1 || cs[0].Profile == nil || len(cs[0].Profile.Outbounds) != wantOutbounds {
+			t.Fatalf("lost chain: %+v", cs)
+		}
+		if !strings.Contains(string(cs[0].Profile.Outbounds[0]), `"tcpNoDelay":true`) {
+			t.Fatal("lost socket options")
+		}
+		changed, err := Parse([]byte(strings.Replace(body, `"tag":"last","protocol":"freedom"`, `"tag":"last","protocol":"freedom","settings":{"domainStrategy":"UseIP"}`, 1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed[0].ID == cs[0].ID {
+			t.Fatal("helper settings must participate in config identity")
+		}
+	}
+	for _, helper := range []string{``, `,{"tag":"fragment","protocol":"freedom","streamSettings":{"sockopt":{"dialerProxy":"proxy"}}}`} {
+		if _, err := Parse([]byte(`{"remarks":"Broken","outbounds":[` + node + helper + `]}`)); err == nil {
+			t.Fatal("accepted a missing or cyclic dialer dependency")
+		}
 	}
 }
