@@ -88,8 +88,13 @@ func TestResolveQuotedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != app {
-		t.Errorf("got %q, want %q", got, app)
+	// Resolution follows symlinks: /var is a link to /private/var on macOS.
+	want := app
+	if real, err := filepath.EvalSymlinks(app); err == nil {
+		want = real
+	}
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
