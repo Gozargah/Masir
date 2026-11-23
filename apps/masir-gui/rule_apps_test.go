@@ -2,6 +2,10 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -467,6 +471,56 @@ func TestApplicationTabsFillTheirAccordion(t *testing.T) {
 			width = r.W
 		} else if abs32(width-r.W) > 0.5 {
 			t.Fatalf("unequal tab width for %s: %v vs %v", name, r.W, width)
+		}
+	}
+}
+
+func TestDesktopExecutableResolvesLaunchers(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	flatpak := write("spotify.desktop", "[Desktop Entry]\nName=Spotify\nExec=/usr/bin/flatpak run --command=spotify com.spotify.Client\n")
+	if got := desktopExecutable(flatpak); got != "" {
+		t.Errorf("unverified Flatpak entry resolved to %q", got)
+	}
+	shell := write("shell.desktop", "[Desktop Entry]\nName=Shell\nExec=sh -c 'spotify --uri=%U'\n")
+	if got := desktopExecutable(shell); got != "" {
+		t.Errorf("shell entry resolved to %q; want it left out of the list", got)
+	}
+	if runtime.GOOS != "windows" {
+		if probe, err := exec.LookPath("ls"); err == nil {
+			plain := write("ls.desktop", "[Desktop Entry]\nName=Ls\nExec="+probe+" %U\n")
+			// Resolution follows symlinks; compare with the resolved probe (a
+			// BusyBox host reports /bin/busybox for /bin/ls).
+			want := probe
+			if real, err := filepath.EvalSymlinks(probe); err == nil {
+				want = real
+			}
+			if got := desktopExecutable(plain); got != want {
+				t.Errorf("plain entry resolved to %q; want %q", got, want)
+			}
+		}
+	}
+}
+
+func TestMergeInstalledRuleAppsMatchesFlatpakBasenames(t *testing.T) {
+	installed := []ruleApp{{Name: "Spotify", Path: "spotify"}}
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"/app/bin/spotify", true},
+		{"/var/lib/flatpak/app/com.spotify.Client/x86_64/stable/revision/files/bin/spotify", true},
+		{"/app/bin/spotify-helper", false},
+	} {
+		got := mergeInstalledRuleApps(installed, []ruleApp{{Path: tc.path}}, "linux")
+		if len(got) != 1 || got[0].Running != tc.want {
+			t.Errorf("running %q: got %+v, want Running=%v", tc.path, got, tc.want)
 		}
 	}
 }
