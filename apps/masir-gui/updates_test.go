@@ -879,6 +879,7 @@ func TestLegacyDesktopUpdateWaitsForInstallBeforeChangingEitherCopy(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeTestComponentDescriptor(t, components, "0.2.0")
 	oldEnabled, oldConfirm, oldInstall := preparedUpdatesEnabled, confirmPreparedUpdates, installPreparedAppUpdate
 	oldLegacy, oldRelaunch := installBundledDaemon, relaunchApp
 	oldReconcile := reconcileUpdatedService
@@ -961,6 +962,11 @@ func TestLegacyUpdateAlwaysVerifiesDaemonBeforeRelaunch(t *testing.T) {
 			if err := os.Mkdir(filepath.Join(dir, "Masir.app"), 0700); err != nil {
 				t.Fatal(err)
 			}
+			components, err := desktopComponents(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeTestComponentDescriptor(t, components, "0.2.0")
 			oldEnabled, oldConfirm, oldInstall := preparedUpdatesEnabled, confirmPreparedUpdates, installPreparedAppUpdate
 			oldLegacy, oldRelaunch, oldTimeout := installBundledDaemon, relaunchApp, daemonWaitTimeout
 			defer func() {

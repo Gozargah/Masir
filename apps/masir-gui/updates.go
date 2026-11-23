@@ -910,7 +910,7 @@ func (a *app) startAppUpdate() {
 						// MyGo authenticated the full staged archive before this hook.
 						// The helper verifies the signed components again in root staging.
 						a.post(func() { a.updates.state.phase = updateAuthorizing })
-						return installBundledDaemon(components, func() {
+						return installLegacyDesktopComponents(components, u.Version, func() {
 							a.post(func() { a.updates.state.phase = updateInstalling })
 						})
 					}

@@ -41,32 +41,13 @@ func importDesktopComponents(ctx context.Context, client pb.DaemonServiceClient,
 // importComponentDirectory also accepts the installed app's bin directory. A manual
 // app replacement can use the same authenticated service transaction as an app update.
 func importComponentDirectory(ctx context.Context, client pb.DaemonServiceClient, dir, version string) error {
-	readSmall := func(name string, limit int64) ([]byte, error) {
-		f, err := os.Open(filepath.Join(dir, name))
-		if err != nil {
-			return nil, err
-		}
-		defer f.Close()
-		b, err := io.ReadAll(io.LimitReader(f, limit+1))
-		if int64(len(b)) > limit {
-			return nil, fmt.Errorf("oversized %s", name)
-		}
-		return b, err
-	}
-	descriptor, err := readSmall(updatebundle.DescriptorName, 16384)
+	d, descriptor, err := readComponentDescriptor(dir, version)
 	if err != nil {
 		return err
 	}
-	signature, err := readSmall(updatebundle.SignatureName, 2048)
+	signature, err := readSmallComponent(dir, updatebundle.SignatureName, 2048)
 	if err != nil {
 		return err
-	}
-	var d updatebundle.Descriptor
-	if err := json.Unmarshal(descriptor, &d); err != nil {
-		return err
-	}
-	if !sameVersion(d.Version, version) {
-		return fmt.Errorf("desktop component version differs from the app update")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 4*time.Minute)
 	defer cancel()
@@ -134,4 +115,41 @@ func importComponentDirectory(ctx context.Context, client pb.DaemonServiceClient
 		return fmt.Errorf("service installed an unexpected version")
 	}
 	return nil
+}
+
+func readSmallComponent(dir, name string, limit int64) ([]byte, error) {
+	f, err := os.Open(filepath.Join(dir, name))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("oversized %s", name)
+	}
+	return b, err
+}
+
+func readComponentDescriptor(dir, version string) (updatebundle.Descriptor, []byte, error) {
+	var d updatebundle.Descriptor
+	data, err := readSmallComponent(dir, updatebundle.DescriptorName, 16384)
+	if err != nil {
+		return d, nil, err
+	}
+	if err = json.Unmarshal(data, &d); err != nil {
+		return d, nil, err
+	}
+	if !sameVersion(d.Version, version) {
+		return d, nil, fmt.Errorf("desktop component version differs from the app update")
+	}
+	return d, data, nil
+}
+
+func installLegacyDesktopComponents(dir, version string, authorized func()) error {
+	if _, _, err := readComponentDescriptor(dir, version); err != nil {
+		return err
+	}
+	// MyGo authenticated the archive; the elevated helper independently verifies
+	// the signed descriptor and all component bytes in private staging.
+	return installBundledDaemon(dir, authorized)
 }
