@@ -3,16 +3,20 @@ package appresolve
 import (
 	"bufio"
 	"os"
+	"slices"
 	"strings"
 )
 
 // Desktop is the routing-relevant part of a desktop entry.
 type Desktop struct {
-	Name      string
-	Exec      string
-	Type      string
-	NoDisplay bool
-	Hidden    bool
+	Name       string
+	Exec       string
+	Type       string
+	NoDisplay  bool
+	Hidden     bool
+	OnlyShowIn string
+	NotShowIn  string
+	path       string
 }
 
 // Listed reports whether a menu would show this entry: an application that is
@@ -22,18 +26,30 @@ func (d Desktop) Listed() bool {
 	if d.NoDisplay || d.Hidden {
 		return false
 	}
-	return d.Type == "" || d.Type == "Application"
+	if d.Type != "" && d.Type != "Application" {
+		return false
+	}
+	shown := d.OnlyShowIn == ""
+	for _, desktop := range strings.Split(os.Getenv("XDG_CURRENT_DESKTOP"), ":") {
+		if desktop == "" {
+			continue
+		}
+		if slices.Contains(strings.Split(d.NotShowIn, ";"), desktop) {
+			return false
+		}
+		shown = shown || slices.Contains(strings.Split(d.OnlyShowIn, ";"), desktop)
+	}
+	return shown
 }
 
-// FromDesktop reads the Name, Exec, Type, NoDisplay and Hidden lines of the
-// [Desktop Entry] group.
+// FromDesktop reads the routing and visibility fields of [Desktop Entry].
 func FromDesktop(path string) (Desktop, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return Desktop{}, err
 	}
 	defer f.Close()
-	var d Desktop
+	d := Desktop{path: path}
 	section := ""
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -53,6 +69,10 @@ func FromDesktop(path string) (Desktop, error) {
 			d.Exec = strings.TrimSpace(strings.TrimPrefix(line, "Exec="))
 		case d.Type == "" && strings.HasPrefix(line, "Type="):
 			d.Type = strings.TrimSpace(strings.TrimPrefix(line, "Type="))
+		case strings.HasPrefix(line, "OnlyShowIn="):
+			d.OnlyShowIn = strings.TrimPrefix(line, "OnlyShowIn=")
+		case strings.HasPrefix(line, "NotShowIn="):
+			d.NotShowIn = strings.TrimPrefix(line, "NotShowIn=")
 		case !d.NoDisplay && strings.HasPrefix(line, "NoDisplay="):
 			d.NoDisplay = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "NoDisplay=")), "true")
 		case !d.Hidden && strings.HasPrefix(line, "Hidden="):
@@ -64,5 +84,5 @@ func FromDesktop(path string) (Desktop, error) {
 
 // Value resolves the entry's Exec line to a routing value.
 func (d Desktop) Value() (string, error) {
-	return Resolve(d.Exec)
+	return resolve(d.Exec, d.path)
 }

@@ -475,10 +475,6 @@ func TestApplicationTabsFillTheirAccordion(t *testing.T) {
 	}
 }
 
-// The regression this exists for: flatpak and snap entries were dropped from the
-// application list because their Exec line starts with a launcher, which is not
-// the program — every Flatpak app was missing, and a Snap entry resolved to
-// snap's launcher. On the previous code the first case returns "" and fails here.
 func TestDesktopExecutableResolvesLaunchers(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) string {
@@ -488,13 +484,9 @@ func TestDesktopExecutableResolvesLaunchers(t *testing.T) {
 		}
 		return p
 	}
-	flatpak := write("spotify.desktop", "[Desktop Entry]\nName=Spotify\nExec=/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=spotify --file-forwarding com.spotify.Client @@u %U @@\n")
-	if got := desktopExecutable(flatpak); got != "spotify" {
-		t.Errorf("flatpak entry resolved to %q; want the program name spotify", got)
-	}
-	snap := write("bitwarden.desktop", "[Desktop Entry]\nName=Bitwarden\nExec=/snap/bin/bitwarden %U\n")
-	if got := desktopExecutable(snap); got != "bitwarden" {
-		t.Errorf("snap entry resolved to %q; want bitwarden, not snap's launcher", got)
+	flatpak := write("spotify.desktop", "[Desktop Entry]\nName=Spotify\nExec=/usr/bin/flatpak run --command=spotify com.spotify.Client\n")
+	if got := desktopExecutable(flatpak); got != "" {
+		t.Errorf("unverified Flatpak entry resolved to %q", got)
 	}
 	shell := write("shell.desktop", "[Desktop Entry]\nName=Shell\nExec=sh -c 'spotify --uri=%U'\n")
 	if got := desktopExecutable(shell); got != "" {

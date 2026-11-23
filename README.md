@@ -35,7 +35,7 @@
 
 ## Why Masir
 
-- **Route by app.** One rule sends a whole app through the proxy or keeps it direct, helper processes included. Pick it from a list of your installed apps — Flatpak and Snap entries included; each is resolved to the program it actually starts.
+- **Route by app.** One rule sends a whole app through the proxy or keeps it direct, helper processes included. Pick it from a list of your installed apps — including Flatpak and Snap entries whose executable Masir can identify. Use Manual for apps launched through scripts.
 
 - **Full Xray routing.** Every rule is a real Xray routing rule: domains (+geosite), IPs (+geoip), ports, protocols, processes, or raw JSON. Xray checks each rule before it's saved.
 

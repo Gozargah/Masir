@@ -9,27 +9,17 @@ import (
 	"testing"
 )
 
-func TestResolveLaunchers(t *testing.T) {
-	cases := []struct{ name, exec, want string }{
-		{"flatpak named command", "/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=spotify --file-forwarding com.spotify.Client @@u %U @@", "spotify"},
-		{"flatpak absolute command", "/usr/bin/flatpak run --command=/app/opt/stremio/stremio com.stremio.Stremio %U", "/app/opt/stremio/stremio"},
-		{"flatpak spaced flag form", "/usr/bin/flatpak run --command geary org.gnome.Geary", "geary"},
-		{"flatpak value option before command", "flatpak run --arch x86_64 --branch stable --command=spotify com.spotify.Client", "spotify"},
-		{"snap run", "snap run bitwarden --no-sandbox", "bitwarden"},
-		{"snap bin symlink form", "/snap/bin/bitwarden %U", "bitwarden"},
-		{"snapd var path form", "/var/lib/snapd/snap/bin/bitwarden %U", "bitwarden"},
-		{"env assignment", "env BAMF_DESKTOP_FILE_HINT=x flatpak run --command=spotify com.spotify.Client", "spotify"},
-		{"env unset operand", "env -u DISPLAY flatpak run --command=spotify com.spotify.Client", "spotify"},
-		{"env ignore-environment", "env -i flatpak run --command=geary org.gnome.Geary", "geary"},
-	}
-	for _, c := range cases {
-		got, err := Resolve(c.exec)
-		if err != nil {
-			t.Errorf("%s: unexpected error: %v", c.name, err)
-			continue
-		}
-		if got != c.want {
-			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+func TestFlatpakCommand(t *testing.T) {
+	for _, tc := range []struct{ args, want string }{
+		{"--branch=stable --arch=x86_64 --command=spotify --file-forwarding com.spotify.Client @@u %U @@", "spotify"},
+		{"--command=/app/opt/stremio/stremio com.stremio.Stremio %U", "/app/opt/stremio/stremio"},
+		{"--command geary org.gnome.Geary", "geary"},
+		{"--arch x86_64 --branch stable --command=spotify com.spotify.Client", "spotify"},
+		{"org.example.App --command=worker", ""},
+		{"--command=worker", ""},
+	} {
+		if got := flatpakCommand(Tokenize(tc.args)); got != tc.want {
+			t.Errorf("flatpakCommand(%q) = %q, want %q", tc.args, got, tc.want)
 		}
 	}
 }
@@ -49,11 +39,33 @@ func TestResolveUnresolvable(t *testing.T) {
 		"snap run",
 		"env FOO=bar",
 		"env PATH=/opt/custom viewer", // the overridden PATH decides which viewer
-		"env -u",                      // option without its operand
+		"env -C /opt/example ./bin/program",
+		"env --chdir=/opt/example viewer",
+		"env -u PATH viewer",
+		"env -i viewer",
+		"env PATH=/opt/custom /usr/bin/env viewer",
+		"env -u", // option without its operand
 		"%U",
 	} {
 		if got, err := Resolve(exec); !errors.Is(err, ErrUnresolvable) {
 			t.Errorf("Resolve(%q) = %q, %v; want ErrUnresolvable", exec, got, err)
+		}
+	}
+}
+
+func TestEnvRejectsLookupChanges(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix env options")
+	}
+	for _, command := range []string{
+		"env -C /opt/example ls",
+		"env --chdir=/opt/example ls",
+		"env -u PATH ls",
+		"env -i ls",
+		"env PATH=/opt/custom /usr/bin/env ls",
+	} {
+		if _, err := Resolve(command); !errors.Is(err, ErrUnresolvable) {
+			t.Errorf("Resolve(%q) = %v; want ErrUnresolvable", command, err)
 		}
 	}
 }
@@ -127,8 +139,8 @@ func TestFromDesktop(t *testing.T) {
 	if d.Exec == "" || !strings.Contains(d.Exec, "--command=spotify") {
 		t.Errorf("exec = %q; want the launcher line", d.Exec)
 	}
-	if v, err := d.Value(); err != nil || v != "spotify" {
-		t.Errorf("value = %q, %v; want spotify", v, err)
+	if _, err := d.Value(); !errors.Is(err, ErrUnresolvable) {
+		t.Fatalf("unverified Flatpak command should be unresolvable, got %v", err)
 	}
 }
 

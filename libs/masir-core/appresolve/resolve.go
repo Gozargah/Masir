@@ -17,26 +17,24 @@ import (
 // Exec line: a shell command string, a launcher without a target, a field code.
 var ErrUnresolvable = errors.New("appresolve: no single program to match")
 
-// Resolve returns the routing value for a desktop Exec line:
-//
-//   - a bare process name ("spotify") — matched against the basename of the
-//     process path, so it works for sandboxed apps whose install location
-//     differs per machine;
-//   - an absolute path ("/app/opt/stremio/stremio") — matched exactly; flatpak
-//     processes are seen at their sandbox paths, which are the same everywhere;
-//   - the resolved executable of a plain entry ("/usr/bin/spotify").
-func Resolve(declare string) (string, error) {
-	tokens := Tokenize(declare)
+// Resolve returns the process rule value for an Exec line. Use FromDesktop
+// when the desktop file is available so Flatpak exports can be inspected.
+func Resolve(command string) (string, error) {
+	return resolve(command, "")
+}
+
+func resolve(command, desktopPath string) (string, error) {
+	tokens := Tokenize(command)
 	if len(tokens) == 0 {
 		return "", ErrUnresolvable
 	}
-	return resolveTokens(tokens, 0)
+	return resolveTokens(tokens, desktopPath, 0)
 }
 
 // maxLauncherDepth stops env-of-env-of-env chains from recursing forever.
 const maxLauncherDepth = 4
 
-func resolveTokens(tokens []string, depth int) (string, error) {
+func resolveTokens(tokens []string, desktopPath string, depth int) (string, error) {
 	if depth > maxLauncherDepth {
 		return "", ErrUnresolvable
 	}
@@ -48,19 +46,17 @@ func resolveTokens(tokens []string, depth int) (string, error) {
 		// The sandboxed program is the --command target; without one the entry
 		// gives no reliable name.
 		if len(tokens) > 1 && tokens[1] == "run" {
-			if v := flatpakCommand(tokens[2:]); v != "" {
-				return v, nil
-			}
+			return flatpakExecutable(desktopPath, flatpakCommand(tokens[2:]))
 		}
 		return "", ErrUnresolvable
 	case "snap":
 		// snap run NAME [args]
 		if len(tokens) > 2 && tokens[1] == "run" {
-			return tokens[2], nil
+			return installedSnapExecutable(tokens[2])
 		}
 		return "", ErrUnresolvable
 	case "env":
-		return resolveEnv(tokens[1:], depth)
+		return resolveEnv(tokens[1:], desktopPath, depth)
 	case "sh", "bash", "dash", "zsh", "gtk-launch":
 		// Command strings and desktop-id indirection hide the real program.
 		return "", ErrUnresolvable
@@ -68,7 +64,7 @@ func resolveTokens(tokens []string, depth int) (string, error) {
 	// /snap/bin/NAME — and newer snapd's /var/lib/snapd/snap/bin/NAME — symlink
 	// to the snap launcher: the program is NAME, not the snap binary it links to.
 	if isSnapBinPath(name) {
-		return base, nil
+		return installedSnapExecutable(base)
 	}
 	if name == "" || strings.Contains(name, "%") {
 		return "", ErrUnresolvable
@@ -76,6 +72,9 @@ func resolveTokens(tokens []string, depth int) (string, error) {
 	resolved, err := exec.LookPath(name)
 	if err != nil {
 		return "", ErrUnresolvable
+	}
+	if isSnapBinPath(resolved) {
+		return installedSnapExecutable(filepath.Base(resolved))
 	}
 	if real, err := filepath.EvalSymlinks(resolved); err == nil {
 		resolved = real
@@ -85,8 +84,8 @@ func resolveTokens(tokens []string, depth int) (string, error) {
 
 // isSnapBinPath reports the two layouts snapd uses for its command symlinks.
 func isSnapBinPath(p string) bool {
-	p = strings.ReplaceAll(p, "\\", "/")
-	return strings.Contains(p, "/snap/bin/") || strings.Contains(p, "/snapd/snap/bin/")
+	dir := filepath.ToSlash(filepath.Dir(filepath.Clean(p)))
+	return dir == "/snap/bin" || dir == "/var/lib/snapd/snap/bin"
 }
 
 // flatpakCommand reads run's own options up to the application reference. Only
@@ -98,7 +97,13 @@ func flatpakCommand(args []string) string {
 	for i := 0; i < len(args); i++ {
 		t := args[i]
 		if !strings.HasPrefix(t, "-") {
-			break // the app reference: launcher options end here
+			return command // the app reference: launcher options end here
+		}
+		if t == "--" {
+			if i+1 < len(args) {
+				return command
+			}
+			break
 		}
 		if v, ok := strings.CutPrefix(t, "--command="); ok {
 			command = v
@@ -113,7 +118,7 @@ func flatpakCommand(args []string) string {
 			i++ // the option's value is not the app id
 		}
 	}
-	return command
+	return ""
 }
 
 var flatpakValueOptions = map[string]bool{
@@ -124,8 +129,8 @@ var flatpakValueOptions = map[string]bool{
 // resolveEnv walks env's own options and assignments down to the command it
 // runs. Options with operands consume them; an unknown option is unresolvable
 // because its operand is unknowable.
-func resolveEnv(rest []string, depth int) (string, error) {
-	pathOverride := false
+func resolveEnv(rest []string, desktopPath string, depth int) (string, error) {
+	lookupChanged := false
 	for len(rest) > 0 {
 		t := rest[0]
 		switch {
@@ -133,25 +138,28 @@ func resolveEnv(rest []string, depth int) (string, error) {
 			if len(rest) < 2 {
 				return "", ErrUnresolvable
 			}
+			lookupChanged = lookupChanged || t == "-C" || t == "--chdir" || rest[1] == "PATH"
 			rest = rest[2:]
 		case strings.HasPrefix(t, "--unset="), strings.HasPrefix(t, "--chdir="):
+			lookupChanged = lookupChanged || t == "--unset=PATH" || strings.HasPrefix(t, "--chdir=")
 			rest = rest[1:]
 		case envFlagOptions[t]:
+			lookupChanged = lookupChanged || t == "-i" || t == "--ignore-environment"
 			rest = rest[1:]
 		case strings.HasPrefix(t, "-"):
 			return "", ErrUnresolvable // unknown option: its operand is unknowable
 		case strings.Contains(t, "="):
 			if strings.HasPrefix(t, "PATH=") {
-				pathOverride = true
+				lookupChanged = true
 			}
 			rest = rest[1:]
 		default:
-			// A relative command under an overridden PATH would be looked up in
-			// the wrong path; launchers below do not use PATH, so they are safe.
-			if pathOverride && !strings.Contains(t, "/") && !launcherNames[filepath.Base(t)] {
+			// We cannot use Masir's cwd or PATH after env changes lookup.
+			// A nested env would also inherit the changed lookup context.
+			if lookupChanged && (!filepath.IsAbs(t) || filepath.Base(t) == "env") {
 				return "", ErrUnresolvable
 			}
-			return resolveTokens(rest, depth+1)
+			return resolveTokens(rest, desktopPath, depth+1)
 		}
 	}
 	return "", ErrUnresolvable
@@ -159,7 +167,6 @@ func resolveEnv(rest []string, depth int) (string, error) {
 
 var envOperandOptions = map[string]bool{"-u": true, "--unset": true, "-C": true, "--chdir": true}
 var envFlagOptions = map[string]bool{"-i": true, "--ignore-environment": true, "-0": true, "--null": true, "-v": true, "--debug": true}
-var launcherNames = map[string]bool{"flatpak": true, "snap": true, "env": true, "sh": true, "bash": true, "dash": true, "zsh": true, "gtk-launch": true}
 
 // Tokenize splits a desktop Exec line into arguments the way desktop-entry files
 // intend: quotes group, a backslash escapes the next character.

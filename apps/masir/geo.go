@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -199,7 +200,7 @@ func appGroups() []ui.PickGroup {
 		groups = append(groups, ui.PickGroup{Label: "Installed", Items: installed})
 	}
 	if runtime.GOOS == "linux" {
-		groups = append(groups, ui.PickGroup{Label: "Installed", Items: installedDesktopApps()})
+		groups = append(groups, ui.PickGroup{Label: "Installed", Items: installedDesktopApps(desktopAppDirs())})
 	}
 	var running []ui.PickItem
 	for _, name := range runningProcesses() {
@@ -213,33 +214,45 @@ func appGroups() []ui.PickGroup {
 // to the program (or sandbox path) a process rule can match. Entries whose
 // launcher cannot be decoded are left out rather than guessed at — Manual still
 // takes a name typed by hand.
-func installedDesktopApps() []ui.PickItem {
+func installedDesktopApps(dirs []string) []ui.PickItem {
 	var installed []ui.PickItem
-	seen := map[string]bool{}
-	for _, dir := range desktopAppDirs() {
-		entries, err := os.ReadDir(dir)
+	seenIDs := map[string]bool{}
+	seenValues := map[string]bool{}
+	for _, dir := range dirs {
+		dir, err := filepath.EvalSymlinks(dir)
 		if err != nil {
 			continue
 		}
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".desktop") {
-				continue
+		_ = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || !strings.HasSuffix(entry.Name(), ".desktop") {
+				return nil
 			}
-			d, err := appresolve.FromDesktop(filepath.Join(dir, e.Name()))
+			relative, err := filepath.Rel(dir, path)
+			if err != nil {
+				return nil
+			}
+			id := strings.ReplaceAll(filepath.ToSlash(relative), "/", "-")
+			if seenIDs[id] {
+				return nil
+			}
+			// Higher-priority entries mask the same ID even when hidden.
+			seenIDs[id] = true
+			d, err := appresolve.FromDesktop(path)
 			if err != nil || !d.Listed() {
-				continue
+				return nil
 			}
 			value, err := d.Value()
-			if err != nil || value == "" || seen[value] {
-				continue
+			if err != nil || seenValues[value] {
+				return nil
 			}
-			seen[value] = true
+			seenValues[value] = true
 			name := d.Name
 			if name == "" {
-				name = strings.TrimSuffix(e.Name(), ".desktop")
+				name = strings.TrimSuffix(entry.Name(), ".desktop")
 			}
-			installed = append(installed, ui.PickItem{Value: value, Label: name, Hint: ui.Dim("app"), Search: e.Name()})
-		}
+			installed = append(installed, ui.PickItem{Value: value, Label: name, Hint: ui.Dim("app"), Search: id})
+			return nil
+		})
 	}
 	sort.Slice(installed, func(i, j int) bool { return strings.ToLower(installed[i].Label) < strings.ToLower(installed[j].Label) })
 	return installed
@@ -262,17 +275,20 @@ func desktopAppDirs() []string {
 		}
 		dirs = append(dirs, dir)
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		add(filepath.Join(home, ".local", "share", "applications"))
-		add(filepath.Join(home, ".local", "share", "flatpak", "exports", "share", "applications"))
+	home, _ := os.UserHomeDir()
+	dataHome := os.Getenv("XDG_DATA_HOME")
+	if !filepath.IsAbs(dataHome) {
+		dataHome = filepath.Join(home, ".local", "share")
 	}
-	add(filepath.Join(os.Getenv("XDG_DATA_HOME"), "applications"))
-	dirs = append(dirs, "/usr/local/share/applications", "/usr/share/applications")
-	for _, d := range strings.Split(os.Getenv("XDG_DATA_DIRS"), ":") {
-		if d != "" {
-			add(filepath.Join(d, "applications"))
-		}
+	add(filepath.Join(dataHome, "applications"))
+	dataDirs := os.Getenv("XDG_DATA_DIRS")
+	if dataDirs == "" {
+		dataDirs = "/usr/local/share:/usr/share"
 	}
+	for _, dir := range strings.Split(dataDirs, ":") {
+		add(filepath.Join(dir, "applications"))
+	}
+	add(filepath.Join(dataHome, "flatpak", "exports", "share", "applications"))
 	add("/var/lib/flatpak/exports/share/applications")
 	add("/var/lib/snapd/desktop/applications")
 	return dirs

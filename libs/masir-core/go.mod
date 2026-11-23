@@ -3,11 +3,12 @@ module github.com/Gozargah/Masir/libs/masir-core
 go 1.27.3
 
 require (
-	github.com/Microsoft/go-winio v0.6.2
 	github.com/Gozargah/Masir/libs/masir-proto v0.0.0
+	github.com/Microsoft/go-winio v0.6.2
 	golang.org/x/sys v0.49.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261026165753-2ffab32bce7e
 	google.golang.org/grpc v1.85.0
+	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
