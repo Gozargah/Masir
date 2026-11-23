@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/Gozargah/Masir/apps/masir/internal/ui"
+	"github.com/Gozargah/Masir/libs/masir-core/appresolve"
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
 )
 
@@ -175,7 +176,8 @@ func validateIPs(v string) error {
 }
 
 // appGroups lists installed apps (macOS: a folder match on the bundle covers its helper
-// processes too) and running processes.
+// processes too; Linux: every desktop entry, launchers resolved to their program) and
+// running processes.
 func appGroups() []ui.PickGroup {
 	var groups []ui.PickGroup
 	if runtime.GOOS == "darwin" {
@@ -196,12 +198,82 @@ func appGroups() []ui.PickGroup {
 		sort.Slice(installed, func(i, j int) bool { return strings.ToLower(installed[i].Label) < strings.ToLower(installed[j].Label) })
 		groups = append(groups, ui.PickGroup{Label: "Installed", Items: installed})
 	}
+	if runtime.GOOS == "linux" {
+		groups = append(groups, ui.PickGroup{Label: "Installed", Items: installedDesktopApps()})
+	}
 	var running []ui.PickItem
 	for _, name := range runningProcesses() {
 		running = append(running, ui.PickItem{Value: name, Label: name, Hint: ui.Dim("process")})
 	}
 	groups = append(groups, ui.PickGroup{Label: "Running", Items: running})
 	return groups
+}
+
+// installedDesktopApps lists the desktop entries on this machine, each resolved
+// to the program (or sandbox path) a process rule can match. Entries whose
+// launcher cannot be decoded are left out rather than guessed at — Manual still
+// takes a name typed by hand.
+func installedDesktopApps() []ui.PickItem {
+	var installed []ui.PickItem
+	seen := map[string]bool{}
+	for _, dir := range desktopAppDirs() {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".desktop") {
+				continue
+			}
+			d, err := appresolve.FromDesktop(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			value, err := d.Value()
+			if err != nil || value == "" || seen[value] {
+				continue
+			}
+			seen[value] = true
+			name := d.Name
+			if name == "" {
+				name = strings.TrimSuffix(e.Name(), ".desktop")
+			}
+			installed = append(installed, ui.PickItem{Value: value, Label: name, Hint: ui.Dim("app"), Search: e.Name()})
+		}
+	}
+	sort.Slice(installed, func(i, j int) bool { return strings.ToLower(installed[i].Label) < strings.ToLower(installed[j].Label) })
+	return installed
+}
+
+// desktopAppDirs is the search path of desktop entries: the XDG data dirs plus
+// the directories flatpak and snapd export their launchers into.
+func desktopAppDirs() []string {
+	var dirs []string
+	add := func(dir string) {
+		if dir == "" {
+			return
+		}
+		for _, d := range dirs {
+			if d == dir {
+				return
+			}
+		}
+		dirs = append(dirs, dir)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		add(filepath.Join(home, ".local", "share", "applications"))
+		add(filepath.Join(home, ".local", "share", "flatpak", "exports", "share", "applications"))
+	}
+	add(filepath.Join(os.Getenv("XDG_DATA_HOME"), "applications"))
+	dirs = append(dirs, "/usr/local/share/applications", "/usr/share/applications")
+	for _, d := range strings.Split(os.Getenv("XDG_DATA_DIRS"), ":") {
+		if d != "" {
+			add(filepath.Join(d, "applications"))
+		}
+	}
+	add("/var/lib/flatpak/exports/share/applications")
+	add("/var/lib/snapd/desktop/applications")
+	return dirs
 }
 
 func runningProcesses() []string {

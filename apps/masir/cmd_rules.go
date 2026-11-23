@@ -277,7 +277,7 @@ func pickApps(current []string) ([]string, error) {
 		Message: "Pick an app", Multi: true, Required: true, Initial: current,
 		AddCustom: true, Validate: func(v string) error {
 			if strings.TrimSpace(v) == "" {
-				return fail("enter a process name or path")
+				return fail("enter a program name as the process runs it (case-sensitive) or a full path")
 			}
 			return nil
 		},
