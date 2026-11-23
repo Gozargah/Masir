@@ -344,3 +344,20 @@ func TestParseReportsRemovedProxySettings(t *testing.T) {
 		t.Fatalf("want removed-field reason, got %v", err)
 	}
 }
+
+func TestParseNormalizesRuntimeKeys(t *testing.T) {
+	const body = `{"Remarks":"Case","outbounds":[{"tag":"proxy","protocol":"freedom"},{"tag":"deny","protocol":"blackhole"}],"Routing":{"rules":[{"domain":["full:blocked.example"],"outboundTag":"deny"}]},"Metadata":{"KeepCase":true}}`
+	cs, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs[0].Profile == nil || !strings.Contains(string(cs[0].Profile.Routing), "blocked.example") {
+		t.Fatal("case variant lost routing")
+	}
+	if string(cs[0].Profile.Base["Metadata"]) != `{"KeepCase":true}` {
+		t.Fatal("metadata keys changed")
+	}
+	if _, err := Parse([]byte(strings.Replace(body, `"Routing":`, `"routing":{},"Routing":`, 1))); err == nil {
+		t.Fatal("accepted duplicate routing aliases")
+	}
+}

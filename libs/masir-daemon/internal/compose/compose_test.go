@@ -1044,3 +1044,24 @@ func TestProviderCannotOverrideManagedLoggingOrListeners(t *testing.T) {
 		}
 	}
 }
+
+func TestGlobalProfileFieldAliases(t *testing.T) {
+	makeProfile := func(policy string) *subs.OutboundProfile {
+		return &subs.OutboundProfile{Outbounds: []json.RawMessage{json.RawMessage(`{"tag":"node","protocol":"freedom"}`)}, Routing: json.RawMessage(`{}`), Base: map[string]json.RawMessage{"policy": json.RawMessage(policy)}}
+	}
+	first := makeProfile(`{"levels":{"0":{"connIdle":123}}}`)
+	second := makeProfile(`{"Levels":{"0":{"ConnIdle":456}}}`)
+	managed := obj{"dns": obj{"hosts": map[string]any{"Example.test": "192.0.2.1", "example.test": "192.0.2.2"}}}
+	if _, err := profileBaseline(managed, []*subs.OutboundProfile{first, second}); err == nil {
+		t.Fatal("case aliases hid a conflicting policy")
+	}
+	second = makeProfile(`{"Levels":{"0":{"ConnIdle":123}}}`)
+	got, err := profileBaseline(managed, []*subs.OutboundProfile{first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(got)
+	if !strings.Contains(string(raw), `"Example.test"`) || !strings.Contains(string(raw), `"example.test"`) {
+		t.Fatal("dictionary keys were folded")
+	}
+}

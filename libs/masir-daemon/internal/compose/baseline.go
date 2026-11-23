@@ -7,13 +7,19 @@ import (
 	"strings"
 
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/subs"
+	"github.com/xtls/xray-core/infra/conf"
 )
 
 // overlay keeps provider object fields unless Masir explicitly supplies a value.
 // Arrays are replaced, so managed DNS servers and listeners remain authoritative.
 func overlay(base, overrides obj) obj {
+	return overlayFields(base, overrides, reflect.TypeFor[conf.Config]())
+}
+
+func overlayFields(base, overrides obj, schema reflect.Type) obj {
 	for key, value := range overrides {
-		old, oldOK := base[key].(map[string]any)
+		previousKey, childSchema := matchingField(base, key, schema)
+		old, oldOK := base[previousKey].(map[string]any)
 		next, nextOK := value.(map[string]any)
 		if !nextOK {
 			if v, ok := value.(obj); ok {
@@ -21,9 +27,12 @@ func overlay(base, overrides obj) obj {
 			}
 		}
 		if oldOK && nextOK {
-			base[key] = overlay(old, next)
+			base[key] = overlayFields(old, next, childSchema)
 		} else {
 			base[key] = value
+		}
+		if previousKey != key {
+			delete(base, previousKey)
 		}
 	}
 	return base
@@ -70,9 +79,14 @@ func profileBaseline(managed obj, profiles []*subs.OutboundProfile) (obj, error)
 }
 
 func mergeGlobal(dst, src obj, path string) error {
+	return mergeGlobalFields(dst, src, path, reflect.TypeFor[conf.Config]())
+}
+
+func mergeGlobalFields(dst, src obj, path string, schema reflect.Type) error {
 	for key, value := range src {
 		field := path + key
-		previous, exists := dst[key]
+		previousKey, childSchema := matchingField(dst, key, schema)
+		previous, exists := dst[previousKey]
 		if !exists {
 			dst[key] = value
 			continue
@@ -80,7 +94,7 @@ func mergeGlobal(dst, src obj, path string) error {
 		a, aOK := previous.(map[string]any)
 		b, bOK := value.(map[string]any)
 		if aOK && bOK {
-			if err := mergeGlobal(a, b, field+"."); err != nil {
+			if err := mergeGlobalFields(a, b, field+".", childSchema); err != nil {
 				return err
 			}
 		} else if !reflect.DeepEqual(previous, value) {
@@ -88,4 +102,50 @@ func mergeGlobal(dst, src obj, path string) error {
 		}
 	}
 	return nil
+}
+
+// Match struct fields like encoding/json, while keeping map/dictionary keys
+// exact. Custom JSON decoders own their field semantics and remain opaque.
+func matchingField(object obj, key string, schema reflect.Type) (string, reflect.Type) {
+	for schema != nil && schema.Kind() == reflect.Pointer {
+		schema = schema.Elem()
+	}
+	if schema == nil {
+		return key, nil
+	}
+	if reflect.PointerTo(schema).Implements(reflect.TypeFor[json.Unmarshaler]()) {
+		return key, nil
+	}
+	if schema.Kind() == reflect.Map {
+		return key, schema.Elem()
+	}
+	if schema.Kind() != reflect.Struct {
+		return key, nil
+	}
+	for i := 0; i < schema.NumField(); i++ {
+		field := schema.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		if _, exists := object[key]; exists {
+			return key, field.Type
+		}
+		for existing := range object {
+			if strings.EqualFold(existing, name) {
+				return existing, field.Type
+			}
+		}
+		return key, field.Type
+	}
+	return key, nil
 }

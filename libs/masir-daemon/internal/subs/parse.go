@@ -131,6 +131,9 @@ func parseJSONObject(raw json.RawMessage) ([]namedOutbound, error) {
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil, fmt.Errorf("subscription JSON: %w", err)
 	}
+	if err := normalizeRuntimeKeys(obj); err != nil {
+		return nil, err
+	}
 	if _, ok := obj["protocol"]; ok {
 		profile, err := dialerProfile(obj, []map[string]json.RawMessage{obj})
 		return []namedOutbound{{raw: obj, profile: profile, source: append(json.RawMessage(nil), raw...)}}, err
@@ -387,3 +390,26 @@ func anyInt(v any) int {
 }
 
 func sourceID(raw json.RawMessage) string { return fmt.Sprintf("%x", sha256.Sum256(raw)) }
+
+// Normalize only recognized config fields. Provider metadata and dictionary
+// keys are not Xray struct fields and retain their original spelling.
+func normalizeRuntimeKeys(object map[string]json.RawMessage) error {
+	fields := []string{"protocol", "remarks", "inbounds", "outbounds", "routing", "log", "dns", "policy", "api", "metrics", "stats", "reverse", "fakedns", "observatory", "burstObservatory", "transport", "env", "version", "geodata"}
+	for _, field := range fields {
+		var found string
+		for key := range object {
+			if !strings.EqualFold(key, field) {
+				continue
+			}
+			if found != "" {
+				return fmt.Errorf("subscription repeats %s field", field)
+			}
+			found = key
+		}
+		if found != "" && found != field {
+			object[field] = object[found]
+			delete(object, found)
+		}
+	}
+	return nil
+}
