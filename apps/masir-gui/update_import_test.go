@@ -132,3 +132,34 @@ func TestDesktopImportExpandsPackedGeoForExistingServices(t *testing.T) {
 		})
 	}
 }
+
+func writeTestComponentDescriptor(t *testing.T, dir, version string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, updatebundle.DescriptorName), []byte(`{"version":"`+version+`"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLegacyComponentsMatchSelectedDesktopBeforeHelper(t *testing.T) {
+	dir := t.TempDir()
+	old := installBundledDaemon
+	defer func() { installBundledDaemon = old }()
+	calls := 0
+	installBundledDaemon = func(string, func()) error { calls++; return nil }
+	writeTestComponentDescriptor(t, dir, "0.2.0")
+	if err := installLegacyDesktopComponents(dir, "0.3.0", nil); err == nil || calls != 0 {
+		t.Fatal("mismatched release reached helper")
+	}
+	if err := installLegacyDesktopComponents(dir, "v0.2.0", nil); err != nil || calls != 1 {
+		t.Fatalf("matching release rejected: %v calls=%d", err, calls)
+	}
+	if err := os.WriteFile(filepath.Join(dir, updatebundle.DescriptorName), bytes.Repeat([]byte("x"), 16385), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installLegacyDesktopComponents(dir, "0.2.0", nil); err == nil || calls != 1 {
+		t.Fatal("oversized descriptor reached helper")
+	}
+}

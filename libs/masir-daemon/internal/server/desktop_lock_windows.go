@@ -12,45 +12,14 @@ import (
 )
 
 func lockOfflineService() (offlineServiceControl, error) {
+	unlock, err := lockServiceUpdateFile()
+	if err != nil {
+		return offlineServiceControl{}, err
+	}
+	fail := func(e error) (offlineServiceControl, error) { unlock(); return offlineServiceControl{}, e }
 	pf, err := windows.KnownFolderPath(windows.FOLDERID_ProgramFiles, 0)
 	if err != nil {
-		return offlineServiceControl{}, err
-	}
-	if !strings.EqualFold(filepath.Clean(service.InstallDir()), filepath.Join(pf, "masir")) {
-		return offlineServiceControl{}, errors.New("service directory is outside Program Files")
-	}
-	// Keep the parent from being renamed, and reject junctions and writable parents.
-	parent, err := offlineWindowsOpen(pf, true)
-	if err != nil {
-		return offlineServiceControl{}, err
-	}
-	defer parent.Close()
-	if err := offlineAdminOwned(parent); err != nil {
-		return offlineServiceControl{}, err
-	}
-	sa, err := desktopSecurityAttributes()
-	if err != nil {
-		return offlineServiceControl{}, err
-	}
-	p, err := windows.UTF16PtrFromString(filepath.Join(pf, ".masir-offline-update.lock"))
-	if err != nil {
-		return offlineServiceControl{}, err
-	}
-	h, err := windows.CreateFile(p, windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, sa, windows.OPEN_ALWAYS, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
-	if err != nil {
-		return offlineServiceControl{}, err
-	}
-	lock := os.NewFile(uintptr(h), "offline-update-lock")
-	fail := func(e error) (offlineServiceControl, error) { lock.Close(); return offlineServiceControl{}, e }
-	if err := offlineRegular(lock); err != nil {
 		return fail(err)
-	}
-	if err := offlineAdminOwned(lock); err != nil {
-		return fail(err)
-	}
-	var over windows.Overlapped
-	if err := windows.LockFileEx(h, windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &over); err != nil {
-		return fail(errors.New("another offline service update is running"))
 	}
 	dir, err := offlineWindowsOpen(service.InstallDir(), true)
 	if err != nil {
@@ -64,7 +33,7 @@ func lockOfflineService() (offlineServiceControl, error) {
 	trusted := offlineAdminOwned(dir) == nil && offlineAdminOwned(bin) == nil
 	bin.Close()
 	if trusted {
-		return offlineServiceControl{close: func() { dir.Close(); lock.Close() }, version: readOfflineVersion, publish: func() error { return nil }}, nil
+		return offlineServiceControl{close: func() { dir.Close(); unlock() }, version: readOfflineVersion, publish: func() error { return nil }}, nil
 	}
 	control, err := snapshotLegacyWindows(dir, pf)
 	if err != nil {
@@ -72,7 +41,7 @@ func lockOfflineService() (offlineServiceControl, error) {
 		return fail(err)
 	}
 	closeSnapshot := control.close
-	control.close = func() { closeSnapshot(); lock.Close() }
+	control.close = func() { closeSnapshot(); unlock() }
 	return control, nil
 }
 
@@ -131,4 +100,48 @@ func offlineWindowsOpen(path string, dir bool) (*os.File, error) {
 		return nil, e
 	}
 	return f, nil
+}
+
+func lockServiceUpdateFile() (func(), error) {
+	pf, err := windows.KnownFolderPath(windows.FOLDERID_ProgramFiles, 0)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(filepath.Clean(service.InstallDir()), filepath.Join(pf, "masir")) {
+		return nil, errors.New("service directory is outside Program Files")
+	}
+	// Keep the parent from being renamed, and reject junctions and writable parents.
+	parent, err := offlineWindowsOpen(pf, true)
+	if err != nil {
+		return nil, err
+	}
+	defer parent.Close()
+	if err := offlineAdminOwned(parent); err != nil {
+		return nil, err
+	}
+	sa, err := desktopSecurityAttributes()
+	if err != nil {
+		return nil, err
+	}
+	p, err := windows.UTF16PtrFromString(filepath.Join(pf, ".masir-offline-update.lock"))
+	if err != nil {
+		return nil, err
+	}
+	h, err := windows.CreateFile(p, windows.GENERIC_READ|windows.GENERIC_WRITE|windows.READ_CONTROL, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, sa, windows.OPEN_ALWAYS, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return nil, err
+	}
+	lock := os.NewFile(uintptr(h), "offline-update-lock")
+	fail := func(e error) (func(), error) { lock.Close(); return nil, e }
+	if err := offlineRegular(lock); err != nil {
+		return fail(err)
+	}
+	if err := offlineAdminOwned(lock); err != nil {
+		return fail(err)
+	}
+	var over windows.Overlapped
+	if err := windows.LockFileEx(h, windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &over); err != nil {
+		return fail(errors.New("another service update is running"))
+	}
+	return func() { lock.Close() }, nil
 }

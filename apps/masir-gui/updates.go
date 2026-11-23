@@ -71,6 +71,7 @@ type updateState struct {
 	appCheckedVersion string
 	appCheckedAt      time.Time
 	appAttempt        time.Time
+	appChecking       bool
 	// lastAttempt keeps a failed release check from being repeated on every status, and
 	// lastForeground is the last check an open panel asked for.
 	lastAttempt    time.Time
@@ -116,6 +117,8 @@ type updateState struct {
 	// wantApp says the person asked for the update and the app feed hasn't answered yet.
 	// A bundled daemon is updated by the app, so the answer decides what runs.
 	wantApp bool
+	// wantUpdate waits for the desktop feed before choosing the complete update path.
+	wantUpdate bool
 	// relaunchAfterRestart relaunches the app once a bundled daemon has restarted into
 	// the app update's copy.
 	relaunchAfterRestart bool
@@ -334,6 +337,9 @@ func (a *app) checkDaemonRelease(maxAge time.Duration) {
 
 // checkAppRelease asks MyGo for a signed update of the desktop app itself.
 func (a *app) checkAppRelease() {
+	if a.updates.state.appChecking {
+		return
+	}
 	key := ""
 	if a.updates.state.rel != nil {
 		key = a.updates.state.rel.GetLatestVersion()
@@ -347,16 +353,40 @@ func (a *app) checkAppRelease() {
 		}
 		return
 	}
+	a.updates.state.appChecking = true
 	a.async(func() {
 		ctx, cancel := rpc()
 		u, err := checkAppUpdate(ctx)
 		cancel()
 		a.post(func() {
+			a.updates.state.appChecking = false
 			if err == nil {
 				a.updates.state.app = u
 				// Keyed by the release the answer belongs to, so a release that appeared
 				// while this was in flight asks the feed again rather than trusting it.
 				a.updates.state.appCheckedVersion, a.updates.state.appCheckedAt = key, time.Now()
+			}
+			if a.updates.state.wantUpdate {
+				a.updates.state.wantUpdate = false
+				// A CLI update that arrived during the feed request owns the UI.
+				if a.updates.state.job != nil && updateActive(a.updates.state.job.GetState()) {
+					return
+				}
+				if err != nil {
+					a.updates.state.phase = updateFailed
+					a.updates.state.err = describe(err)
+					return
+				}
+				// A newer release arrived while the feed was in flight. Resolve
+				// that release before selecting its installer as well.
+				if key != a.updates.state.rel.GetLatestVersion() {
+					a.updates.state.wantUpdate = true
+					a.checkAppRelease()
+					return
+				}
+				a.updates.state.phase = updateAvailable
+				a.startUpdate()
+				return
 			}
 			if a.updates.state.wantApp {
 				a.updates.state.wantApp = false
@@ -455,10 +485,11 @@ func (a *app) updatePartCount() int {
 	return 1
 }
 
-// Both updates must target the same release. Older daemons and stock MyGo builds
-// keep the existing independent-download path.
+// Both updates must target the same release. Older installed services use the
+// signed payload's offline helper after confirmation instead of installing early.
 func (a *app) canShareDesktopUpdate() bool {
-	return preparedUpdatesEnabled() && a.privileged() && a.updates.state.rel.GetDesktopImportSupported() &&
+	return preparedUpdatesEnabled() && a.privileged() &&
+		(a.updates.state.rel.GetDesktopImportSupported() || a.status.GetServiceInstalled()) &&
 		a.daemonUpdateAvailable() && a.appUpdateAvailable() &&
 		sameVersion(a.updates.state.rel.GetLatestVersion(), a.updates.state.app.Version)
 }
@@ -490,7 +521,7 @@ func (a *app) showUpdateControl() bool {
 	return a.busyUpdate()
 }
 
-// startUpdate starts the daemon update, then the desktop app update, in one flow.
+// startUpdate resolves the desktop release before choosing a coordinated update.
 func (a *app) startUpdate() {
 	if a.updates.state.phase != updateAvailable && a.updates.state.phase != updateFailed {
 		return
@@ -509,6 +540,15 @@ func (a *app) startUpdate() {
 		return
 	}
 	a.updates.state.err = ""
+	// Resolve the desktop half before touching the running daemon. A click can
+	// arrive while the normal foreground feed check is still in flight.
+	if appUpdatesEnabled() && a.daemonReleaseAvailable() && !a.appFeedAnswered() &&
+		(!a.appUpdateAvailable() || !sameVersion(a.updates.state.app.Version, a.updates.state.rel.GetLatestVersion())) {
+		a.updates.state.wantUpdate = true
+		a.updates.state.phase = updateStarting
+		a.checkAppRelease()
+		return
+	}
 	a.updates.state.parts = a.updatePartCount()
 	if a.canShareDesktopUpdate() {
 		a.startAppUpdate()
@@ -636,6 +676,7 @@ func (a *app) applyJob(job *pb.UpdateJob) {
 	a.updates.state.job = job
 	if updateActive(job.GetState()) {
 		a.updates.state.sawJob = true
+		a.updates.state.wantUpdate = false
 	}
 	switch job.GetState() {
 	case pb.UpdateState_UPDATE_STATE_CHECKING:
@@ -799,11 +840,14 @@ func (a *app) daemonFinished() {
 func (a *app) startAppUpdate() {
 	u := a.updates.state.app
 	shared := a.canShareDesktopUpdate()
-	if shared {
-		a.updates.state.tunWasOn = a.status != nil && a.status.GetTunRunning()
-	}
+	legacy := shared && !a.updates.state.rel.GetDesktopImportSupported()
 	if u == nil {
 		return
+	}
+	if shared || a.appUpdateCoversDaemon() {
+		// A stopped tunnel during installation must not erase the requirement
+		// to restore the tunnel that was running before this attempt.
+		a.updates.state.tunWasOn = a.status != nil && a.status.GetTunRunning()
 	}
 	a.updates.state.phase = updateAppDownloading
 	a.updates.state.progress, a.updates.state.total = 0, 0
@@ -858,6 +902,18 @@ func (a *app) startAppUpdate() {
 					}
 				}
 				if shared {
+					if legacy {
+						components, err := desktopComponents(dir)
+						if err != nil {
+							return err
+						}
+						// MyGo authenticated the full staged archive before this hook.
+						// The helper verifies the signed components again in root staging.
+						a.post(func() { a.updates.state.phase = updateAuthorizing })
+						return installLegacyDesktopComponents(components, u.Version, func() {
+							a.post(func() { a.updates.state.phase = updateInstalling })
+						})
+					}
 					return importSharedComponents(ctx, a.d, dir, u.Version)
 				}
 				return nil
@@ -887,10 +943,11 @@ func (a *app) startAppUpdate() {
 				// before the app relaunches, so the tunnel comes back with this release.
 				// If no daemon is running there is nothing to restart: the new app starts
 				// one itself.
-				if (shared || a.appUpdateCoversDaemon()) && a.reachable && a.status != nil && !sameVersion(a.status.GetVersion(), u.Version) {
-					a.updates.state.tunWasOn = a.status.GetTunRunning()
+				// The legacy helper already restarted the service. Always verify its
+				// fresh status, even when the cached status matches or it is offline.
+				if legacy || ((shared || a.appUpdateCoversDaemon()) && a.reachable && a.status != nil && !sameVersion(a.status.GetVersion(), u.Version)) {
 					a.updates.state.relaunchAfterRestart = true
-					a.restartDaemon(u.Version)
+					a.followDaemonRestart(u.Version, !legacy)
 					return
 				}
 				a.updates.state.relaunching = true

@@ -57,10 +57,10 @@ their shipped naming convention before claiming compatibility.
 
 On macOS, Windows and writable Linux installs, **New Update** downloads and verifies
 the desktop payload. **Install Update** then commits it and restarts the app as needed.
-The separately downloaded daemon archive used by older services still follows its
-existing update flow.
+The GUI waits for the desktop feed before choosing an update path. A failed feed
+check leaves a retry action and does not start installing the daemon alone.
 
-When both sides have the same newer release and the daemon advertises desktop import,
+When both sides have the same newer release and a privileged service is running,
 the patched GUI downloads only the desktop delta or full archive. MyGo verifies and
 reconstructs the complete app, then invokes a preparation hook before app replacement.
 The GUI streams the bundled executable and geo pair, plus `service-update.json` and its
@@ -75,8 +75,7 @@ import-capable services need no protocol upgrade. Both gzip integrity and expand
 size/hash limits are checked before an import can complete. The service independently
 checks its signed descriptor and every received byte as before.
 
-The initial v0.1.0 release establishes shared desktop import and upgrades through the
-separate CLI archive path. Keep compressed resources and their GUI decoding support
+The initial v0.1.0 release establishes shared desktop import. Keep compressed resources and their GUI decoding support
 in the same release: an intermediate GUI with raw-only shared import cannot prepare
 a later compressed desktop payload. This compatibility check matters when splitting
 or backporting these changes.
@@ -107,9 +106,13 @@ process running and the prepared service version on disk. Retrying an identical 
 payload preserves its earlier rollback backups. The copies remain protocol-compatible
 through this interval; this is not a crash-atomic multi-file transaction.
 
-Older daemons do not advertise import, so the first transition keeps the independent CLI
-archive download followed by the desktop update. Stock/unpatched source builds and releases
-whose desktop/daemon versions differ use that same fallback. Standalone CLI updates still
+Older installed services do not advertise import. The patched GUI still prepares the
+complete signed desktop payload and waits for **Install Update**, then runs its bundled
+CLI's offline service installer with administrator permission. That installer independently
+verifies the components in private staging and restarts the service. The GUI commits the
+app, follows the service restart without requesting a second restart, and relaunches.
+No separate CLI archive is needed for this transition. Stock/unpatched source builds and releases
+whose desktop/daemon versions differ retain the independent CLI archive followed by the desktop update. Standalone CLI updates still
 use the signed full CLI archive. With no service and a bundled daemon, the desktop update
 continues to replace the bundle and restart its daemon as before.
 
@@ -357,3 +360,21 @@ Already-shipped older updaters cannot retroactively apply it on their first upgr
 keep an independent backup of manual geo replacements for that transition. Their
 existing `.previous` geo backups may also allow recovery, but are not a substitute for
 an independent backup.
+
+### Update writer coordination
+
+Daemon/CLI jobs, geo refreshes, streamed desktop imports and the offline installer
+share the service's process lock. The daemon also retains its local mutex. Both
+locks cover the whole operation and are released on failure; a conflicting writer
+is refused before it can replace files. The GUI does not replace an active job's
+phase when a pending desktop feed answers.
+
+The offline compatibility installer checks both job types before stopping a
+pre-lock service. An active or paused job prevents installation; finish or cancel
+that job and retry. An unrecognized or failed job-state query fails closed.
+Already-shipped services cannot acquire the new lock: their check and supervisor
+stop cannot be made atomic through the old RPC protocol. A new external update
+started in that interval remains a first-transition limitation. After this upgrade,
+all service writers participate in the shared lock. A fully atomic first transition
+requires an intermediate daemon with coordination support; it cannot be guaranteed
+by changing only the incoming GUI/helper.

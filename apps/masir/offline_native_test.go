@@ -333,7 +333,7 @@ func TestOfflineNativeChild(t *testing.T) {
 		resumed = true
 		// A competing helper must still be excluded throughout recovery.
 		competing, e := exec.CommandContext(ctx, helper, "daemon", "import-desktop", "--from", payload, "--user", who).CombinedOutput()
-		if e == nil || !strings.Contains(string(competing), "another offline service update") {
+		if e == nil || !strings.Contains(string(competing), "another service update is running") {
 			t.Errorf("lock not held through recovery: %v %s", e, competing)
 		}
 		if readErr == nil {
