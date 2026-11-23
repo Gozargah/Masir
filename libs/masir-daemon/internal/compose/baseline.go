@@ -101,14 +101,8 @@ func mergeGlobalFields(dst, src obj, path string, schema reflect.Type) error {
 		if childSchema == nil && ordinaryStruct(schema) {
 			continue
 		}
-		a, aOK := previous.(map[string]any)
-		b, bOK := value.(map[string]any)
-		if aOK && bOK {
-			if err := mergeGlobalFields(a, b, field+".", childSchema); err != nil {
-				return err
-			}
-		} else if !reflect.DeepEqual(previous, value) {
-			return fmt.Errorf("subscription profiles require conflicting global Xray setting %s", field)
+		if err := compareGlobalValue(previous, value, field, childSchema); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -225,6 +219,31 @@ func validateFieldAliases(value any, schema reflect.Type, path string) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+func compareGlobalValue(previous, value any, path string, schema reflect.Type) error {
+	a, aOK := previous.(map[string]any)
+	b, bOK := value.(map[string]any)
+	if aOK && bOK {
+		return mergeGlobalFields(a, b, path+".", schema)
+	}
+	for schema != nil && schema.Kind() == reflect.Pointer {
+		schema = schema.Elem()
+	}
+	left, leftOK := previous.([]any)
+	right, rightOK := value.([]any)
+	if leftOK && rightOK && len(left) == len(right) && schema != nil && (schema.Kind() == reflect.Slice || schema.Kind() == reflect.Array) && !reflect.PointerTo(schema).Implements(reflect.TypeFor[json.Unmarshaler]()) {
+		for i := range left {
+			if err := compareGlobalValue(left[i], right[i], fmt.Sprintf("%s.%d", path, i), schema.Elem()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if !reflect.DeepEqual(previous, value) {
+		return fmt.Errorf("subscription profiles require conflicting global Xray setting %s", path)
 	}
 	return nil
 }

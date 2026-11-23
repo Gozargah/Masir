@@ -1105,3 +1105,23 @@ func TestProviderMetadataDoesNotConflict(t *testing.T) {
 		t.Fatal("metadata discarded")
 	}
 }
+
+func TestGlobalArraysUseElementSchema(t *testing.T) {
+	makeProfile := func(assets string) *subs.OutboundProfile {
+		return &subs.OutboundProfile{Base: map[string]json.RawMessage{"geodata": json.RawMessage(`{"cron":"0 0 * * *","outbound":"direct","assets":` + assets + `}`)}}
+	}
+	first := makeProfile(`[{"url":"https://example.com/geoip.dat","file":"geoip.dat","Metadata":{"Provider":"first"}},{"url":"https://example.com/geosite.dat","file":"geosite.dat"}]`)
+	same := makeProfile(`[{"URL":"https://example.com/geoip.dat","file":"geoip.dat","Metadata":{"Provider":"second"}},{"url":"https://example.com/geosite.dat","file":"geosite.dat"}]`)
+	if _, err := profileBaseline(obj{}, []*subs.OutboundProfile{first, same}); err != nil {
+		t.Fatalf("ignored array metadata caused a conflict: %v", err)
+	}
+	for _, assets := range []string{
+		`[{"url":"https://other.example/geoip.dat","file":"geoip.dat"},{"url":"https://example.com/geosite.dat","file":"geosite.dat"}]`,
+		`[{"url":"https://example.com/geosite.dat","file":"geosite.dat"},{"url":"https://example.com/geoip.dat","file":"geoip.dat"}]`,
+		`[{"url":"https://example.com/geoip.dat","file":"geoip.dat"}]`,
+	} {
+		if _, err := profileBaseline(obj{}, []*subs.OutboundProfile{first, makeProfile(assets)}); err == nil {
+			t.Fatalf("accepted a different ordered asset list: %s", assets)
+		}
+	}
+}
