@@ -524,3 +524,20 @@ func TestMergeInstalledRuleAppsMatchesFlatpakBasenames(t *testing.T) {
 		}
 	}
 }
+
+// Entries the static resolver cannot name are filled from the running app: its
+// cgroup says which executable it really is, whatever wrapper it goes through.
+func TestObservedValueFillsUnresolvableEntry(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "bitwarden_bitwarden.desktop")
+	if err := os.WriteFile(p, []byte("[Desktop Entry]\nName=Bitwarden\nExec=/snap/bin/bitwarden %U\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	observed := map[string][]string{"snap:bitwarden": {"bitwarden", "python3"}}
+	if got := observedValue(observed, p); got != "bitwarden" {
+		t.Errorf("observed value = %q, want bitwarden (the interpreter is skipped)", got)
+	}
+	if got := observedValue(nil, p); got != "" {
+		t.Errorf("without an observation = %q, want empty", got)
+	}
+}
