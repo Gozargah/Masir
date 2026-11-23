@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -468,5 +471,57 @@ func TestApplicationTabsFillTheirAccordion(t *testing.T) {
 		} else if abs32(width-r.W) > 0.5 {
 			t.Fatalf("unequal tab width for %s: %v vs %v", name, r.W, width)
 		}
+	}
+}
+
+// The regression this exists for: flatpak and snap entries were dropped from the
+// application list because their Exec line starts with a launcher, which is not
+// the program — every Flatpak app was missing, and a Snap entry resolved to
+// snap's launcher. On the previous code the first case returns "" and fails here.
+func TestDesktopExecutableResolvesLaunchers(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	flatpak := write("spotify.desktop", "[Desktop Entry]\nName=Spotify\nExec=/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=spotify --file-forwarding com.spotify.Client @@u %U @@\n")
+	if got := desktopExecutable(flatpak); got != "spotify" {
+		t.Errorf("flatpak entry resolved to %q; want the program name spotify", got)
+	}
+	snap := write("bitwarden.desktop", "[Desktop Entry]\nName=Bitwarden\nExec=/snap/bin/bitwarden %U\n")
+	if got := desktopExecutable(snap); got != "bitwarden" {
+		t.Errorf("snap entry resolved to %q; want bitwarden, not snap's launcher", got)
+	}
+	shell := write("shell.desktop", "[Desktop Entry]\nName=Shell\nExec=sh -c 'spotify --uri=%U'\n")
+	if got := desktopExecutable(shell); got != "" {
+		t.Errorf("shell entry resolved to %q; want it left out of the list", got)
+	}
+	if runtime.GOOS != "windows" {
+		plain := write("ls.desktop", "[Desktop Entry]\nName=Ls\nExec=/usr/bin/ls %U\n")
+		if got := desktopExecutable(plain); filepath.Base(got) != "ls" || !filepath.IsAbs(got) {
+			t.Errorf("plain entry resolved to %q; want the ls path", got)
+		}
+	}
+}
+
+// The "running" badge must light for a bare-name entry whose process path is the
+// sandbox path: installed identity is "spotify", /proc shows /app/bin/spotify.
+func TestMergeInstalledRuleAppsMatchesSandboxBasenames(t *testing.T) {
+	out := mergeInstalledRuleApps(
+		[]ruleApp{{Name: "Spotify", Path: "spotify", Icon: "/x/spotify.desktop"}},
+		[]ruleApp{{Path: "/app/bin/spotify", Name: "spotify", Running: true}},
+		"linux")
+	if len(out) != 1 || !out[0].Running {
+		t.Fatalf("merged = %+v; want the flatpak entry marked Running", out)
+	}
+	other := mergeInstalledRuleApps(
+		[]ruleApp{{Name: "Spot", Path: "spot"}},
+		[]ruleApp{{Path: "/app/bin/spotify", Name: "spotify"}},
+		"linux")
+	if len(other) != 1 || other[0].Running {
+		t.Fatalf("merged = %+v; want no Running flag for a different program", other)
 	}
 }
