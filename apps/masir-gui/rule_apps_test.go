@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -500,9 +501,11 @@ func TestDesktopExecutableResolvesLaunchers(t *testing.T) {
 		t.Errorf("shell entry resolved to %q; want it left out of the list", got)
 	}
 	if runtime.GOOS != "windows" {
-		plain := write("ls.desktop", "[Desktop Entry]\nName=Ls\nExec=/usr/bin/ls %U\n")
-		if got := desktopExecutable(plain); filepath.Base(got) != "ls" || !filepath.IsAbs(got) {
-			t.Errorf("plain entry resolved to %q; want the ls path", got)
+		if probe, err := exec.LookPath("ls"); err == nil {
+			plain := write("ls.desktop", "[Desktop Entry]\nName=Ls\nExec="+probe+" %U\n")
+			if got := desktopExecutable(plain); filepath.Base(got) != "ls" || !filepath.IsAbs(got) {
+				t.Errorf("plain entry resolved to %q; want the ls path", got)
+			}
 		}
 	}
 }
