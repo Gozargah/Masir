@@ -3,6 +3,7 @@ package subs
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -31,6 +32,12 @@ func parseOutboundProfile(obj map[string]json.RawMessage, outbounds json.RawMess
 	for key, raw := range obj {
 		switch key {
 		case "remarks", "inbounds", "outbounds", "routing", "observatory", "burstObservatory":
+			continue
+		}
+		// Metadata remains in Config.SourceJSON; only fields consumed by Xray
+		// belong in the runtime baseline and its identity. Large provider notes
+		// must not be duplicated, escaped and hashed on the runtime path.
+		if !xrayConfigFields[strings.ToLower(key)] {
 			continue
 		}
 		profile.Base[key] = raw
@@ -228,3 +235,23 @@ func (p *OutboundProfile) BalancerSummary() (string, uint32) {
 	}
 	return strategy, members
 }
+
+var xrayConfigFields = func() map[string]bool {
+	fields := map[string]bool{}
+	schema := reflect.TypeFor[conf.Config]()
+	for i := 0; i < schema.NumField(); i++ {
+		field := schema.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		name := strings.Split(field.Tag.Get("json"), ",")[0]
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		fields[strings.ToLower(name)] = true
+	}
+	return fields
+}()

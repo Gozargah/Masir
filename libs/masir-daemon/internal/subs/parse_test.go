@@ -354,10 +354,35 @@ func TestParseNormalizesRuntimeKeys(t *testing.T) {
 	if cs[0].Profile == nil || !strings.Contains(string(cs[0].Profile.Routing), "blocked.example") {
 		t.Fatal("case variant lost routing")
 	}
-	if string(cs[0].Profile.Base["Metadata"]) != `{"KeepCase":true}` {
+	if !strings.Contains(string(cs[0].SourceJSON), `"Metadata":{"KeepCase":true}`) {
 		t.Fatal("metadata keys changed")
 	}
 	if _, err := Parse([]byte(strings.Replace(body, `"Routing":`, `"routing":{},"Routing":`, 1))); err == nil {
 		t.Fatal("accepted duplicate routing aliases")
+	}
+}
+
+func TestProviderMetadataIsStoredOnlyInSource(t *testing.T) {
+	body := `{"remarks":"Large","notes":"` + strings.Repeat("<", 1<<18) + `","outbounds":[{"tag":"node","protocol":"freedom"}],"policy":{"levels":{"0":{"connIdle":123}}}}`
+	cs, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(cs[0].Profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > 1024 {
+		t.Fatalf("provider metadata duplicated into runtime profile: %d bytes", len(raw))
+	}
+	if !strings.Contains(string(cs[0].SourceJSON), `"notes"`) {
+		t.Fatal("original provider metadata lost")
+	}
+	changed, err := Parse([]byte(strings.Replace(body, strings.Repeat("<", 1<<18), "changed", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed[0].ID != cs[0].ID {
+		t.Fatal("ignored metadata changed runtime identity")
 	}
 }
