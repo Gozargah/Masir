@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/subs"
@@ -59,6 +60,9 @@ func profileBaseline(managed obj, profiles []*subs.OutboundProfile) (obj, error)
 				delete(base, key)
 			}
 		}
+		if err := validateFieldAliases(base, reflect.TypeFor[conf.Config](), ""); err != nil {
+			return nil, err
+		}
 		candidate := overlay(base, managed)
 		// Normalize map types and numbers before comparing global settings.
 		encoded, err := json.Marshal(candidate)
@@ -91,6 +95,12 @@ func mergeGlobalFields(dst, src obj, path string, schema reflect.Type) error {
 			dst[key] = value
 			continue
 		}
+		// Xray ignores provider metadata and unknown struct fields. Retain
+		// the first value without treating a different provider's value as
+		// a runtime conflict.
+		if childSchema == nil && ordinaryStruct(schema) {
+			continue
+		}
 		a, aOK := previous.(map[string]any)
 		b, bOK := value.(map[string]any)
 		if aOK && bOK {
@@ -117,6 +127,16 @@ func matchingField(object obj, key string, schema reflect.Type) (string, reflect
 		return key, nil
 	}
 	if schema.Kind() == reflect.Map {
+		if _, exists := object[key]; exists {
+			return key, schema.Elem()
+		}
+		if number, ok := integerMapKey(key, schema.Key()); ok {
+			for existing := range object {
+				if other, valid := integerMapKey(existing, schema.Key()); valid && number == other {
+					return existing, schema.Elem()
+				}
+			}
+		}
 		return key, schema.Elem()
 	}
 	if schema.Kind() != reflect.Struct {
@@ -148,4 +168,63 @@ func matchingField(object obj, key string, schema reflect.Type) (string, reflect
 		return key, field.Type
 	}
 	return key, nil
+}
+
+func integerMapKey(key string, schema reflect.Type) (string, bool) {
+	switch schema.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value, err := strconv.ParseInt(key, 10, schema.Bits())
+		return strconv.FormatInt(value, 10), err == nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		value, err := strconv.ParseUint(key, 10, schema.Bits())
+		return strconv.FormatUint(value, 10), err == nil
+	}
+	return "", false
+}
+
+func ordinaryStruct(schema reflect.Type) bool {
+	for schema != nil && schema.Kind() == reflect.Pointer {
+		schema = schema.Elem()
+	}
+	return schema != nil && schema.Kind() == reflect.Struct && !reflect.PointerTo(schema).Implements(reflect.TypeFor[json.Unmarshaler]())
+}
+
+// Reject ambiguity before managed overrides can conceal one of the aliases.
+// String dictionaries and custom JSON decoders retain their own semantics.
+func validateFieldAliases(value any, schema reflect.Type, path string) error {
+	for schema != nil && schema.Kind() == reflect.Pointer {
+		schema = schema.Elem()
+	}
+	if schema == nil || reflect.PointerTo(schema).Implements(reflect.TypeFor[json.Unmarshaler]()) {
+		return nil
+	}
+	switch node := value.(type) {
+	case map[string]any:
+		if schema.Kind() != reflect.Struct && schema.Kind() != reflect.Map {
+			return nil
+		}
+		seen := obj{}
+		for key, child := range node {
+			previousKey, childSchema := matchingField(seen, key, schema)
+			if childSchema == nil {
+				continue
+			}
+			if _, exists := seen[previousKey]; exists {
+				return fmt.Errorf("subscription repeats Xray field %s%s", path, key)
+			}
+			seen[key] = true
+			if err := validateFieldAliases(child, childSchema, path+key+"."); err != nil {
+				return err
+			}
+		}
+	case []any:
+		if schema.Kind() == reflect.Slice || schema.Kind() == reflect.Array {
+			for i, child := range node {
+				if err := validateFieldAliases(child, schema.Elem(), fmt.Sprintf("%s%d.", path, i)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }

@@ -1065,3 +1065,43 @@ func TestGlobalProfileFieldAliases(t *testing.T) {
 		t.Fatal("dictionary keys were folded")
 	}
 }
+
+func TestBaselineRejectsNestedAliasesAndIntegerAliases(t *testing.T) {
+	makeProfile := func(base string) *subs.OutboundProfile {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(base), &fields); err != nil {
+			t.Fatal(err)
+		}
+		return &subs.OutboundProfile{Base: fields}
+	}
+	for _, body := range []string{
+		`{"dns":{"queryStrategy":"UseIP","querystrategy":"UseIPv6"}}`,
+		`{"policy":{"levels":{"0":{"connIdle":123,"connidle":456}}}}`,
+		`{"policy":{"levels":{"0":{"connIdle":123},"00":{"connIdle":456}}}}`,
+	} {
+		if _, err := profileBaseline(obj{}, []*subs.OutboundProfile{makeProfile(body)}); err == nil {
+			t.Fatalf("accepted duplicate aliases: %s", body)
+		}
+	}
+	first := makeProfile(`{"policy":{"levels":{"0":{"connIdle":123}}}}`)
+	second := makeProfile(`{"policy":{"levels":{"00":{"connIdle":456}}}}`)
+	if _, err := profileBaseline(obj{}, []*subs.OutboundProfile{first, second}); err == nil {
+		t.Fatal("integer aliases hid a conflicting policy")
+	}
+	second = makeProfile(`{"policy":{"levels":{"00":{"connIdle":123}}}}`)
+	if _, err := profileBaseline(obj{}, []*subs.OutboundProfile{first, second}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProviderMetadataDoesNotConflict(t *testing.T) {
+	first := &subs.OutboundProfile{Base: map[string]json.RawMessage{"Metadata": json.RawMessage(`{"Provider":"first"}`)}}
+	second := &subs.OutboundProfile{Base: map[string]json.RawMessage{"Metadata": json.RawMessage(`{"Provider":"second"}`)}}
+	got, err := profileBaseline(obj{}, []*subs.OutboundProfile{first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Base["Metadata"] == nil || second.Base["Metadata"] == nil || got["Metadata"] == nil {
+		t.Fatal("metadata discarded")
+	}
+}
