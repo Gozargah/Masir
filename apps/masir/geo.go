@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/Gozargah/Masir/apps/masir/internal/ui"
+	"github.com/Gozargah/Masir/libs/masir-core/appresolve"
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
 )
 
@@ -175,7 +177,8 @@ func validateIPs(v string) error {
 }
 
 // appGroups lists installed apps (macOS: a folder match on the bundle covers its helper
-// processes too) and running processes.
+// processes too; Linux: every desktop entry, launchers resolved to their program) and
+// running processes.
 func appGroups() []ui.PickGroup {
 	var groups []ui.PickGroup
 	if runtime.GOOS == "darwin" {
@@ -196,12 +199,99 @@ func appGroups() []ui.PickGroup {
 		sort.Slice(installed, func(i, j int) bool { return strings.ToLower(installed[i].Label) < strings.ToLower(installed[j].Label) })
 		groups = append(groups, ui.PickGroup{Label: "Installed", Items: installed})
 	}
+	if runtime.GOOS == "linux" {
+		groups = append(groups, ui.PickGroup{Label: "Installed", Items: installedDesktopApps(desktopAppDirs())})
+	}
 	var running []ui.PickItem
 	for _, name := range runningProcesses() {
 		running = append(running, ui.PickItem{Value: name, Label: name, Hint: ui.Dim("process")})
 	}
 	groups = append(groups, ui.PickGroup{Label: "Running", Items: running})
 	return groups
+}
+
+// installedDesktopApps lists the desktop entries on this machine, each resolved
+// to the program (or sandbox path) a process rule can match. Entries whose
+// launcher cannot be decoded are left out rather than guessed at — Manual still
+// takes a name typed by hand.
+func installedDesktopApps(dirs []string) []ui.PickItem {
+	var installed []ui.PickItem
+	seenIDs := map[string]bool{}
+	seenValues := map[string]bool{}
+	for _, dir := range dirs {
+		dir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			continue
+		}
+		_ = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || !strings.HasSuffix(entry.Name(), ".desktop") {
+				return nil
+			}
+			relative, err := filepath.Rel(dir, path)
+			if err != nil {
+				return nil
+			}
+			id := strings.ReplaceAll(filepath.ToSlash(relative), "/", "-")
+			if seenIDs[id] {
+				return nil
+			}
+			// Higher-priority entries mask the same ID even when hidden.
+			seenIDs[id] = true
+			d, err := appresolve.FromDesktop(path)
+			if err != nil || !d.Listed() {
+				return nil
+			}
+			value, err := d.Value()
+			if err != nil || seenValues[value] {
+				return nil
+			}
+			seenValues[value] = true
+			name := d.Name
+			if name == "" {
+				name = strings.TrimSuffix(entry.Name(), ".desktop")
+			}
+			installed = append(installed, ui.PickItem{Value: value, Label: name, Hint: ui.Dim("app"), Search: id})
+			return nil
+		})
+	}
+	sort.Slice(installed, func(i, j int) bool { return strings.ToLower(installed[i].Label) < strings.ToLower(installed[j].Label) })
+	return installed
+}
+
+// desktopAppDirs is the search path of desktop entries: the XDG data dirs plus
+// the directories flatpak and snapd export their launchers into.
+func desktopAppDirs() []string {
+	var dirs []string
+	add := func(dir string) {
+		// XDG paths must be absolute; a relative entry would make the picker
+		// scan something like ./applications.
+		if !filepath.IsAbs(dir) {
+			return
+		}
+		for _, d := range dirs {
+			if d == dir {
+				return
+			}
+		}
+		dirs = append(dirs, dir)
+	}
+	home, _ := os.UserHomeDir()
+	dataHome := os.Getenv("XDG_DATA_HOME")
+	if !filepath.IsAbs(dataHome) {
+		dataHome = filepath.Join(home, ".local", "share")
+	}
+	add(filepath.Join(dataHome, "applications"))
+	dataDirs := os.Getenv("XDG_DATA_DIRS")
+	if dataDirs == "" {
+		dataDirs = "/usr/local/share:/usr/share"
+	}
+	for _, dir := range strings.Split(dataDirs, ":") {
+		add(filepath.Join(dir, "applications"))
+	}
+	add(filepath.Join(dataHome, "flatpak", "exports", "share", "applications"))
+	add("/var/lib/flatpak/exports/share/applications")
+	add("/var/lib/snapd/desktop/applications")
+	return dirs
 }
 
 func runningProcesses() []string {

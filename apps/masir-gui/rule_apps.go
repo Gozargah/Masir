@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -14,6 +13,8 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+
+	"github.com/Gozargah/Masir/libs/masir-core/appresolve"
 )
 
 type ruleApp struct {
@@ -410,8 +411,10 @@ ConvertTo-Json -InputObject @($desktop+$packaged) -Compress`).Output()
 // never turn into an application choice just because it is running.
 func mergeInstalledRuleApps(installed, running []ruleApp, platform string) []ruleApp {
 	active := map[string]bool{}
+	activeBase := map[string]bool{}
 	for _, v := range running {
 		active[ruleAppIdentity(v.Path, platform)] = true
+		activeBase[ruleAppBasename(v.Path)] = true
 	}
 	seen := map[string]bool{}
 	var out []ruleApp
@@ -422,10 +425,24 @@ func mergeInstalledRuleApps(installed, running []ruleApp, platform string) []rul
 		}
 		seen[key] = true
 		v.Running = active[key]
+		// Bare process rules match the basename of the running path.
+		if !v.Running && key != "" && !strings.ContainsAny(key, `/\`) {
+			v.Running = activeBase[key]
+		}
 		out = append(out, v)
 	}
 	slices.SortFunc(out, func(a, b ruleApp) int { return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)) })
 	return out
+}
+
+// ruleAppBasename is the process name xray derives for a running path.
+func ruleAppBasename(path string) string {
+	path = strings.ReplaceAll(path, "\\", "/")
+	path = strings.TrimRight(path, "/")
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		return path[i+1:]
+	}
+	return path
 }
 func ruleAppIdentity(path, platform string) string {
 	path = strings.ReplaceAll(path, "\\", "/")
@@ -480,59 +497,21 @@ func runningRuleApps(ctx context.Context) ([]ruleApp, error) {
 	}
 	return out, nil
 }
+
+// desktopExecutable resolves a desktop entry to the value a process rule
+// carries. Launcher entries (flatpak, snap, env) are decoded to the program
+// they start — see appresolve; an entry that cannot be named stays out of the
+// list instead of becoming a silently wrong rule.
 func desktopExecutable(path string) string {
-	data, err := os.ReadFile(path)
+	d, err := appresolve.FromDesktop(path)
 	if err != nil {
 		return ""
 	}
-	section := false
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "[") {
-			section = line == "[Desktop Entry]"
-		}
-		if !section || !strings.HasPrefix(line, "Exec=") {
-			continue
-		}
-		command := strings.TrimSpace(strings.TrimPrefix(line, "Exec="))
-		var token strings.Builder
-		quoted, escaped := false, false
-		for _, r := range command {
-			if escaped {
-				token.WriteRune(r)
-				escaped = false
-				continue
-			}
-			if r == '\\' {
-				escaped = true
-				continue
-			}
-			if r == '"' {
-				quoted = !quoted
-				continue
-			}
-			if !quoted && (r == ' ' || r == '\t') {
-				break
-			}
-			token.WriteRune(r)
-		}
-		name := token.String()
-		if name == "env" || name == "flatpak" || name == "snap" || name == "sh" || name == "bash" || name == "gtk-launch" {
-			return ""
-		}
-		if name == "" || strings.Contains(name, "%") {
-			return ""
-		}
-		resolved, err := exec.LookPath(name)
-		if err == nil {
-			if real, err := filepath.EvalSymlinks(resolved); err == nil {
-				resolved = real
-			}
-			return resolved
-		}
+	v, err := d.Value()
+	if err != nil {
 		return ""
 	}
-	return ""
+	return v
 }
 
 func (a *app) applyRuleApps() {
