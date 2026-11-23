@@ -676,6 +676,7 @@ func (a *app) applyJob(job *pb.UpdateJob) {
 	a.updates.state.job = job
 	if updateActive(job.GetState()) {
 		a.updates.state.sawJob = true
+		a.updates.state.wantUpdate = false
 	}
 	switch job.GetState() {
 	case pb.UpdateState_UPDATE_STATE_CHECKING:

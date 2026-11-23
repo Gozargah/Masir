@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/update"
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -36,5 +39,21 @@ func TestOfflineCompatibilityRejectsEitherActiveJob(t *testing.T) {
 				t.Fatal("job did not stop")
 			}
 		})
+	}
+}
+
+func TestLegacyProbeOnlyAcceptsConfirmedAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		absent bool
+	}{
+		{fmt.Errorf("dial: %w", os.ErrNotExist), true},
+		{fmt.Errorf("dial: %w", syscall.ECONNREFUSED), true},
+		{context.DeadlineExceeded, false}, {os.ErrPermission, false},
+		{fmt.Errorf("pipe busy"), false},
+	} {
+		if got := legacyListenerAbsent(tc.err); got != tc.absent {
+			t.Errorf("%v: absent=%v", tc.err, got)
+		}
 	}
 }

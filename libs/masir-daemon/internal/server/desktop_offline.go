@@ -9,12 +9,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Gozargah/Masir/libs/masir-core/client"
 	"github.com/Gozargah/Masir/libs/masir-core/geopack"
 	"github.com/Gozargah/Masir/libs/masir-core/paths"
 	"github.com/Gozargah/Masir/libs/masir-core/service"
+	"github.com/Gozargah/Masir/libs/masir-core/transport"
 	"github.com/Gozargah/Masir/libs/masir-core/updatebundle"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/identity"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/store"
@@ -161,9 +163,16 @@ func readOfflineVersion(ctx context.Context) (string, error) {
 // asking the supervisor to stop them; never cancel an install in order to upgrade.
 func legacyServiceUpdatesIdle(ctx context.Context, id identity.Identity) error {
 	sock := paths.PrivilegedSocketPath(id.UID)
-	if !client.AliveAt(sock) {
-		return nil
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	probe, err := transport.DialContext(probeCtx, sock)
+	cancel()
+	if err != nil {
+		if legacyListenerAbsent(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot determine legacy daemon update state: %w", err)
 	}
+	probe.Close()
 	conn, daemon, err := client.DialSocket(sock)
 	if err != nil {
 		return err
@@ -192,4 +201,9 @@ func requireIdleUpdateJobs(ctx context.Context, daemon pb.DaemonServiceClient) e
 		}
 	}
 	return nil
+}
+
+// A timeout, permission failure or busy pipe says nothing about running jobs.
+func legacyListenerAbsent(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED)
 }

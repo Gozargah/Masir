@@ -1051,3 +1051,13 @@ func TestPendingDesktopFeedDoesNotDisplaceAnExternalJob(t *testing.T) {
 		t.Fatalf("phase=%v pending=%v", a.updates.state.phase, a.updates.state.wantUpdate)
 	}
 }
+
+func TestCancelledExternalJobDoesNotRevivePendingDesktopRequest(t *testing.T) {
+	a := newTestApp(ukServers())
+	a.updates.state.wantUpdate = true
+	a.applyJob(&pb.UpdateJob{State: pb.UpdateState_UPDATE_STATE_DOWNLOADING})
+	a.applyJob(&pb.UpdateJob{State: pb.UpdateState_UPDATE_STATE_STOPPED})
+	if a.updates.state.wantUpdate {
+		t.Fatal("external job retained a request that could restart after cancellation")
+	}
+}
