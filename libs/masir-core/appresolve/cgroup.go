@@ -55,6 +55,12 @@ func ScopeOf(cgroup string) Scope {
 
 func scopeInPath(path string) Scope {
 	for _, segment := range strings.Split(path, "/") {
+		// Only an application scope names an app. On cgroup-v1 hosts snapd also
+		// uses a package-wide freezer group (/snap.<instance>, no .scope): it
+		// must not end the search before the application scope is read.
+		if !strings.HasSuffix(segment, ".scope") {
+			continue
+		}
 		if i := strings.Index(segment, "app-flatpak-"); i >= 0 {
 			id := strings.TrimSuffix(segment[i+len("app-flatpak-"):], ".scope")
 			// The trailing hyphen-separated number distinguishes instances.
