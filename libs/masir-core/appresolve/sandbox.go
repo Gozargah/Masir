@@ -4,13 +4,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v2"
 )
 
 // A Flatpak export symlink points into the exact deployment. Inspect the
-// corresponding /app file without running launchers or interpreting scripts.
+// corresponding /app file without running launchers.
 func flatpakExecutable(desktopPath, command string) (string, error) {
 	if command == "" || strings.Contains(command, "%") {
 		return "", ErrUnresolvable
@@ -26,13 +27,98 @@ func flatpakExecutable(desktopPath, command string) (string, error) {
 	if !ok {
 		return "", ErrUnresolvable
 	}
-	actual, err := packagedExecutable(root, relative)
-	if err != nil {
-		return "", err
+	if name, err := deploymentExecutable(root, relative); err == nil {
+		return name, nil
 	}
-	// Xray sees the executable through /proc, where the path can be in
-	// either the sandbox or the host deployment. Both have this basename.
-	return filepath.Base(actual), nil
+	// The entry is often a wrapper script that starts the real program
+	// (Spotify's /app/bin/spotify). Follow the sandbox paths it names to a
+	// native executable inside the deployment. A wrapper that only launches an
+	// interpreter (a Python app) still has no nameable identity and stays out.
+	for _, target := range wrapperTargets(root, relative) {
+		if name, err := deploymentExecutable(root, target); err == nil {
+			return name, nil
+		}
+	}
+	return "", ErrUnresolvable
+}
+
+// deploymentExecutable verifies a native executable inside a deployment. A
+// symlink whose target is an absolute sandbox path (/app/...) cannot be resolved
+// from the host, so it is mapped back into the deployment instead.
+func deploymentExecutable(root, relative string) (string, error) {
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", ErrUnresolvable
+	}
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	for hops := 0; hops < 8; hops++ {
+		if rel, err := filepath.Rel(root, path); err != nil || !filepath.IsLocal(rel) {
+			return "", ErrUnresolvable
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return "", ErrUnresolvable
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			break
+		}
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "", ErrUnresolvable
+		}
+		switch {
+		case strings.HasPrefix(target, "/app/"):
+			path = filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(target, "/app/")))
+		case filepath.IsAbs(target):
+			return "", ErrUnresolvable
+		default:
+			path = filepath.Join(filepath.Dir(path), target)
+		}
+	}
+	if rel, err := filepath.Rel(root, path); err != nil || !filepath.IsLocal(rel) {
+		return "", ErrUnresolvable
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return "", ErrUnresolvable
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", ErrUnresolvable
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil || string(magic[:]) != "\x7fELF" {
+		return "", ErrUnresolvable
+	}
+	return filepath.Base(path), nil
+}
+
+// wrapperPath matches the sandbox paths a launcher script can name.
+var wrapperPath = regexp.MustCompile(`/app/[A-Za-z0-9@._+-][A-Za-z0-9@._+-]*(?:/[A-Za-z0-9@._+-]+)*`)
+
+// wrapperTargets lists the /app paths a script entry mentions, in order.
+func wrapperTargets(root, relative string) []string {
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 512*1024 {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || (len(data) >= 4 && string(data[:4]) == "\x7fELF") {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, match := range wrapperPath.FindAllString(string(data), 64) {
+		rel := strings.TrimPrefix(match, "/app/")
+		if rel == "" || seen[rel] {
+			continue
+		}
+		seen[rel] = true
+		out = append(out, rel)
+	}
+	return out
 }
 
 func flatpakFiles(desktopPath string) string {
