@@ -171,3 +171,20 @@ func TestDesktopListed(t *testing.T) {
 		t.Error("non-application entries must not be listed")
 	}
 }
+
+func TestDesktopVisibilityUsesFirstMatchingDesktop(t *testing.T) {
+	for _, tc := range []struct {
+		current string
+		want    bool
+	}{
+		{"Custom:GNOME", true},
+		{"GNOME:Custom", false},
+		{"Other", false},
+	} {
+		t.Setenv("XDG_CURRENT_DESKTOP", tc.current)
+		d := Desktop{OnlyShowIn: []string{"Custom"}, NotShowIn: []string{"GNOME"}}
+		if got := d.Listed(); got != tc.want {
+			t.Errorf("Listed() with %q = %v, want %v", tc.current, got, tc.want)
+		}
+	}
+}

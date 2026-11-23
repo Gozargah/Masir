@@ -526,3 +526,34 @@ func TestMergeInstalledRuleAppsMatchesSandboxBasenames(t *testing.T) {
 		t.Fatalf("merged = %+v; want no Running flag for a different program", other)
 	}
 }
+
+func TestMergeInstalledRuleAppsMatchesFlatpakDeployment(t *testing.T) {
+	deployment := t.TempDir()
+	export := filepath.Join(deployment, "export", "share", "applications")
+	if err := os.MkdirAll(export, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(export, "example.desktop")
+	if err := os.WriteFile(entry, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := filepath.EvalSymlinks(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	installed := []ruleApp{{Name: "Example", Path: "/app/bin/program", Icon: entry}}
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"/app/bin/program", true},
+		{filepath.Join(deployment, "files", "bin", "program"), true},
+		{"/some/other/files/bin/program", false},
+	} {
+		got := mergeInstalledRuleApps(installed, []ruleApp{{Path: tc.path}}, "linux")
+		if len(got) != 1 || got[0].Running != tc.want {
+			t.Errorf("running %q: got %+v, want Running=%v", tc.path, got, tc.want)
+		}
+	}
+}

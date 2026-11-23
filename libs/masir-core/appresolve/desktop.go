@@ -14,8 +14,8 @@ type Desktop struct {
 	Type       string
 	NoDisplay  bool
 	Hidden     bool
-	OnlyShowIn string
-	NotShowIn  string
+	OnlyShowIn []string
+	NotShowIn  []string
 	path       string
 }
 
@@ -29,17 +29,18 @@ func (d Desktop) Listed() bool {
 	if d.Type != "" && d.Type != "Application" {
 		return false
 	}
-	shown := d.OnlyShowIn == ""
 	for _, desktop := range strings.Split(os.Getenv("XDG_CURRENT_DESKTOP"), ":") {
 		if desktop == "" {
 			continue
 		}
-		if slices.Contains(strings.Split(d.NotShowIn, ";"), desktop) {
+		if slices.Contains(d.NotShowIn, desktop) {
 			return false
 		}
-		shown = shown || slices.Contains(strings.Split(d.OnlyShowIn, ";"), desktop)
+		if slices.Contains(d.OnlyShowIn, desktop) {
+			return true
+		}
 	}
-	return shown
+	return d.OnlyShowIn == nil
 }
 
 // FromDesktop reads the routing and visibility fields of [Desktop Entry].
@@ -70,9 +71,9 @@ func FromDesktop(path string) (Desktop, error) {
 		case d.Type == "" && strings.HasPrefix(line, "Type="):
 			d.Type = strings.TrimSpace(strings.TrimPrefix(line, "Type="))
 		case strings.HasPrefix(line, "OnlyShowIn="):
-			d.OnlyShowIn = strings.TrimPrefix(line, "OnlyShowIn=")
+			d.OnlyShowIn = strings.Split(strings.TrimPrefix(line, "OnlyShowIn="), ";")
 		case strings.HasPrefix(line, "NotShowIn="):
-			d.NotShowIn = strings.TrimPrefix(line, "NotShowIn=")
+			d.NotShowIn = strings.Split(strings.TrimPrefix(line, "NotShowIn="), ";")
 		case !d.NoDisplay && strings.HasPrefix(line, "NoDisplay="):
 			d.NoDisplay = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(line, "NoDisplay=")), "true")
 		case !d.Hidden && strings.HasPrefix(line, "Hidden="):

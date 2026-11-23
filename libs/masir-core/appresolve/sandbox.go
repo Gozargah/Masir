@@ -15,17 +15,10 @@ func flatpakExecutable(desktopPath, command string) (string, error) {
 	if command == "" || strings.Contains(command, "%") {
 		return "", ErrUnresolvable
 	}
-	target, err := filepath.EvalSymlinks(desktopPath)
-	if err != nil {
+	root := flatpakFiles(desktopPath)
+	if root == "" {
 		return "", ErrUnresolvable
 	}
-	applications := filepath.Dir(target)
-	export := filepath.Dir(filepath.Dir(applications))
-	if filepath.Base(applications) != "applications" ||
-		filepath.Base(filepath.Dir(applications)) != "share" || filepath.Base(export) != "export" {
-		return "", ErrUnresolvable
-	}
-	root := filepath.Join(filepath.Dir(export), "files")
 	if !strings.Contains(command, "/") {
 		command = "/app/bin/" + command
 	}
@@ -38,6 +31,34 @@ func flatpakExecutable(desktopPath, command string) (string, error) {
 		return "", err
 	}
 	return "/app/" + filepath.ToSlash(actual), nil
+}
+
+// FlatpakHostPath maps a resolved /app executable to the deployment backing
+// the desktop export. The GUI uses it when /proc reports a host path.
+func FlatpakHostPath(desktopPath, value string) string {
+	relative, ok := strings.CutPrefix(value, "/app/")
+	if !ok || !filepath.IsLocal(relative) {
+		return ""
+	}
+	root := flatpakFiles(desktopPath)
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, relative)
+}
+
+func flatpakFiles(desktopPath string) string {
+	target, err := filepath.EvalSymlinks(desktopPath)
+	if err != nil {
+		return ""
+	}
+	applications := filepath.Dir(target)
+	export := filepath.Dir(filepath.Dir(applications))
+	if filepath.Base(applications) != "applications" ||
+		filepath.Base(filepath.Dir(applications)) != "share" || filepath.Base(export) != "export" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(export), "files")
 }
 
 func installedSnapExecutable(name string) (string, error) {
