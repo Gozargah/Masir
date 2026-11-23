@@ -98,6 +98,27 @@ func daemonEnable(a args) error {
 	return enableService(user)
 }
 
+// daemonLabel relabels the system service's copy of masir for SELinux and restarts
+// the service so the new domain applies: the one-command repair when an update or a
+// system relabel left the binary with a label that starts the daemon confined
+// (docs/selinux.md).
+func daemonLabel(args) error {
+	if !service.Installed() {
+		return fail("no service is installed, so there is no service binary to relabel")
+	}
+	if !elevated() {
+		return elevate("daemon", "label")
+	}
+	if err := service.EnsureBinaryLabel(service.BinaryPath()); err != nil {
+		return err
+	}
+	if err := restartService(); err != nil {
+		return err
+	}
+	ui.Success("The service binary is labeled for SELinux and the service restarted.")
+	return nil
+}
+
 // daemonRollback restores the service's previous binary after an update that installed
 // but didn't start. `masir update` keeps it beside the service's copy.
 func daemonRollback(args) error {

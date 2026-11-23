@@ -61,6 +61,17 @@ semanage fcontext -a -t bin_t \
 full relabel, which the next install or update re-applies anyway. On a machine
 without SELinux neither command runs.
 
+Every path that writes the service's binary labels it as part of the write: the
+install commands above, `masir update` (the daemon's installer labels the fresh
+inode before anything restarts on it), and the update's sync pass, which
+re-checks the label even when the content already matches. If a label is ever
+lost anyway — a system relabel on a machine without `semanage`, a manual copy —
+one command repairs it and restarts the service:
+
+```sh
+masir daemon label
+```
+
 To fix a service installed by an older masir, reinstall it once:
 
 ```sh
@@ -77,7 +88,8 @@ journalctl _TRANSPORT=audit | grep denied | tail   # expect silence
 ## If you see it anyway
 
 1. `ps -eZ | grep masir` — is the daemon in `init_t`? Then the binary is not
-   labeled; run `sudo chcon -t bin_t /usr/local/lib/masir/masir` and
+   labeled; run `masir daemon label` (relabels and restarts), or by hand
+   `sudo chcon -t bin_t /usr/local/lib/masir/masir` and
    `sudo systemctl restart masird`.
 2. Is the label right but the domain still confined? Check
    `journalctl _TRANSPORT=audit --since -1h | grep denied` for the exact

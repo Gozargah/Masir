@@ -589,7 +589,7 @@ func syncServiceCopy(job *pb.UpdateJob) error {
 		name += ".exe"
 	}
 	src := filepath.Join(job.StagedDir, name)
-	if same, _ := sameContent(src, dst); same {
+	if same, _ := sameContent(src, dst); same && service.BinaryReady(dst) {
 		return nil
 	}
 	if !elevated() {
@@ -654,8 +654,19 @@ func syncService(src, user string) error {
 	if _, err := os.Stat(src); err != nil {
 		return err
 	}
-	stopServiceForInstall() // Windows can't replace a running executable
 	dst := service.BinaryPath()
+	if runtime.GOOS == "linux" {
+		if same, _ := sameContent(src, dst); same {
+			if err := service.EnsureBinaryReady(dst); err != nil {
+				return err
+			}
+			if user == "" {
+				return nil
+			}
+			return syncServiceUnit(user)
+		}
+	}
+	stopServiceForInstall() // Windows can't replace a running executable
 	if err := copyFile(src, dst, 0o755); err != nil {
 		return err
 	}

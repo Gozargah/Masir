@@ -79,7 +79,7 @@ func internalRun() bool {
 		return false
 	}
 	switch os.Args[2] {
-	case "run", "sync-service", "sync-self", "check", "import-desktop":
+	case "run", "sync-service", "sync-self", "check", "import-desktop", "label":
 		return true
 	}
 	return false
@@ -101,6 +101,7 @@ func mayRunAsRoot(path string) bool {
 		"masir daemon enable",
 		"masir daemon disable",
 		"masir daemon rollback",
+		"masir daemon label",
 		"masir desktop install-package",
 		// An installed service is restarted through the service manager; without one,
 		// daemonRestart refuses a root caller itself.
@@ -404,6 +405,7 @@ func rootCmd() *cobra.Command {
 		leaf("stop", "Stop the daemon", daemonStop, cobra.NoArgs),
 		restart,
 		leaf("rollback", "Put the service's previous version back after a failed update", daemonRollback, cobra.NoArgs),
+		leaf("label", "Relabel the service binary for SELinux and restart; asks for sudo", daemonLabel, cobra.NoArgs),
 		enable, disable, runDaemon, syncSvc, syncSelf, unitCmd, syncUnitCmd, checkRules, importDesktop)
 
 	targetArg := cobra.MatchAll(cobra.MaximumNArgs(1), cobra.OnlyValidArgs)
