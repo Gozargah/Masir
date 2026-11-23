@@ -51,14 +51,25 @@ func TestResolveUnresolvable(t *testing.T) {
 }
 
 func TestResolvePlainExecutable(t *testing.T) {
-	for _, exec := range []string{"ls -la", "/usr/bin/ls %U", "/bin/ls"} {
+	// LookPath finds the host's own binary; compare against the platform's
+	// executable name (Windows appends .exe).
+	probe := "ls"
+	if runtime.GOOS == "windows" {
+		probe = "cmd"
+	}
+	for _, exec := range []string{probe + " -la", probe + " %U"} {
 		got, err := Resolve(exec)
 		if err != nil {
 			t.Errorf("Resolve(%q): %v", exec, err)
 			continue
 		}
-		if !filepath.IsAbs(got) || filepath.Base(got) != "ls" {
-			t.Errorf("Resolve(%q) = %q; want an absolute path ending in ls", exec, got)
+		if !filepath.IsAbs(got) || strings.TrimSuffix(strings.ToLower(filepath.Base(got)), ".exe") != probe {
+			t.Errorf("Resolve(%q) = %q; want an absolute %s executable", exec, got, probe)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		if got, err := Resolve("/bin/ls"); err != nil || filepath.Base(got) != "ls" {
+			t.Errorf("absolute entry resolved to %q, %v; want the ls path", got, err)
 		}
 	}
 }
