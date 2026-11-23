@@ -836,11 +836,13 @@ func (a *app) startAppUpdate() {
 	u := a.updates.state.app
 	shared := a.canShareDesktopUpdate()
 	legacy := shared && !a.updates.state.rel.GetDesktopImportSupported()
-	if shared {
-		a.updates.state.tunWasOn = a.status != nil && a.status.GetTunRunning()
-	}
 	if u == nil {
 		return
+	}
+	if shared || a.appUpdateCoversDaemon() {
+		// A stopped tunnel during installation must not erase the requirement
+		// to restore the tunnel that was running before this attempt.
+		a.updates.state.tunWasOn = a.status != nil && a.status.GetTunRunning()
 	}
 	a.updates.state.phase = updateAppDownloading
 	a.updates.state.progress, a.updates.state.total = 0, 0
@@ -936,8 +938,9 @@ func (a *app) startAppUpdate() {
 				// before the app relaunches, so the tunnel comes back with this release.
 				// If no daemon is running there is nothing to restart: the new app starts
 				// one itself.
-				if (shared || a.appUpdateCoversDaemon()) && a.reachable && a.status != nil && !sameVersion(a.status.GetVersion(), u.Version) {
-					a.updates.state.tunWasOn = a.status.GetTunRunning()
+				// The legacy helper already restarted the service. Always verify its
+				// fresh status, even when the cached status matches or it is offline.
+				if legacy || ((shared || a.appUpdateCoversDaemon()) && a.reachable && a.status != nil && !sameVersion(a.status.GetVersion(), u.Version)) {
 					a.updates.state.relaunchAfterRestart = true
 					a.followDaemonRestart(u.Version, !legacy)
 					return

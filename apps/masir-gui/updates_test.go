@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -880,10 +881,12 @@ func TestLegacyDesktopUpdateWaitsForInstallBeforeChangingEitherCopy(t *testing.T
 	}
 	oldEnabled, oldConfirm, oldInstall := preparedUpdatesEnabled, confirmPreparedUpdates, installPreparedAppUpdate
 	oldLegacy, oldRelaunch := installBundledDaemon, relaunchApp
+	oldReconcile := reconcileUpdatedService
 	oldAppEnabled, oldCheck := appUpdatesEnabled, checkAppUpdate
 	defer func() {
 		preparedUpdatesEnabled, confirmPreparedUpdates, installPreparedAppUpdate = oldEnabled, oldConfirm, oldInstall
 		installBundledDaemon, relaunchApp = oldLegacy, oldRelaunch
+		reconcileUpdatedService = oldReconcile
 		appUpdatesEnabled, checkAppUpdate = oldAppEnabled, oldCheck
 	}()
 	appUpdatesEnabled = func() bool { return true }
@@ -891,6 +894,7 @@ func TestLegacyDesktopUpdateWaitsForInstallBeforeChangingEitherCopy(t *testing.T
 		return &mygo.Update{Version: "0.2.0"}, nil
 	}
 	preparedUpdatesEnabled = func() bool { return true }
+	reconcileUpdatedService = func() error { return nil }
 	confirmPreparedUpdates = func() bool { return true }
 	posts := make(chan func(), 8)
 	a.post = func(fn func()) { posts <- fn }
@@ -937,8 +941,95 @@ func TestLegacyDesktopUpdateWaitsForInstallBeforeChangingEitherCopy(t *testing.T
 	a.confirmInstall()
 	next() // requesting helper authorization
 	next() // helper authorized
-	next() // committed and relaunched
+	next() // committed; starts fresh daemon verification
+	next() // daemon verified and app relaunched
 	if !imported || !committed || !relaunched {
 		t.Fatalf("imported=%v committed=%v relaunched=%v", imported, committed, relaunched)
+	}
+}
+
+func TestLegacyUpdateAlwaysVerifiesDaemonBeforeRelaunch(t *testing.T) {
+	for _, sample := range []string{"matching cache", "unreachable", "missing status"} {
+		t.Run(sample, func(t *testing.T) {
+			f := ukServers()
+			f.status.Privileged, f.status.ServiceInstalled = true, true
+			f.status.Version = "0.1.0"
+			a := newTestApp(f)
+			a.updates.state.rel = releaseInfo("0.1.0", "0.2.0")
+			a.updates.state.app = &mygo.Update{Version: "0.2.0"}
+			dir := t.TempDir()
+			if err := os.Mkdir(filepath.Join(dir, "Masir.app"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			oldEnabled, oldConfirm, oldInstall := preparedUpdatesEnabled, confirmPreparedUpdates, installPreparedAppUpdate
+			oldLegacy, oldRelaunch, oldTimeout := installBundledDaemon, relaunchApp, daemonWaitTimeout
+			defer func() {
+				preparedUpdatesEnabled, confirmPreparedUpdates, installPreparedAppUpdate = oldEnabled, oldConfirm, oldInstall
+				installBundledDaemon, relaunchApp, daemonWaitTimeout = oldLegacy, oldRelaunch, oldTimeout
+			}()
+			preparedUpdatesEnabled = func() bool { return true }
+			confirmPreparedUpdates = func() bool { return false }
+			daemonWaitTimeout = time.Millisecond
+			installBundledDaemon = func(string, func()) error { return nil }
+			installPreparedAppUpdate = func(_ context.Context, _ *mygo.Update, _ func(int64, int64), prepare func(string) error) error {
+				if err := prepare(dir); err != nil {
+					return err
+				}
+				switch sample {
+				case "matching cache":
+					a.status = &pb.Status{Version: "0.2.0"}
+				case "unreachable":
+					a.reachable = false
+				case "missing status":
+					a.status = nil
+				}
+				return nil
+			}
+			relaunchApp = func() { t.Error("relaunched without confirming the new daemon") }
+			a.startAppUpdate()
+			if a.updates.state.phase != updateFailed || !strings.Contains(a.updates.state.err, "did not report") || f.called("restart") {
+				t.Fatalf("phase=%v err=%s calls=%v", a.updates.state.phase, a.updates.state.err, f.calls)
+			}
+		})
+	}
+}
+
+func TestAppUpdatePreservesPreInstallTunnelRequirement(t *testing.T) {
+	for _, bundled := range []bool{false, true} {
+		t.Run(fmt.Sprint("bundled=", bundled), func(t *testing.T) {
+			f := ukServers()
+			f.status.Version = "0.2.0"
+			f.status.TunRunning = false
+			a := newTestApp(f)
+			a.status = &pb.Status{Version: "0.1.0", TunRunning: true, Privileged: true, Bundled: bundled}
+			a.reachable = true
+			a.updates.state.rel = releaseInfo("0.1.0", "0.2.0")
+			a.updates.state.rel.DesktopImportSupported = true
+			a.updates.state.app = &mygo.Update{Version: "0.2.0"}
+			oldEnabled, oldConfirm, oldPrepared := preparedUpdatesEnabled, confirmPreparedUpdates, installPreparedAppUpdate
+			oldInstall, oldImport, oldRelaunch, oldTimeout := installAppUpdate, importSharedComponents, relaunchApp, daemonWaitTimeout
+			defer func() {
+				preparedUpdatesEnabled, confirmPreparedUpdates, installPreparedAppUpdate = oldEnabled, oldConfirm, oldPrepared
+				installAppUpdate, importSharedComponents, relaunchApp, daemonWaitTimeout = oldInstall, oldImport, oldRelaunch, oldTimeout
+			}()
+			preparedUpdatesEnabled = func() bool { return true }
+			confirmPreparedUpdates = func() bool { return false }
+			daemonWaitTimeout = time.Millisecond
+			importSharedComponents = func(context.Context, pb.DaemonServiceClient, string, string) error { return nil }
+			finish := func() { a.status = &pb.Status{Version: "0.1.0", Bundled: bundled, TunRunning: false} }
+			installPreparedAppUpdate = func(_ context.Context, _ *mygo.Update, _ func(int64, int64), prepare func(string) error) error {
+				if err := prepare("staged"); err != nil {
+					return err
+				}
+				finish()
+				return nil
+			}
+			installAppUpdate = func(context.Context, *mygo.Update, func(int64, int64)) error { finish(); return nil }
+			relaunchApp = func() { t.Error("relaunched with the tunnel still down") }
+			a.startAppUpdate()
+			if !a.updates.state.tunWasOn || a.updates.state.phase != updateFailed || !strings.Contains(a.updates.state.err, "without the tunnel") {
+				t.Fatalf("tunWasOn=%v phase=%v err=%s", a.updates.state.tunWasOn, a.updates.state.phase, a.updates.state.err)
+			}
+		})
 	}
 }
