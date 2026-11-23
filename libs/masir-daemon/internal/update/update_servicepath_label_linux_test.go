@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Gozargah/Masir/libs/masir-core/service"
+
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
 )
 
@@ -81,5 +83,40 @@ func TestMasirUpdateLabelsTheRunningServiceBinary(t *testing.T) {
 	}
 	if got := labelOf(t, other); strings.Contains(got, ":bin_t:") {
 		t.Errorf("non-service binary label = %q; only the service path should be labeled", got)
+	}
+}
+
+// The desktop retry uses this check after matching the signed payload. Repair
+// the live inode without rewriting it or replacing the original backup.
+func TestEnsureServiceReadyRepairsMatchingBinary(t *testing.T) {
+	if !service.SelinuxEnforcing() {
+		t.Skip("SELinux is not enforcing")
+	}
+	bin := filepath.Join(t.TempDir(), "masir")
+	if err := os.WriteFile(bin, []byte("already installed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin+".previous", []byte("previous release"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.LabelOK(bin) {
+		t.Fatal("test binary must start with the default SELinux label")
+	}
+	oldPath := serviceBinaryPath
+	t.Cleanup(func() { serviceBinaryPath = oldPath })
+	serviceBinaryPath = func() string { return bin }
+	if err := (Masir{Binary: bin}).EnsureServiceReady(); err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.Stat(bin)
+	if err != nil || !os.SameFile(info, current) || !service.LabelOK(bin) {
+		t.Fatalf("retry did not repair the live inode: label %q, stat %v", labelOf(t, bin), err)
+	}
+	if got, err := os.ReadFile(bin + ".previous"); err != nil || string(got) != "previous release" {
+		t.Fatalf("retry changed the rollback backup: %q (%v)", got, err)
 	}
 }

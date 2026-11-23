@@ -9,18 +9,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Gozargah/Masir/libs/masir-core/service"
 	pb "github.com/Gozargah/Masir/libs/masir-proto/gen/masir/daemon/v1"
 )
 
-// The regression this exists for: when the label step failed after replaceFile,
-// the failed binary used to stay in place — and a retry then saved it over the
-// .previous copy, destroying the version `masir daemon rollback` needs. A failed
-// install must undo itself and leave the pre-update binary as the rollback target.
-func TestLabelFailureRestoresPreviousBinary(t *testing.T) {
-	oldEnsure := ensureBinaryLabel
+// A persistent label failure must leave the installed inode and rollback
+// backup intact. On enforcing hosts, also check the actual label survives.
+func TestLabelFailurePreservesInstalledBinary(t *testing.T) {
+	oldEnsure := labelBinary
 	oldSvc := serviceBinaryPath
 	t.Cleanup(func() {
-		ensureBinaryLabel = oldEnsure
+		labelBinary = oldEnsure
 		serviceBinaryPath = oldSvc
 	})
 
@@ -37,13 +36,25 @@ func TestLabelFailureRestoresPreviousBinary(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("old masir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if service.SelinuxEnforcing() {
+		if err := service.LabelBinary(bin); err != nil {
+			t.Fatal(err)
+		}
+	}
+	info, err := os.Stat(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin+".previous", []byte("earlier masir"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	// This binary is the service's copy, so Install must label it — and that is
 	// exactly the step forced to fail here.
 	serviceBinaryPath = func() string { return bin }
 	var labeled []string
-	ensureBinaryLabel = func(p string) error {
+	labelBinary = func(p string) error {
 		labeled = append(labeled, p)
-		return errors.New("semanage: permission denied")
+		return errors.New("chcon: permission denied")
 	}
 
 	var lastErr string
@@ -65,16 +76,19 @@ func TestLabelFailureRestoresPreviousBinary(t *testing.T) {
 	if got, _ := os.ReadFile(bin); string(got) != "old masir" {
 		t.Errorf("binary after the failed label = %q; the install must be undone", got)
 	}
-	if got, _ := os.ReadFile(bin + ".previous"); string(got) != "old masir" {
-		t.Errorf("rollback copy after the failed label = %q; want the pre-update binary", got)
+	current, err := os.Stat(bin)
+	if err != nil || !os.SameFile(info, current) || (service.SelinuxEnforcing() && !service.LabelOK(bin)) {
+		t.Fatalf("failed install changed the live inode or its label: %v", err)
 	}
-	// The restore recreated the file — a new inode — so it must have relabeled it.
-	if len(labeled) != 2 || labeled[1] != bin {
-		t.Errorf("label calls = %v; want the install attempt and one relabel of the restore", labeled)
+	if got, _ := os.ReadFile(bin + ".previous"); string(got) != "earlier masir" {
+		t.Errorf("rollback copy after the failed label = %q; want the earlier binary", got)
+	}
+	if len(labeled) != 1 || labeled[0] != bin+".new" {
+		t.Errorf("label calls = %v; want only the staged replacement", labeled)
 	}
 
 	// A retry must not turn the failed copy into the rollback target.
-	ensureBinaryLabel = func(string) error { return nil }
+	labelBinary = service.LabelBinary
 	if state := install(); state != pb.UpdateState_UPDATE_STATE_DONE {
 		t.Fatalf("retry state = %v (%s)", state, lastErr)
 	}
@@ -86,14 +100,12 @@ func TestLabelFailureRestoresPreviousBinary(t *testing.T) {
 	}
 }
 
-// When the running binary and the service copy are different files, a failure on
-// the service copy must undo BOTH replacements: a retry would otherwise save the
-// failed copies over the .previous backups of both files.
-func TestServiceLabelFailureRestoresBothBinaries(t *testing.T) {
-	oldEnsure := ensureBinaryLabel
+// A separate service copy must be labeled before the primary binary changes.
+func TestServiceLabelFailurePreservesBothBinaries(t *testing.T) {
+	oldEnsure := labelBinary
 	oldSvc := serviceBinaryPath
 	t.Cleanup(func() {
-		ensureBinaryLabel = oldEnsure
+		labelBinary = oldEnsure
 		serviceBinaryPath = oldSvc
 	})
 
@@ -118,11 +130,11 @@ func TestServiceLabelFailureRestoresBothBinaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Only the service copy fails its label check, as a real one would on a host
-	// where semanage refuses the type change.
+	// where chcon refuses the type change.
 	serviceBinaryPath = func() string { return svc }
-	ensureBinaryLabel = func(p string) error {
-		if p == svc {
-			return errors.New("semanage: permission denied")
+	labelBinary = func(p string) error {
+		if p == svc+".new" {
+			return errors.New("chcon: permission denied")
 		}
 		return nil
 	}
@@ -138,9 +150,7 @@ func TestServiceLabelFailureRestoresBothBinaries(t *testing.T) {
 	}
 	for _, c := range []struct{ path, want string }{
 		{bin, "old running"},
-		{bin + ".previous", "old running"},
 		{svc, "old service"},
-		{svc + ".previous", "old service"},
 	} {
 		if got, _ := os.ReadFile(c.path); string(got) != c.want {
 			t.Errorf("%s = %q; want %q", c.path, got, c.want)

@@ -67,6 +67,9 @@ func (s *Server) ImportDesktopUpdate(stream grpc.ClientStreamingServer[pb.Import
 		if err := m.PreflightGeo(ctx, filepath.Join(dir, updatebundle.Names(runtime.GOOS)[0]), dir); err != nil {
 			return err
 		}
+		if err := m.EnsureServiceReady(); err != nil {
+			return status.Error(codes.FailedPrecondition, err.Error())
+		}
 		return stream.SendAndClose(&pb.ImportDesktopUpdateResponse{Version: d.Version})
 	}
 	// A private runner supplies progress without exposing a partial import as a normal

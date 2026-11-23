@@ -11,3 +11,9 @@ func EnsureBinaryLabel(string) error { return nil }
 
 // LabelOK is always true without SELinux: there is no label to need.
 func LabelOK(string) bool { return true }
+
+// LabelBinary has no work off Linux.
+func LabelBinary(string) error { return nil }
+
+// RememberBinaryLabel has no work off Linux.
+func RememberBinaryLabel(string) {}

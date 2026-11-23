@@ -136,9 +136,20 @@ func (m Masir) Run(ctx context.Context, r *Reporter) error {
 // label decides the domain the daemon starts in. Tests point it at a scratch file.
 var serviceBinaryPath = service.BinaryPath
 
-// ensureBinaryLabel labels a freshly installed copy of masir. Tests replace it to
-// force the failure path without needing a real, enforcing SELinux host.
-var ensureBinaryLabel = service.EnsureBinaryLabel
+// labelBinary labels a verified replacement before it goes live.
+var labelBinary = service.LabelBinary
+
+// EnsureServiceReady checks the service copy before accepting an installed payload.
+func (m Masir) EnsureServiceReady() error {
+	bin := m.ServiceBinary
+	if bin == "" {
+		bin = m.Binary
+		if bin != serviceBinaryPath() {
+			return nil
+		}
+	}
+	return service.EnsureBinaryReady(bin)
+}
 
 // Install applies already verified, privately staged release components. Callers must
 // authenticate their source before entering this method.
@@ -224,10 +235,8 @@ func (m Masir) Install(ctx context.Context, r *Reporter, staged string) error {
 					// Nothing to replace — but "same bytes" is not "ready": the
 					// file an earlier update left behind may still carry the wrong
 					// SELinux label, and this success path must not skip the repair.
-					if m.Binary == serviceBinaryPath() {
-						if err := ensureBinaryLabel(m.Binary); err != nil {
-							return fmt.Errorf("label %s: %w", m.Binary, err)
-						}
+					if err := m.EnsureServiceReady(); err != nil {
+						return err
 					}
 					if m.Restart != nil {
 						r.State(pb.UpdateState_UPDATE_STATE_RESTARTING)
@@ -247,54 +256,11 @@ func (m Masir) Install(ctx context.Context, r *Reporter, staged string) error {
 	}
 	// A CLI installed elsewhere (the service runs its own copy) updates itself from
 	// the staged binary.
-	if err := replaceFile(filepath.Join(staged, exe("masir")), m.Binary); err != nil {
+	if err := m.installBinaries(filepath.Join(staged, exe("masir"))); err != nil {
 		if rollbackGeo != nil {
 			err = errors.Join(err, rollbackGeo())
 		}
-		return fmt.Errorf("install %s: %w", m.Binary, err)
-	}
-	// replaceFile renames a fresh copy into place: a new inode, born with the
-	// directory's default label. On SELinux distros that label starts the daemon in
-	// a domain with no network. This daemon is still running its old image in its
-	// old domain, so it labels the new file here, before anything restarts on it;
-	// failing loudly beats shipping a daemon that cannot connect. The CLI's sync
-	// pass and `masir daemon label` are the repairs if this path is ever skipped.
-	if m.Binary == serviceBinaryPath() {
-		if err := ensureBinaryLabel(m.Binary); err != nil {
-			// Undo the replacement: an unlabeled binary would start confined, and
-			// leaving it in place lets a retry overwrite the rollback backup with
-			// the failed copy — `masir daemon rollback` must still reach the
-			// version that was running before this update.
-			if rerr := restorePrevious(m.Binary); rerr != nil {
-				err = errors.Join(err, rerr)
-			}
-			if rollbackGeo != nil {
-				err = errors.Join(err, rollbackGeo())
-			}
-			return fmt.Errorf("label %s: %w", m.Binary, err)
-		}
-	}
-	if m.ServiceBinary != "" && m.ServiceBinary != m.Binary {
-		// Best effort: the CLI checks afterwards and copies it with sudo if this failed.
-		if err := replaceFile(filepath.Join(staged, exe("masir")), m.ServiceBinary); err == nil {
-			// ServiceBinary comes from service.BinaryPath(), so this replace just
-			// produced the service's new inode: label it the same way as above.
-			if err := ensureBinaryLabel(m.ServiceBinary); err != nil {
-				// Undo the whole attempt, not just the service copy: the earlier
-				// replacement of the running binary would otherwise be saved over
-				// its .previous by a retry, and the geo data was already swapped.
-				if rerr := restorePrevious(m.ServiceBinary); rerr != nil {
-					err = errors.Join(err, rerr)
-				}
-				if rerr := restorePrevious(m.Binary); rerr != nil {
-					err = errors.Join(err, rerr)
-				}
-				if rollbackGeo != nil {
-					err = errors.Join(err, rollbackGeo())
-				}
-				return fmt.Errorf("label %s: %w", m.ServiceBinary, err)
-			}
-		}
+		return err
 	}
 	if m.Privileged && m.ClientBinary != "" && m.ClientBinary != m.Binary && m.ClientBinary != m.ServiceBinary {
 		// The daemon already runs with the rights the CLI's copy needs. Still best
@@ -654,68 +620,96 @@ func insideAppBundle(path string) bool {
 	}
 }
 
-// restorePrevious puts the version replaceFile saved beside dst back over dst.
-// Used when a post-install step (the SELinux label) fails: the install is undone,
-// and the .previous copy stays the pre-update binary, so a retry cannot clobber
-// the rollback target with the failed version.
-func restorePrevious(dst string) error {
-	if err := copyFile(dst+".previous", dst, 0o755); err != nil {
-		return fmt.Errorf("restore the previous %s: %w", dst, err)
+// installBinaries prepares a separate service copy before changing the primary
+// binary. A label failure leaves both live inodes and their backups untouched.
+func (m Masir) installBinaries(src string) error {
+	var serviceTemp string
+	if m.ServiceBinary != "" && m.ServiceBinary != m.Binary {
+		// Best effort if the daemon cannot write the service directory. The CLI
+		// checks the service copy afterwards and can retry with elevation.
+		if tmp, err := prepareReplacement(src, m.ServiceBinary); err == nil {
+			serviceTemp = tmp
+			defer os.Remove(tmp)
+			if err := labelBinary(tmp); err != nil {
+				return fmt.Errorf("label replacement for %s: %w", m.ServiceBinary, err)
+			}
+		}
 	}
-	// copyFile creates a new inode, born with the directory's default label — the
-	// same reason the install labels its own writes. A restored service copy must
-	// carry the label again or the next start runs confined.
-	if dst == serviceBinaryPath() {
-		if err := ensureBinaryLabel(dst); err != nil {
-			return fmt.Errorf("relabel the restored %s: %w", dst, err)
+	tmp, err := prepareReplacement(src, m.Binary)
+	if err != nil {
+		return fmt.Errorf("prepare %s: %w", m.Binary, err)
+	}
+	defer os.Remove(tmp)
+	isService := m.Binary == serviceBinaryPath()
+	if isService {
+		if err := labelBinary(tmp); err != nil {
+			return fmt.Errorf("label replacement for %s: %w", m.Binary, err)
+		}
+	}
+	if err := publishReplacement(tmp, m.Binary); err != nil {
+		return fmt.Errorf("install %s: %w", m.Binary, err)
+	}
+	if isService {
+		service.RememberBinaryLabel(m.Binary)
+	}
+	if serviceTemp != "" {
+		if err := publishReplacement(serviceTemp, m.ServiceBinary); err == nil {
+			service.RememberBinaryLabel(m.ServiceBinary)
 		}
 	}
 	return nil
 }
 
-// replaceFile puts src at dst. A running program can't be overwritten in place, but on
-// Unix its file can be renamed over (the old process keeps the old file open); Windows
-// lets the running file be renamed out of the way first. The copy is compared with the
-// verified source before it is moved into place, so a short or altered write can't
-// become the daemon.
 func replaceFile(src, dst string) error {
-	if insideAppBundle(dst) {
-		return fmt.Errorf("%s is inside an app bundle, which the app updater owns", dst)
+	tmp, err := prepareReplacement(src, dst)
+	if err != nil {
+		return err
 	}
-	// Keep the version being replaced beside it, so `masir daemon rollback` can put it
-	// back if the new one doesn't start. The copy is overwritten by the next update.
-	if fi, err := os.Stat(dst); err == nil && fi.Mode().IsRegular() {
-		if err := copyFile(dst, dst+".previous", 0o600); err != nil {
-			return fmt.Errorf("save the previous %s: %w", dst, err)
-		}
+	defer os.Remove(tmp)
+	return publishReplacement(tmp, dst)
+}
+
+// prepareReplacement copies and verifies the new inode in the destination directory.
+func prepareReplacement(src, dst string) (string, error) {
+	if insideAppBundle(dst) {
+		return "", fmt.Errorf("%s is inside an app bundle, which the app updater owns", dst)
 	}
 	tmp := dst + ".new"
 	if err := copyFile(src, tmp, 0o755); err != nil {
-		return err
+		return "", err
 	}
 	want, err := fileSHA256(src)
 	if err != nil {
 		os.Remove(tmp)
-		return err
+		return "", err
 	}
 	got, err := fileSHA256(tmp)
 	if err != nil || got != want {
 		os.Remove(tmp)
 		if err != nil {
-			return err
+			return "", err
 		}
-		return errors.New("the installed copy doesn't match the verified download")
+		return "", errors.New("the installed copy doesn't match the verified download")
 	}
 	preserveOwner(tmp, dst)
+	return tmp, nil
+}
+
+// publishReplacement saves the rollback copy, then atomically replaces the
+// live inode on Unix. Windows first moves the running executable out of the way.
+func publishReplacement(tmp, dst string) error {
+	if fi, err := os.Stat(dst); err == nil && fi.Mode().IsRegular() {
+		if err := copyFile(dst, dst+".previous", 0o600); err != nil {
+			return fmt.Errorf("save the previous %s: %w", dst, err)
+		}
+	}
 	if runtime.GOOS == "windows" {
 		os.Remove(dst + ".old")
 		if err := fileops.Rename(dst, dst+".old"); err != nil && !os.IsNotExist(err) {
-			os.Remove(tmp)
 			return err
 		}
 	}
 	if err := fileops.Rename(tmp, dst); err != nil {
-		os.Remove(tmp)
 		return err
 	}
 	applyFileIcon(dst)

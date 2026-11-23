@@ -50,6 +50,15 @@ func selinuxPresent() bool {
 // which not every machine has, and without it the label lasts until the next full
 // relabel — which the next install or update re-applies anyway.
 func EnsureBinaryLabel(bin string) error {
+	if err := LabelBinary(bin); err != nil {
+		return err
+	}
+	RememberBinaryLabel(bin)
+	return nil
+}
+
+// LabelBinary sets the inode's SELinux type before it is published at the service path.
+func LabelBinary(bin string) error {
 	raw, err := os.ReadFile(selinuxEnforce)
 	if err != nil {
 		return nil // no SELinux here: nothing to label, nothing to fail
@@ -62,13 +71,20 @@ func EnsureBinaryLabel(bin string) error {
 		}
 		return nil
 	}
+	return nil
+}
+
+// RememberBinaryLabel registers the published path for future system relabels.
+func RememberBinaryLabel(bin string) {
+	if !selinuxPresent() {
+		return
+	}
 	// -a fails when a rule for the path already exists — possibly with another type,
 	// which the next restorecon would then apply over the chcon above. -m repairs that
 	// rule in place. Both are best effort: without semanage the chcon alone holds.
 	if err := runLabelCommand("semanage", "fcontext", "-a", "-t", "bin_t", bin); err != nil {
 		_ = runLabelCommand("semanage", "fcontext", "-m", "-t", "bin_t", bin)
 	}
-	return nil
 }
 
 // LabelOK reports whether bin already carries the label the service needs to start
