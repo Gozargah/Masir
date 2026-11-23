@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Gozargah/Masir/libs/masir-core/client"
 	"github.com/Gozargah/Masir/libs/masir-core/geopack"
+	"github.com/Gozargah/Masir/libs/masir-core/paths"
 	"github.com/Gozargah/Masir/libs/masir-core/service"
 	"github.com/Gozargah/Masir/libs/masir-core/updatebundle"
 	"github.com/Gozargah/Masir/libs/masir-daemon/internal/identity"
@@ -74,6 +76,9 @@ func OfflineDesktopUpdate(ctx context.Context, source, expected, config string, 
 			return err
 		}
 		if !stopped {
+			if err := legacyServiceUpdatesIdle(ctx, id); err != nil {
+				return err
+			}
 			stopped = true
 			if err := stop(); err != nil {
 				return err
@@ -150,4 +155,41 @@ func readOfflineVersion(ctx context.Context) (string, error) {
 		return "", errors.New("installed service has no valid release version")
 	}
 	return fields[2], nil
+}
+
+// Legacy services predate the shared writer lock. Refuse their active jobs before
+// asking the supervisor to stop them; never cancel an install in order to upgrade.
+func legacyServiceUpdatesIdle(ctx context.Context, id identity.Identity) error {
+	sock := paths.PrivilegedSocketPath(id.UID)
+	if !client.AliveAt(sock) {
+		return nil
+	}
+	conn, daemon, err := client.DialSocket(sock)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return requireIdleUpdateJobs(ctx, daemon)
+}
+
+func requireIdleUpdateJobs(ctx context.Context, daemon pb.DaemonServiceClient) error {
+	for _, target := range []pb.UpdateTarget{pb.UpdateTarget_UPDATE_TARGET_MASIR, pb.UpdateTarget_UPDATE_TARGET_GEO} {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		stream, err := daemon.WatchUpdate(ctx, &pb.WatchUpdateRequest{Target: target})
+		if err != nil {
+			cancel()
+			return err
+		}
+		reply, err := stream.Recv()
+		cancel()
+		if err != nil {
+			return err
+		}
+		switch reply.GetJob().GetState() {
+		case pb.UpdateState_UPDATE_STATE_UNSPECIFIED, pb.UpdateState_UPDATE_STATE_DONE, pb.UpdateState_UPDATE_STATE_UP_TO_DATE, pb.UpdateState_UPDATE_STATE_FAILED, pb.UpdateState_UPDATE_STATE_STOPPED, pb.UpdateState_UPDATE_STATE_BLOCKED:
+		default:
+			return errors.New("a daemon or geo update is active; finish or cancel it before installing the desktop update")
+		}
+	}
+	return nil
 }

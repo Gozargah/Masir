@@ -273,10 +273,11 @@ func (s *Server) wrapUpdate(target string, force bool, trigger string, task upda
 		trigger = "api"
 	}
 	return func(ctx context.Context, r *update.Reporter) error {
-		if !s.upd.installMu.TryLock() {
-			return errors.New("another CLI or geo update is running; retry when it finishes")
+		release, err := s.lockUpdate()
+		if err != nil {
+			return err
 		}
-		defer s.upd.installMu.Unlock()
+		defer release()
 		op := coreanalytics.NewOperation("update", trigger)
 		ctx = context.WithValue(ctx, operationKey{}, op)
 		s.mu.Lock()
@@ -288,7 +289,7 @@ func (s *Server) wrapUpdate(target string, force bool, trigger string, task upda
 			"force":   force,
 			"trigger": trigger,
 		}))
-		err := task(ctx, r)
+		err = task(ctx, r)
 		if ctx.Err() != nil {
 			// Paused or stopped: the control RPC records that outcome; this isn't a
 			// finished update and shouldn't look like a failure.

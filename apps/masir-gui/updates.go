@@ -368,6 +368,10 @@ func (a *app) checkAppRelease() {
 			}
 			if a.updates.state.wantUpdate {
 				a.updates.state.wantUpdate = false
+				// A CLI update that arrived during the feed request owns the UI.
+				if a.updates.state.job != nil && updateActive(a.updates.state.job.GetState()) {
+					return
+				}
 				if err != nil {
 					a.updates.state.phase = updateFailed
 					a.updates.state.err = describe(err)

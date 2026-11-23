@@ -1033,3 +1033,21 @@ func TestAppUpdatePreservesPreInstallTunnelRequirement(t *testing.T) {
 		})
 	}
 }
+
+func TestPendingDesktopFeedDoesNotDisplaceAnExternalJob(t *testing.T) {
+	a := newTestApp(ukServers())
+	a.updates.state.rel = releaseInfo("0.1.0", "0.2.0")
+	a.updates.state.phase = updateAvailable
+	oldEnabled, oldCheck := appUpdatesEnabled, checkAppUpdate
+	defer func() { appUpdatesEnabled, checkAppUpdate = oldEnabled, oldCheck }()
+	appUpdatesEnabled = func() bool { return true }
+	checkAppUpdate = func(context.Context) (*mygo.Update, error) { return &mygo.Update{Version: "0.2.0"}, nil }
+	var pending func()
+	a.async = func(fn func()) { pending = fn }
+	a.startUpdate()
+	a.applyJob(&pb.UpdateJob{State: pb.UpdateState_UPDATE_STATE_DOWNLOADING})
+	pending()
+	if a.updates.state.phase != updateDownloading || a.updates.state.wantUpdate {
+		t.Fatalf("phase=%v pending=%v", a.updates.state.phase, a.updates.state.wantUpdate)
+	}
+}

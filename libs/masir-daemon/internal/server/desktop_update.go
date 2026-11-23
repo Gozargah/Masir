@@ -29,10 +29,11 @@ func (s *Server) ImportDesktopUpdate(stream grpc.ClientStreamingServer[pb.Import
 	if s.upd == nil {
 		return status.Error(codes.FailedPrecondition, "updates are unavailable")
 	}
-	if !s.upd.installMu.TryLock() {
-		return status.Error(codes.FailedPrecondition, "another update is running")
+	release, err := s.lockUpdate()
+	if err != nil {
+		return status.Error(codes.FailedPrecondition, err.Error())
 	}
-	defer s.upd.installMu.Unlock()
+	defer release()
 	first, err := stream.Recv()
 	if err != nil {
 		return err

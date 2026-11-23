@@ -360,3 +360,21 @@ Already-shipped older updaters cannot retroactively apply it on their first upgr
 keep an independent backup of manual geo replacements for that transition. Their
 existing `.previous` geo backups may also allow recovery, but are not a substitute for
 an independent backup.
+
+### Update writer coordination
+
+Daemon/CLI jobs, geo refreshes, streamed desktop imports and the offline installer
+share the service's process lock. The daemon also retains its local mutex. Both
+locks cover the whole operation and are released on failure; a conflicting writer
+is refused before it can replace files. The GUI does not replace an active job's
+phase when a pending desktop feed answers.
+
+The offline compatibility installer checks both job types before stopping a
+pre-lock service. An active or paused job prevents installation; finish or cancel
+that job and retry. An unrecognized or failed job-state query fails closed.
+Already-shipped services cannot acquire the new lock: their check and supervisor
+stop cannot be made atomic through the old RPC protocol. A new external update
+started in that interval remains a first-transition limitation. After this upgrade,
+all service writers participate in the shared lock. A fully atomic first transition
+requires an intermediate daemon with coordination support; it cannot be guaranteed
+by changing only the incoming GUI/helper.
