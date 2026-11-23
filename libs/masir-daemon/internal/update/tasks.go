@@ -136,6 +136,10 @@ func (m Masir) Run(ctx context.Context, r *Reporter) error {
 // label decides the domain the daemon starts in. Tests point it at a scratch file.
 var serviceBinaryPath = service.BinaryPath
 
+// ensureBinaryLabel labels a freshly installed copy of masir. Tests replace it to
+// force the failure path without needing a real, enforcing SELinux host.
+var ensureBinaryLabel = service.EnsureBinaryLabel
+
 // Install applies already verified, privately staged release components. Callers must
 // authenticate their source before entering this method.
 func (m Masir) Install(ctx context.Context, r *Reporter, staged string) error {
@@ -221,7 +225,7 @@ func (m Masir) Install(ctx context.Context, r *Reporter, staged string) error {
 					// file an earlier update left behind may still carry the wrong
 					// SELinux label, and this success path must not skip the repair.
 					if m.Binary == serviceBinaryPath() {
-						if err := service.EnsureBinaryLabel(m.Binary); err != nil {
+						if err := ensureBinaryLabel(m.Binary); err != nil {
 							return fmt.Errorf("label %s: %w", m.Binary, err)
 						}
 					}
@@ -256,7 +260,14 @@ func (m Masir) Install(ctx context.Context, r *Reporter, staged string) error {
 	// failing loudly beats shipping a daemon that cannot connect. The CLI's sync
 	// pass and `masir daemon label` are the repairs if this path is ever skipped.
 	if m.Binary == serviceBinaryPath() {
-		if err := service.EnsureBinaryLabel(m.Binary); err != nil {
+		if err := ensureBinaryLabel(m.Binary); err != nil {
+			// Undo the replacement: an unlabeled binary would start confined, and
+			// leaving it in place lets a retry overwrite the rollback backup with
+			// the failed copy — `masir daemon rollback` must still reach the
+			// version that was running before this update.
+			if rerr := restorePrevious(m.Binary); rerr != nil {
+				err = errors.Join(err, rerr)
+			}
 			if rollbackGeo != nil {
 				err = errors.Join(err, rollbackGeo())
 			}
@@ -268,7 +279,12 @@ func (m Masir) Install(ctx context.Context, r *Reporter, staged string) error {
 		if err := replaceFile(filepath.Join(staged, exe("masir")), m.ServiceBinary); err == nil {
 			// ServiceBinary comes from service.BinaryPath(), so this replace just
 			// produced the service's new inode: label it the same way as above.
-			if err := service.EnsureBinaryLabel(m.ServiceBinary); err != nil {
+			if err := ensureBinaryLabel(m.ServiceBinary); err != nil {
+				// Same undo as above: keep the pre-update binary as the rollback
+				// target instead of a copy that failed its label check.
+				if rerr := restorePrevious(m.ServiceBinary); rerr != nil {
+					err = errors.Join(err, rerr)
+				}
 				return fmt.Errorf("label %s: %w", m.ServiceBinary, err)
 			}
 		}
@@ -629,6 +645,17 @@ func insideAppBundle(path string) bool {
 			return false
 		}
 	}
+}
+
+// restorePrevious puts the version replaceFile saved beside dst back over dst.
+// Used when a post-install step (the SELinux label) fails: the install is undone,
+// and the .previous copy stays the pre-update binary, so a retry cannot clobber
+// the rollback target with the failed version.
+func restorePrevious(dst string) error {
+	if err := copyFile(dst+".previous", dst, 0o755); err != nil {
+		return fmt.Errorf("restore the previous %s: %w", dst, err)
+	}
+	return nil
 }
 
 // replaceFile puts src at dst. A running program can't be overwritten in place, but on
