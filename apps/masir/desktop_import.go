@@ -29,6 +29,9 @@ func daemonImportDesktop(a args) error {
 	ctx, cancel := context.WithTimeout(appCtx, 4*time.Minute)
 	defer cancel()
 	return masird.InstallDesktopOffline(ctx, source, user, version, stopOfflineService, func() error {
-		return errors.Join(labelServiceBinary(service.BinaryPath()), startOfflineService())
+		if err := service.EnsureBinaryReady(service.BinaryPath()); err != nil {
+			return err
+		}
+		return startOfflineService()
 	})
 }
