@@ -3,6 +3,7 @@ package appresolve
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -14,9 +15,21 @@ func TestScopeOf(t *testing.T) {
 		{"flatpak instance",
 			"0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-com.spotify.Client-974637243.scope",
 			Scope{Kind: "flatpak", ID: "com.spotify.Client"}},
+		{"cgroup v1, several records",
+			"1:name=systemd:/user.slice/x/app-flatpak-com.example.App-42.scope\n2:cpu:/\n",
+			Scope{Kind: "flatpak", ID: "com.example.App"}},
 		{"snap instance",
 			"0::/user.slice/user-1000.slice/user@1000.service/app.slice/snap.solvespace.solvespace-fd659ed2-ecca-42a1-bac9-bccd6c2d3721.scope",
 			Scope{Kind: "snap", ID: "solvespace"}},
+		{"snap default app",
+			"0::/user.slice/x/snap.suite.suite-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.scope\n",
+			Scope{Kind: "snap", ID: "suite"}},
+		{"snap second app",
+			"0::/user.slice/x/snap.suite.worker-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.scope\n",
+			Scope{Kind: "snap", ID: "suite.worker"}},
+		{"snap instance, default app",
+			"0::/user.slice/x/snap.firefox_firefox.firefox-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.scope\n",
+			Scope{Kind: "snap", ID: "firefox_firefox"}},
 		{"ordinary service",
 			"0::/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service",
 			Scope{}},
@@ -32,6 +45,9 @@ func TestScopeOf(t *testing.T) {
 }
 
 func TestObservedApps(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("cgroup layout is a Linux detail")
+	}
 	root := t.TempDir()
 	write := func(pid, cgroup, exe string) {
 		dir := filepath.Join(root, pid)
@@ -46,7 +62,7 @@ func TestObservedApps(t *testing.T) {
 		}
 	}
 	flat := "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-com.spotify.Client-42.scope\n"
-	snap := "0::/user.slice/user-1000.slice/user@1000.service/app.slice/snap.solvespace.solvespace-abc.scope\n"
+	snap := "0::/user.slice/user-1000.slice/user@1000.service/app.slice/snap.solvespace.solvespace-fd659ed2-ecca-42a1-bac9-bccd6c2d3721.scope\n"
 	write("100", flat, "/app/extra/share/spotify/spotify")
 	write("101", flat, "/usr/bin/bwrap") // the sandbox's own tool: not the app
 	write("102", snap, "/snap/solvespace/current/bin/solvespace")
@@ -68,11 +84,33 @@ func TestBestName(t *testing.T) {
 	if got := BestName([]string{"python3", "python3"}); got != "" {
 		t.Errorf("interpreter-only app = %q; a rule on it would catch every Python app", got)
 	}
+	if got := BestName([]string{"ruby3.3"}); got != "" {
+		t.Errorf("versioned interpreter = %q; a rule on it would catch every Ruby app", got)
+	}
 	if got := BestName([]string{"spotify", "spotify", "spotify-helper"}); got != "spotify" {
 		t.Errorf("best name = %q, want spotify", got)
 	}
 	if got := BestName(nil); got != "" {
 		t.Errorf("empty = %q", got)
+	}
+}
+
+// The snap mount directory is configurable; the host path shows up for
+// classic-confined snaps.
+func TestInsideSandboxSnapMount(t *testing.T) {
+	for _, exe := range []string{
+		"/app/bin/spotify",
+		"/snap/solvespace/current/bin/solvespace",
+		"/var/lib/snapd/snap/solvespace/current/bin/solvespace",
+	} {
+		if !insideSandbox(exe) {
+			t.Errorf("%q should count as sandboxed", exe)
+		}
+	}
+	for _, exe := range []string{"/usr/bin/ls", "/usr/lib/snapd/snap-confine"} {
+		if insideSandbox(exe) {
+			t.Errorf("%q is not an app executable", exe)
+		}
 	}
 }
 

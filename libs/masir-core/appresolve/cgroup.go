@@ -3,6 +3,7 @@ package appresolve
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,7 +17,9 @@ import (
 // snap.<snap>.<app>-*.scope.
 type Scope struct {
 	Kind string // "flatpak" or "snap"
-	ID   string // flatpak app id, or the snap name
+	// ID is the flatpak app id, or the snap instance: the snap name, and for a
+	// snap exposing several apps <name>.<app> — the form its launcher uses too.
+	ID string
 }
 
 // Key is the scope as a map key; empty when the process belongs to no app.
@@ -27,11 +30,31 @@ func (s Scope) Key() string {
 	return s.Kind + ":" + s.ID
 }
 
-// ScopeOf reads the identity out of a /proc/<pid>/cgroup content.
+// snapUUID strips the trailing -<uuid>.scope of a snap cgroup scope.
+var snapUUID = regexp.MustCompile(`-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.scope$`)
+
+// ScopeOf reads the identity out of a /proc/<pid>/cgroup content. The file has
+// one record per hierarchy — <id>:<controllers>:<path> — and cgroup-v1 hosts
+// carry several records, so each is parsed on its own.
 func ScopeOf(cgroup string) Scope {
-	// The file ends with a newline; it would keep ".scope" from matching.
-	cgroup = strings.TrimSpace(cgroup)
-	for _, segment := range strings.Split(cgroup, "/") {
+	for _, line := range strings.Split(strings.TrimSpace(cgroup), "\n") {
+		_, rest, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		_, path, ok := strings.Cut(rest, ":")
+		if !ok {
+			continue
+		}
+		if scope := scopeInPath(path); scope.Key() != "" {
+			return scope
+		}
+	}
+	return Scope{}
+}
+
+func scopeInPath(path string) Scope {
+	for _, segment := range strings.Split(path, "/") {
 		if i := strings.Index(segment, "app-flatpak-"); i >= 0 {
 			id := strings.TrimSuffix(segment[i+len("app-flatpak-"):], ".scope")
 			// The trailing hyphen-separated number distinguishes instances.
@@ -42,12 +65,24 @@ func ScopeOf(cgroup string) Scope {
 				return Scope{Kind: "flatpak", ID: id}
 			}
 		}
-		if rest, ok := strings.CutPrefix(segment, "snap."); ok {
-			rest = strings.TrimSuffix(rest, ".scope")
-			if name, _, found := strings.Cut(rest, "."); found && name != "" {
-				return Scope{Kind: "snap", ID: name}
-			}
+		rest, ok := strings.CutPrefix(segment, "snap.")
+		if !ok {
+			continue
 		}
+		rest = snapUUID.ReplaceAllString(rest, "")
+		rest = strings.TrimSuffix(rest, ".scope")
+		name, app, found := strings.Cut(rest, ".")
+		if name == "" {
+			continue
+		}
+		// One app per snap is the default one, launched as the instance itself;
+		// a snap with several apps is addressed as <instance>.<app>. An instance
+		// is named <snap>_<key>, so the app "firefox" of "firefox_firefox" is
+		// still its default app.
+		if !found || app == name || app == strings.SplitN(name, "_", 2)[0] {
+			return Scope{Kind: "snap", ID: name}
+		}
+		return Scope{Kind: "snap", ID: name + "." + app}
 	}
 	return Scope{}
 }
@@ -66,8 +101,8 @@ func isDigits(s string) bool {
 
 // ObservedApps maps Scope.Key() to the executable names its processes run,
 // most-used first. Only processes whose executable lives inside the sandbox
-// count — /app/... for Flatpak, /snap/... for Snap — so the sandbox's own tools
-// (bwrap, xdg-dbus-proxy, snap-confine) never appear.
+// count — /app/... for Flatpak, the snap mount for Snap — so the sandbox's own
+// tools (bwrap, xdg-dbus-proxy, snap-confine) never appear.
 func ObservedApps() map[string][]string {
 	return observedApps("/proc")
 }
@@ -95,7 +130,8 @@ func observedApps(procRoot string) map[string][]string {
 		if err != nil || !insideSandbox(exe) {
 			continue
 		}
-		name := strings.TrimSuffix(filepath.Base(exe), " (deleted)")
+		name := strings.TrimSuffix(exe, " (deleted)")
+		name = filepath.Base(name)
 		if name == "" {
 			continue
 		}
@@ -123,8 +159,14 @@ func observedApps(procRoot string) map[string][]string {
 	return out
 }
 
+// insideSandbox reports whether an executable path belongs to a sandboxed app.
+// The snap mount directory is configurable at build time, and for
+// classic-confined snaps a host-side reader of /proc/<pid>/exe sees the host
+// path — the two layouts in practice are /snap/... and /var/lib/snapd/snap/...
 func insideSandbox(exe string) bool {
-	return strings.HasPrefix(exe, "/app/") || strings.HasPrefix(exe, "/snap/")
+	return strings.HasPrefix(exe, "/app/") ||
+		strings.HasPrefix(exe, "/snap/") ||
+		strings.Contains(exe, "/snapd/snap/")
 }
 
 // BestName picks the executable name a rule should carry: the most-used one
@@ -141,13 +183,14 @@ func BestName(names []string) string {
 	return ""
 }
 
+// versionSuffix trims the version off an interpreter name: ruby3.3 -> ruby.
+var versionSuffix = regexp.MustCompile(`[0-9]+(\.[0-9]+)*$`)
+
 func sharedInterpreter(name string) bool {
-	name = strings.ToLower(name)
-	if strings.HasPrefix(name, "python") {
-		return true
-	}
+	name = versionSuffix.ReplaceAllString(strings.ToLower(name), "")
 	switch name {
-	case "node", "electron", "java", "sh", "bash", "dash", "zsh", "perl", "ruby", "php", "env":
+	case "python", "node", "nodejs", "electron", "java", "sh", "bash", "dash", "zsh",
+		"perl", "ruby", "php", "env", "lua", "tclsh", "wish", "busybox":
 		return true
 	}
 	return false
