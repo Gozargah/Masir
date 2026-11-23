@@ -280,10 +280,17 @@ func (m Masir) Install(ctx context.Context, r *Reporter, staged string) error {
 			// ServiceBinary comes from service.BinaryPath(), so this replace just
 			// produced the service's new inode: label it the same way as above.
 			if err := ensureBinaryLabel(m.ServiceBinary); err != nil {
-				// Same undo as above: keep the pre-update binary as the rollback
-				// target instead of a copy that failed its label check.
+				// Undo the whole attempt, not just the service copy: the earlier
+				// replacement of the running binary would otherwise be saved over
+				// its .previous by a retry, and the geo data was already swapped.
 				if rerr := restorePrevious(m.ServiceBinary); rerr != nil {
 					err = errors.Join(err, rerr)
+				}
+				if rerr := restorePrevious(m.Binary); rerr != nil {
+					err = errors.Join(err, rerr)
+				}
+				if rollbackGeo != nil {
+					err = errors.Join(err, rollbackGeo())
 				}
 				return fmt.Errorf("label %s: %w", m.ServiceBinary, err)
 			}
@@ -654,6 +661,14 @@ func insideAppBundle(path string) bool {
 func restorePrevious(dst string) error {
 	if err := copyFile(dst+".previous", dst, 0o755); err != nil {
 		return fmt.Errorf("restore the previous %s: %w", dst, err)
+	}
+	// copyFile creates a new inode, born with the directory's default label — the
+	// same reason the install labels its own writes. A restored service copy must
+	// carry the label again or the next start runs confined.
+	if dst == serviceBinaryPath() {
+		if err := ensureBinaryLabel(dst); err != nil {
+			return fmt.Errorf("relabel the restored %s: %w", dst, err)
+		}
 	}
 	return nil
 }
