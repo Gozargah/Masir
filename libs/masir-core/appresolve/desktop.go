@@ -105,3 +105,16 @@ func FromDesktop(path string) (Desktop, error) {
 func (d Desktop) Value() (string, error) {
 	return resolve(d.Exec, d.path)
 }
+
+// ResolveValue resolves the entry's Exec line to a routing value, falling back
+// to observed when static resolution cannot name an executable.
+func (d Desktop) ResolveValue(observed map[Scope][]string) string {
+	if v, err := d.Value(); err == nil {
+		return v
+	}
+	scope := d.Scope()
+	if !scope.Valid() {
+		return ""
+	}
+	return ObservedExecutable(observed[scope])
+}

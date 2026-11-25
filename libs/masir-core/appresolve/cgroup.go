@@ -22,12 +22,9 @@ type Scope struct {
 	ID string
 }
 
-// Key is the scope as a map key; empty when the process belongs to no app.
-func (s Scope) Key() string {
-	if s.Kind == "" || s.ID == "" {
-		return ""
-	}
-	return s.Kind + ":" + s.ID
+// Valid reports whether the scope identifies an app.
+func (s Scope) Valid() bool {
+	return s.Kind != "" && s.ID != ""
 }
 
 // snapUUID strips the trailing -<uuid>.scope of a snap cgroup scope.
@@ -46,7 +43,7 @@ func ScopeOf(cgroup string) Scope {
 		if !ok {
 			continue
 		}
-		if scope := scopeInPath(path); scope.Key() != "" {
+		if scope := scopeInPath(path); scope.Valid() {
 			return scope
 		}
 	}
@@ -105,20 +102,20 @@ func isDigits(s string) bool {
 	return true
 }
 
-// ObservedApps maps Scope.Key() to the executable names its processes run,
+// ObservedApps maps Scope to the executable names its processes run,
 // most-used first. Only processes whose executable lives inside the sandbox
 // count — /app/... for Flatpak, the snap mount for Snap — so the sandbox's own
 // tools (bwrap, xdg-dbus-proxy, snap-confine) never appear.
-func ObservedApps() map[string][]string {
+func ObservedApps() map[Scope][]string {
 	return observedApps("/proc")
 }
 
-func observedApps(procRoot string) map[string][]string {
+func observedApps(procRoot string) map[Scope][]string {
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
 		return nil
 	}
-	counts := map[string]map[string]int{}
+	counts := map[Scope]map[string]int{}
 	for _, e := range entries {
 		pid := e.Name()
 		if _, err := strconv.Atoi(pid); err != nil {
@@ -129,7 +126,7 @@ func observedApps(procRoot string) map[string][]string {
 			continue
 		}
 		scope := ScopeOf(string(data))
-		if scope.Key() == "" {
+		if !scope.Valid() {
 			continue
 		}
 		exe, err := os.Readlink(filepath.Join(procRoot, pid, "exe"))
@@ -141,15 +138,15 @@ func observedApps(procRoot string) map[string][]string {
 		if name == "" {
 			continue
 		}
-		m := counts[scope.Key()]
+		m := counts[scope]
 		if m == nil {
 			m = map[string]int{}
-			counts[scope.Key()] = m
+			counts[scope] = m
 		}
 		m[name]++
 	}
-	out := make(map[string][]string, len(counts))
-	for key, m := range counts {
+	out := make(map[Scope][]string, len(counts))
+	for scope, m := range counts {
 		names := make([]string, 0, len(m))
 		for name := range m {
 			names = append(names, name)
@@ -160,7 +157,7 @@ func observedApps(procRoot string) map[string][]string {
 			}
 			return names[i] < names[j]
 		})
-		out[key] = names
+		out[scope] = names
 	}
 	return out
 }
@@ -175,11 +172,11 @@ func insideSandbox(exe string) bool {
 		strings.Contains(exe, "/snapd/snap/")
 }
 
-// BestName picks the executable name a rule should carry: the most-used one
-// that is not a shared interpreter. An app that only runs an interpreter (a
-// Python app runs python3) gets "", because a rule on python3 would catch every
-// Python app on the machine.
-func BestName(names []string) string {
+// ObservedExecutable picks the executable name a rule should carry from
+// cgroup-observed process names: the most-used one that is not a shared
+// interpreter. An app that only runs an interpreter (a Python app runs python3)
+// gets "", because a rule on python3 would catch every Python app on the machine.
+func ObservedExecutable(names []string) string {
 	for _, name := range names {
 		if name == "" || sharedInterpreter(name) {
 			continue
