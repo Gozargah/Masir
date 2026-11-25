@@ -36,7 +36,15 @@ func TestProbeCancellationReleasesWorker(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("probe never reached server")
 	}
-	// Another caller must be able to cancel while waiting for the occupied slot.
+	// Occupy the other helper slots, then check cancellation while queued.
+	for range cap(probeSlot) - 1 {
+		probeSlot <- struct{}{}
+	}
+	defer func() {
+		for range cap(probeSlot) - 1 {
+			<-probeSlot
+		}
+	}()
 	queued, stop := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer stop()
 	_, err := MeasureDelay(queued, nil, LatencyOptions{})
@@ -61,12 +69,12 @@ func TestProbeCancellationReleasesWorker(t *testing.T) {
 	if _, err := MeasureDelay(context.Background(), []byte(`{"outbounds":[]}`), LatencyOptions{}); err == nil {
 		t.Fatal("invalid config succeeded")
 	}
-	if len(probeSlot) != 0 {
+	if len(probeSlot) != cap(probeSlot)-1 {
 		t.Fatal("worker slot leaked")
 	}
 }
 
-func TestProbeBatchStreamsAndPreservesPartialResults(t *testing.T) {
+func TestProbeStreamsAndPreservesPartialResults(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	arrived := make(chan struct{}, 1)
@@ -117,7 +125,7 @@ func TestProbeBatchStreamsAndPreservesPartialResults(t *testing.T) {
 	}
 }
 
-func TestProbeBatchesAndConcurrentCallers(t *testing.T) {
+func TestProbeConcurrentCallers(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -125,7 +133,7 @@ func TestProbeBatchesAndConcurrentCallers(t *testing.T) {
 	var callers sync.WaitGroup
 	for range 2 {
 		callers.Go(func() {
-			probes := make([]Probe, maxProbeBatch+1)
+			probes := make([]Probe, 17)
 			for i := range probes {
 				probes[i] = Probe{Tag: "same", Outbound: json.RawMessage(`{"protocol":"freedom"}`)}
 			}
@@ -227,18 +235,7 @@ func TestProbeRejectsMalformedResult(t *testing.T) {
 	}
 }
 
-func TestProbeBatchFitsWorkerLifetime(t *testing.T) {
-	for _, workers := range []int{1, 2, 8, 32} {
-		for _, timeout := range []time.Duration{time.Second, 12 * time.Second, 30 * time.Second} {
-			opt := LatencyOptions{Timeout: timeout, Attempts: 2}
-			size := probeBatchSize(opt, workers)
-			concurrency := min(max(workers, 1), 8)
-			waves := (size + concurrency - 1) / concurrency
-			if budget := time.Duration(waves) * timeout * 2; budget > probeLifetime-probeStartupAllowance {
-				t.Errorf("workers=%d timeout=%v: batch %d needs %v", workers, timeout, size, budget)
-			}
-		}
-	}
+func TestProbeRejectsExcessiveBudget(t *testing.T) {
 	if _, err := MeasureDelay(context.Background(), nil, LatencyOptions{Timeout: probeLifetime, Attempts: 2}); err == nil {
 		t.Fatal("unserviceable request budget accepted")
 	}
@@ -278,15 +275,115 @@ func TestIsolatedBalancedProfileProbe(t *testing.T) {
 			"rules":[{"protocol":["http"],"balancerTag":"pool"},{"network":"tcp,udp","outboundTag":"block"}]
 		}
 	}`, "HEALTH_URL", target.URL+"/health"))
-	_, err := MeasureDelay(context.Background(), cfg, LatencyOptions{
-		URL: target.URL, Attempts: 1, Timeout: 4 * time.Second, Full: true, BalancedProfile: true,
+	// Colliding provider tags must remain isolated while both profiles run.
+	results := 0
+	MeasureEach(context.Background(), []Probe{{Tag: "same", Profile: cfg}, {Tag: "same", Profile: cfg}}, LatencyOptions{
+		URL: target.URL, Attempts: 1, Timeout: 4 * time.Second,
+	}, 2, func(_ string, _ time.Duration, err error) {
+		results++
+		if err != nil {
+			t.Error(err)
+		}
 	})
-	if err != nil {
-		t.Fatal(err)
+	if results != 2 {
+		t.Fatalf("got %d profile results", results)
 	}
 	select {
 	case <-earlyRequest:
 		t.Fatal("probe reached the provider member before the observer reported health")
 	default:
+	}
+}
+
+func TestProbeSlowConfigDoesNotHoldLaterConfigs(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	var first sync.Once
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slow := false
+		first.Do(func() { slow = true })
+		if slow {
+			<-r.Context().Done()
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	defer cancel()
+	probes := make([]Probe, 17)
+	for i := range probes {
+		probes[i] = Probe{Tag: "same", Outbound: json.RawMessage(`{"protocol":"freedom"}`)}
+	}
+	results := make(chan error, len(probes))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		MeasureEach(ctx, probes, LatencyOptions{URL: target.URL, Attempts: 1}, 8, func(_ string, _ time.Duration, err error) { results <- err })
+	}()
+	for range len(probes) - 1 {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Errorf("fast config: %v", err)
+			}
+		case <-ctx.Done():
+			<-done
+			t.Fatal("a slow config blocked later configs")
+		}
+	}
+	cancel()
+	<-done
+	if err := <-results; !errors.Is(err, context.Canceled) {
+		t.Fatalf("slow config: %v", err)
+	}
+}
+
+func TestProbeGlobalLimitAcrossCallers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	arrived := make(chan struct{}, 32)
+	permits := make(chan struct{})
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrived <- struct{}{}
+		select {
+		case <-permits:
+			w.WriteHeader(http.StatusNoContent)
+		case <-r.Context().Done():
+		}
+	}))
+	defer target.Close()
+	defer cancel()
+	var callers sync.WaitGroup
+	for range 2 {
+		callers.Go(func() {
+			probes := make([]Probe, maxProbeWorkers)
+			for i := range probes {
+				probes[i] = Probe{Outbound: json.RawMessage(`{"protocol":"freedom"}`)}
+			}
+			MeasureEach(ctx, probes, LatencyOptions{URL: target.URL, Attempts: 1}, 32, func(_ string, _ time.Duration, err error) {
+				if err != nil && ctx.Err() == nil {
+					t.Errorf("probe: %v", err)
+				}
+			})
+		})
+	}
+	defer callers.Wait()
+	defer cancel()
+	for range maxProbeWorkers {
+		select {
+		case <-arrived:
+		case <-ctx.Done():
+			t.Fatal("parallel helper slots not filled")
+		}
+	}
+	select {
+	case <-arrived:
+		t.Fatal("global helper limit exceeded")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(permits)
+	callers.Wait()
+	if len(probeSlot) != 0 {
+		t.Fatal("helper slots leaked")
 	}
 }

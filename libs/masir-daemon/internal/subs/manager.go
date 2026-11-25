@@ -381,15 +381,6 @@ func (m *Manager) TestLatency(ctx context.Context, subID string, configIDs []str
 			configs = append(configs, c)
 		}
 	}
-	var probes []xray.Probe
-	var profiles []Config
-	for _, c := range configs {
-		if c.Profile != nil {
-			profiles = append(profiles, c)
-		} else {
-			probes = append(probes, xray.Probe{Tag: c.ID, Outbound: c.Outbound})
-		}
-	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -414,25 +405,31 @@ func (m *Manager) TestLatency(ctx context.Context, subID string, configIDs []str
 			report(id, l)
 		}
 	}
-	xray.MeasureEach(ctx, probes, opt, latencyWorkers, saveResult)
-	opt.Full = true
-	opt.BalancedProfile = true
-	for _, c := range profiles {
+	var probes []xray.Probe
+	for _, c := range configs {
 		if ctx.Err() != nil {
 			break
 		}
-		if m.BuildProbeProfile == nil {
-			saveResult(c.ID, 0, errors.New("balanced profile probe is unavailable"))
-			continue
+		p := xray.Probe{Tag: c.ID, Outbound: c.Outbound}
+		if c.Profile != nil {
+			if m.BuildProbeProfile == nil {
+				saveResult(c.ID, 0, errors.New("routing profile probe is unavailable"))
+				continue
+			}
+			raw, err := m.BuildProbeProfile(c)
+			if err != nil {
+				saveResult(c.ID, 0, err)
+				continue
+			}
+			if len(raw) == 0 {
+				saveResult(c.ID, 0, errors.New("routing profile probe is empty"))
+				continue
+			}
+			p.Profile = raw
 		}
-		raw, err := m.BuildProbeProfile(c)
-		if err != nil {
-			saveResult(c.ID, 0, err)
-			continue
-		}
-		delay, err := xray.MeasureDelay(ctx, raw, opt)
-		saveResult(c.ID, delay, err)
+		probes = append(probes, p)
 	}
+	xray.MeasureEach(ctx, probes, opt, latencyWorkers, saveResult)
 	return saveErr
 }
 

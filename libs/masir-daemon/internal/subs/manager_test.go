@@ -727,3 +727,66 @@ func TestSharedSourceIsStoredOnce(t *testing.T) {
 		t.Fatalf("resave lost shared source: %v", err)
 	}
 }
+
+// No request may finish until every kind of config has reached the target.
+// This catches both a serial profile loop and a process-global single helper slot.
+func TestLatencyMixRunsInParallel(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	arrived := make(chan struct{}, 32)
+	release := make(chan struct{})
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrived <- struct{}{}
+		select {
+		case <-release:
+			w.WriteHeader(http.StatusNoContent)
+		case <-r.Context().Done():
+		}
+	}))
+	defer target.Close()
+	defer cancel()
+	m := newTestManager(t, nil)
+	s := &Subscription{ID: newID(), Name: "parallel"}
+	for i := range 8 {
+		c := Config{ID: fmt.Sprintf("c%d", i), Outbound: json.RawMessage(`{"protocol":"freedom"}`)}
+		if i > 0 {
+			c.Profile = &OutboundProfile{Outbounds: []json.RawMessage{c.Outbound}}
+		}
+		s.Configs = append(s.Configs, c)
+	}
+	if err := m.save(s); err != nil {
+		t.Fatal(err)
+	}
+	// Profiles enter the managed engine path, while c0 uses a bare outbound.
+	m.BuildProbeProfile = func(c Config) ([]byte, error) {
+		return []byte(`{"outbounds":[{"tag":"ok","protocol":"freedom"},{"tag":"block","protocol":"blackhole"}],"routing":{"rules":[{"network":"tcp,udp","outboundTag":"ok"}]}}`), nil
+	}
+	done := make(chan error, 1)
+	got := map[string]Latency{}
+	go func() {
+		done <- m.TestLatency(ctx, s.ID, nil, target.URL, nil, func(id string, l Latency) { got[id] = l })
+	}()
+	for i := range len(s.Configs) {
+		select {
+		case <-arrived:
+		case err := <-done:
+			t.Fatalf("test ended before all configs arrived: %v; results=%+v", err, got)
+		case <-ctx.Done():
+			cancel()
+			<-done
+			t.Fatalf("configs did not reach target concurrently before any request completed; arrived=%d results=%+v", i, got)
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(s.Configs) {
+		t.Fatalf("got %d results", len(got))
+	}
+	for id, l := range got {
+		if l.Error != "" {
+			t.Errorf("%s: %s", id, l.Error)
+		}
+	}
+}

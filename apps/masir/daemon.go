@@ -95,7 +95,7 @@ func daemonEnable(a args) error {
 	if user == "" {
 		user = currentUser()
 	}
-	return enableService(user)
+	return enableService(user, a.boolean("confirmed", false))
 }
 
 // daemonLabel relabels the system service's copy of masir for SELinux and restarts
@@ -317,14 +317,27 @@ func ensureDaemon(idle bool) error {
 // enableService installs the daemon as a privileged service serving user (a uid, or a
 // SID on Windows). Run as the user, it re-runs itself with privileges: sudo asks for
 // the password, or Windows for permission.
-func enableService(user string) error {
+func enableService(user string, confirmed bool) error {
+	src, err := self()
+	if err != nil {
+		return err
+	}
 	if !elevated() {
-		// Ask and stop here, as the person: after sudo the daemon is found by the uid it
-		// serves, not by this process's own sockets.
-		if err := stopBeforeInstall(currentUser()); err != nil {
+		if err := preflightGeoForInstall(src); err != nil {
 			return err
 		}
-		return elevate("daemon", "enable", "--user", currentUser())
+		user := installUser()
+		// Ask and stop here, as the person: after sudo the daemon is found by the uid it
+		// serves, not by this process's own sockets.
+		approved, err := stopBeforeInstall(user, confirmed)
+		if err != nil {
+			return err
+		}
+		argv := []string{"daemon", "enable", "--user", user}
+		if confirmed || approved {
+			argv = append(argv, "--confirmed")
+		}
+		return elevate(argv...)
 	}
 	if user == "" || user == "0" {
 		return advised("This needs your normal user, not root: masir asks for permission itself.", "Run it again without sudo:", "masir daemon enable")
@@ -332,11 +345,10 @@ func enableService(user string) error {
 	if !service.Supported() {
 		return errNoService
 	}
-	if err := stopBeforeInstall(user); err != nil {
+	if err := preflightGeoForInstall(src); err != nil {
 		return err
 	}
-	src, err := self()
-	if err != nil {
+	if _, err := stopBeforeInstall(user, confirmed); err != nil {
 		return err
 	}
 	if _, err := installBinary(src); err != nil {
@@ -349,33 +361,69 @@ func enableService(user string) error {
 	return nil
 }
 
+// preflightInstallGeo validates geo data before stopping any running daemon so a
+// missing or incomplete geo pair cannot leave the user's daemon stopped.
+func preflightInstallGeo(src string) error {
+	dir := service.InstallDir()
+	managedGeo, err := geopack.Managed(dir)
+	if err != nil {
+		if !elevated() && errors.Is(err, os.ErrPermission) {
+			// The elevated invocation will re-run this check with root rights before
+			// stopping any daemon.
+			return nil
+		}
+		return err
+	}
+	assets := filepath.Dir(src)
+	if geopack.Packed(assets) {
+		stage, err := os.MkdirTemp("", "masir-geo-preflight-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(stage)
+		if err := geopack.Expand(assets, stage); err != nil {
+			return err
+		}
+		assets = stage
+	}
+	_, err = preflightServiceGeo(assets, dir, managedGeo)
+	return err
+}
+
 // stopBeforeInstall asks before taking down the daemon that would hold the install up,
 // then stops it over the socket. The service manager's own stop (launchd's bootout,
 // systemd's stop) sends a signal, and that waits on the streams a client keeps open —
 // the app holds two — so asking over the socket stops it at once.
 //
+// It reports whether a running daemon was actually stopped (so the caller knows whether
+// stop consent was given), distinguishing that from the no-daemon case.
+//
 // There is a prompt only in a terminal: the app's Install Service is the person's answer
-// already, and its pkexec'd masir has no terminal to ask on.
-func stopBeforeInstall(user string) error {
+// already, and its pkexec'd masir has no terminal to ask on. The elevated CLI
+// inherits the original confirmation only when consent was given, and still prompts or
+// stops a daemon that restarted while sudo was asking for permission.
+func stopBeforeInstall(user string, confirmed bool) (bool, error) {
 	sock, ok := socketForInstall(user)
 	if !ok {
-		return nil
+		return false, nil
 	}
-	stop, err := ui.Confirm("A masir daemon is already running. Stop it and install the service?", true)
-	if err != nil {
-		return err
-	}
-	if !stop {
-		return advised("Nothing was installed: a running daemon owns the socket, and the service can't take it over while it does.",
-			"Install it when you're ready:", "masir daemon enable")
+	if !confirmed {
+		stop, err := confirmInstallStop("A masir daemon is already running. Stop it and install the service?", true)
+		if err != nil {
+			return false, err
+		}
+		if !stop {
+			return false, advised("Nothing was installed: a running daemon owns the socket, and the service can't take it over while it does.",
+				"Install it when you're ready:", "masir daemon enable")
+		}
 	}
 	s := ui.Spin("Stopping the masir daemon")
 	if err := stopTheDaemon(sock); err != nil {
 		s.Fail(err.Error())
-		return errReported
+		return false, errReported
 	}
 	s.Stop("Daemon stopped.")
-	return nil
+	return true, nil
 }
 
 // socketForInstall is where the daemon the install must stop answers. As the person that
@@ -410,11 +458,14 @@ func stopDaemonAt(sock string) error {
 	return waitFor(func() bool { return !client.AliveAt(sock) }, 10*time.Second, "the daemon didn't stop")
 }
 
-// liveDaemonSocket and stopTheDaemon are the machine calls an install makes. Tests
-// replace them so they never stop a daemon on the machine they run on.
+// liveDaemonSocket, stopTheDaemon, and preflightGeoForInstall are the machine calls
+// an install makes. Tests replace them so they never touch the host machine.
 var (
-	liveDaemonSocket = client.LiveSocket
-	stopTheDaemon    = stopDaemonAt
+	confirmInstallStop     = ui.Confirm
+	liveDaemonSocket       = client.LiveSocket
+	stopTheDaemon          = stopDaemonAt
+	preflightGeoForInstall = preflightInstallGeo
+	installUser            = currentUser
 )
 
 // enableTun turns TUN on, elevating the daemon first when it isn't root.
@@ -522,6 +573,10 @@ func installBinary(src string) (string, error) {
 		}
 		assets = stage
 	}
+	copyGeo, err := preflightServiceGeo(assets, dir, managedGeo)
+	if err != nil {
+		return "", err
+	}
 	stopServiceForInstall()
 	name := filepath.Base(service.BinaryPath())
 	bin := filepath.Join(dir, name)
@@ -541,18 +596,16 @@ func installBinary(src string) (string, error) {
 		os.RemoveAll(filepath.Join(dir, "Masir.app"))
 	}
 	for _, f := range []string{"geoip.dat", "geosite.dat"} {
-		if !managedGeo {
+		if !copyGeo {
 			break
 		}
 		from := filepath.Join(assets, f)
-		if _, err := os.Stat(from); err == nil {
-			to := filepath.Join(dir, f)
-			if err := copyFile(from, to, 0o644); err != nil {
-				return "", err
-			}
-			if same, err := sameContent(from, to); err != nil || !same {
-				return "", errors.New("the service's copy of " + f + " doesn't match the running data")
-			}
+		to := filepath.Join(dir, f)
+		if err := copyFile(from, to, 0o644); err != nil {
+			return "", err
+		}
+		if same, err := sameContent(from, to); err != nil || !same {
+			return "", errors.New("the service's copy of " + f + " doesn't match the running data")
 		}
 	}
 	if managedGeo {

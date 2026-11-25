@@ -34,6 +34,20 @@ a two-minute deadline and a cap of 256 retired handlers. Profile counters
 track traffic at the dispatch boundary and exclude forced probes and chained
 dials.
 
+## Latency tests
+
+Subscription tests use a sliding pool of up to eight isolated helper processes
+across all callers. Bare outbounds, dial chains, full routing profiles and
+balancers share this limit. When one config finishes, the next starts without
+waiting for a batch's slowest member. Profiles retain their routing, DNS and
+observatory; their outbounds are never flattened into a single shared router.
+
+Each config still gets two attempts with an eight-second timeout per attempt.
+A result is saved before it is reported, and cancellation kills and reaps the
+helper without saving an interrupted probe as a failed server. Separate helpers
+cost more memory than sharing an instance for bare outbounds, so the global
+limit also applies to individual tests and simultaneous subscription requests.
+
 ## Verification
 
 The integration tests use synthetic profiles and loopback HTTP, TCP, and UDP

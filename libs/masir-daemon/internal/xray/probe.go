@@ -10,7 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
+	"sync"
 	"time"
 )
 
@@ -22,9 +22,11 @@ const (
 	probeStartupAllowance = 10 * time.Second
 )
 
-// One helper at a time bounds memory and network load across all callers.
-// Each helper still probes up to eight outbounds concurrently.
-var probeSlot = make(chan struct{}, 1)
+// Each helper owns one config and its Xray global state. Bound helpers across
+// all callers, including individual tests and simultaneous subscription tests.
+const maxProbeWorkers = 8
+
+var probeSlot = make(chan struct{}, maxProbeWorkers)
 
 const probeTunMissingExit = 3
 
@@ -32,9 +34,7 @@ var errProbeTunMissing = errors.New("probe TUN interface disappeared")
 
 type probeRequest struct {
 	Config  []byte
-	Probes  [][]byte
 	Options LatencyOptions
-	Workers int
 }
 
 type probeResult struct {
@@ -85,40 +85,47 @@ func MeasureDelay(ctx context.Context, cfgJSON []byte, opt LatencyOptions) (time
 	return result.Duration, nil
 }
 
-// MeasureEach streams one result per outbound, serially, including cancellation
-// and worker failures. A new process per batch contains all Xray global state.
-func MeasureEach(ctx context.Context, probes []Probe, opt LatencyOptions, workers int, report func(string, time.Duration, error)) {
-	size := probeBatchSize(opt, workers)
-	for i := 0; i < len(probes); i += size {
-		batch := probes[i:min(i+size, len(probes))]
-		seen := make([]bool, len(batch))
-		raw := make([][]byte, len(batch))
-		for j, p := range batch {
-			raw[j] = p.Outbound
-		}
-		err := runProbe(ctx, probeRequest{Probes: raw, Options: opt, Workers: workers}, len(batch), func(r probeResult) {
-			seen[r.Index] = true
-			var probeErr error
-			if r.Error != "" {
-				probeErr = errors.New(r.Error)
-			}
-			report(batch[r.Index].Tag, r.Duration, probeErr)
-		})
-		for j, p := range batch {
-			if !seen[j] {
-				report(p.Tag, 0, err)
-			}
-		}
-	}
+// Probe is either a single outbound or a complete, composed routing profile.
+// Profiles keep their dependencies, DNS, routing and observatory in their own helper.
+type Probe struct {
+	Tag      string
+	Outbound json.RawMessage
+	Profile  []byte
 }
 
-// Fit all scheduled attempts inside the worker lifetime, leaving time for
-// process startup, Xray initialization, and shutdown. Divide before multiplying
-// to avoid duration overflow with malformed options.
-func probeBatchSize(opt LatencyOptions, workers int) int {
-	opt = opt.withDefaults()
-	waves := (probeLifetime - probeStartupAllowance) / opt.Timeout / time.Duration(opt.Attempts)
-	return min(maxProbeBatch, max(1, int(min(waves, maxProbeBatch)))*min(max(workers, 1), 8))
+// MeasureEach uses a sliding worker pool: a finished config immediately makes room
+// for the next one, even while earlier configs are slow. Reports are serialized.
+func MeasureEach(ctx context.Context, probes []Probe, opt LatencyOptions, workers int, report func(string, time.Duration, error)) {
+	var reports sync.Mutex
+	var wg sync.WaitGroup
+	jobs := make(chan Probe)
+	for range min(max(workers, 1), maxProbeWorkers, len(probes)) {
+		wg.Go(func() {
+			for p := range jobs {
+				options := opt
+				raw := p.Profile
+				var err error
+				if raw != nil {
+					options.Full = true
+					options.BalancedProfile = true
+				} else {
+					raw, err = json.Marshal(map[string]any{"outbounds": []json.RawMessage{p.Outbound}})
+				}
+				var d time.Duration
+				if err == nil {
+					d, err = MeasureDelay(ctx, raw, options)
+				}
+				reports.Lock()
+				report(p.Tag, d, err)
+				reports.Unlock()
+			}
+		})
+	}
+	for _, p := range probes {
+		jobs <- p
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 // runProbe owns the complete helper lifecycle; no caller can fall back to an
@@ -134,6 +141,9 @@ func runProbe(ctx context.Context, req probeRequest, count int, report func(prob
 	case probeSlot <- struct{}{}:
 	}
 	defer func() { <-probeSlot }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, probeLifetime)
 	defer cancel()
 	currentTunName := req.Options.CurrentTunName
@@ -249,33 +259,11 @@ func serveProbe(input io.Reader, output io.Writer) error {
 	if err := configureProbeInterface(req.Options.TunName); err != nil {
 		return err
 	}
-	if len(req.Probes) > maxProbeBatch {
-		return errors.New("probe batch is too large")
-	}
 	encoder := json.NewEncoder(output)
-	if len(req.Probes) == 0 {
-		d, err := measureDelayLocal(context.Background(), req.Config, req.Options)
-		r := probeResult{Duration: d}
-		if err != nil {
-			r.Error = err.Error()
-		}
-		return encoder.Encode(r)
+	d, err := measureDelayLocal(context.Background(), req.Config, req.Options)
+	r := probeResult{Duration: d}
+	if err != nil {
+		r.Error = err.Error()
 	}
-	// Internal tags are unique and encode result indexes, independent of caller IDs.
-	probes := make([]Probe, len(req.Probes))
-	for i, p := range req.Probes {
-		probes[i] = Probe{Tag: strconv.Itoa(i), Outbound: json.RawMessage(p)}
-	}
-	var sendErr error
-	measureEachLocal(context.Background(), probes, req.Options, min(max(req.Workers, 1), 8), func(tag string, d time.Duration, err error) {
-		index, _ := strconv.Atoi(tag)
-		r := probeResult{Index: index, Duration: d}
-		if err != nil {
-			r.Error = err.Error()
-		}
-		if sendErr == nil {
-			sendErr = encoder.Encode(r)
-		}
-	})
-	return sendErr
+	return encoder.Encode(r)
 }

@@ -297,9 +297,9 @@ func cmdSubUpdate(a args) error {
 // refresh does: a direct fetch, a retry through the proxy, and parsing.
 const subUpdateTimeout = 2 * time.Minute
 
-// subTestTimeout bounds one subscription's probe run. Configs are probed in batches
-// of 16 with an 8s cap and 8 workers. A fully dead 300-node subscription needs about
-// 304s before instance startup, so the budget leaves margin above that.
+// subTestTimeout bounds one subscription's probe run. The daemon uses up to
+// eight isolated helpers; each config gets two attempts capped at eight seconds.
+// Very large subscriptions can exhaust this budget when most nodes time out.
 const subTestTimeout = 10 * time.Minute
 
 // testAge renders how old a verdict is, only when old enough to matter; a fresh
