@@ -36,7 +36,15 @@ func preflightServiceGeo(source, installed string, managed bool) (bool, error) {
 
 func checkServiceGeoPair(dir string) error {
 	for _, name := range []string{"geoip.dat", "geosite.dat"} {
-		f, err := os.Open(filepath.Join(dir, name))
+		path := filepath.Join(dir, name)
+		fi, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", name, err)
+		}
+		if !fi.Mode().IsRegular() || fi.Size() == 0 {
+			return fmt.Errorf("%s must be a nonempty regular file", name)
+		}
+		f, err := os.Open(path)
 		if err != nil {
 			return fmt.Errorf("open %s: %w", name, err)
 		}
