@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -138,6 +139,149 @@ func TestUpdateKeepsLatencyAndSurvivesFailure(t *testing.T) {
 	after, _ := m.Get(s.ID)
 	if after.LastError == "" || len(after.Configs) != 2 || after.UpdatedAt.After(after.CheckedAt) {
 		t.Fatalf("after failed update = %+v", after)
+	}
+}
+
+func TestRefreshApplyUsesCallerContext(t *testing.T) {
+	for _, background := range []bool{false, true} {
+		t.Run(fmt.Sprintf("background=%v", background), func(t *testing.T) {
+			p := newProvider(t, trojanWS)
+			m := newTestManager(t, nil)
+			s, err := m.Add(context.Background(), p.srv.URL, "mine", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			later := s.CreatedAt.Add(13 * time.Hour)
+			m.now = func() time.Time { return later }
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var applyCtx context.Context
+			m.OnChange = func(ctx context.Context) { applyCtx = ctx }
+			if background {
+				m.refreshDue(ctx)
+			} else if _, err := m.Update(ctx, s.ID); err != nil {
+				t.Fatal(err)
+			}
+			if applyCtx == nil {
+				t.Fatal("refresh did not apply the saved configs")
+			}
+			if _, ok := applyCtx.Deadline(); ok {
+				t.Fatal("apply inherited the fetch deadline")
+			}
+			if err := applyCtx.Err(); err != nil {
+				t.Fatalf("apply context already canceled: %v", err)
+			}
+			cancel()
+			if !errors.Is(applyCtx.Err(), context.Canceled) {
+				t.Fatal("apply context did not preserve caller cancellation")
+			}
+		})
+	}
+}
+
+// lateSubscriptionTransport models work that completes successfully after the
+// context expires, as parsing can: cancellation alone does not reject its result.
+type lateSubscriptionTransport struct{ body string }
+
+func (tr lateSubscriptionTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	<-r.Context().Done()
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(tr.body)), Header: make(http.Header)}, nil
+}
+
+func TestUpdateRejectsSuccessfulResultAfterDeadline(t *testing.T) {
+	p := newProvider(t, trojanWS)
+	m := newTestManager(t, nil)
+	s, err := m.Add(context.Background(), p.srv.URL, "mine", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousTimeout := refreshTimeout
+	refreshTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { refreshTimeout = previousTimeout })
+	m.direct = &http.Client{Transport: lateSubscriptionTransport{body: ssLink()}}
+	applied := false
+	m.OnChange = func(context.Context) { applied = true }
+	later := s.CheckedAt.Add(time.Minute)
+	m.now = func() time.Time { return later }
+
+	_, err = m.Update(context.Background(), s.ID)
+	if !errors.Is(err, ErrFetch) || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("update = %v, want a fetch timeout", err)
+	}
+	after, err := m.Get(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(after.LastError, context.DeadlineExceeded.Error()) || !after.CheckedAt.Equal(later) ||
+		!after.UpdatedAt.Equal(s.UpdatedAt) || len(after.Configs) != 1 || after.Configs[0].ID != s.Configs[0].ID {
+		t.Fatalf("late result did not preserve the subscription: %+v", after)
+	}
+	if applied {
+		t.Fatal("late result was applied")
+	}
+}
+
+func TestUpdateTimeoutKeepsExistingConfigs(t *testing.T) {
+	previousTimeout := refreshTimeout
+	refreshTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { refreshTimeout = previousTimeout })
+
+	for _, viaProxy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("viaProxy=%v", viaProxy), func(t *testing.T) {
+			var hang atomic.Bool
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if hang.Load() {
+					if viaProxy {
+						w.WriteHeader(http.StatusBadGateway)
+						return
+					}
+					<-r.Context().Done()
+					return
+				}
+				_, _ = w.Write([]byte(trojanWS))
+			}))
+			t.Cleanup(provider.Close)
+			m := newTestManager(t, nil)
+			s, err := m.Add(context.Background(), provider.URL, "mine", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var proxied atomic.Bool
+			if viaProxy {
+				proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					proxied.Store(true)
+					<-r.Context().Done()
+				}))
+				t.Cleanup(proxy.Close)
+				m.viaProxy = &http.Client{Transport: &http.Transport{
+					DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+						return (&net.Dialer{}).DialContext(ctx, network, proxy.Listener.Addr().String())
+					},
+				}}
+			}
+			hang.Store(true)
+			// The caller allows much longer; Update must enforce its own deadline.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err = m.Update(ctx, s.ID)
+			if !errors.Is(err, ErrFetch) || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+				t.Fatalf("update = %v, want a fetch timeout", err)
+			}
+			if ctx.Err() != nil {
+				t.Fatal("update waited for the caller's deadline")
+			}
+			if viaProxy && !proxied.Load() {
+				t.Fatal("refresh did not retry through the proxy")
+			}
+			after, err := m.Get(s.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.LastError == "" || !after.CheckedAt.After(s.CheckedAt) || !after.UpdatedAt.Equal(s.UpdatedAt) ||
+				len(after.Configs) != 1 || after.Configs[0].ID != s.Configs[0].ID {
+				t.Fatalf("timeout did not preserve the subscription: %+v", after)
+			}
+		})
 	}
 }
 
