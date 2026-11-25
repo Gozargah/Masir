@@ -93,6 +93,12 @@ func TestObservedExecutable(t *testing.T) {
 	if got := ObservedExecutable([]string{"ruby3.3"}); got != "" {
 		t.Errorf("versioned interpreter = %q; a rule on it would catch every Ruby app", got)
 	}
+	if got := ObservedExecutable([]string{"dotnet"}); got != "" {
+		t.Errorf("shared dotnet host = %q; a rule on it would catch every .NET app", got)
+	}
+	if got := ObservedExecutable([]string{"electron", "zypak-sandbox"}); got != "" {
+		t.Errorf("electron + zypak-sandbox = %q; a rule on zypak-sandbox would catch every Zypak app", got)
+	}
 	if got := ObservedExecutable([]string{"spotify", "spotify", "spotify-helper"}); got != "spotify" {
 		t.Errorf("best name = %q, want spotify", got)
 	}

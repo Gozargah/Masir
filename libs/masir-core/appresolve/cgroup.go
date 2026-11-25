@@ -192,8 +192,8 @@ var versionSuffix = regexp.MustCompile(`[0-9]+(\.[0-9]+)*$`)
 func sharedInterpreter(name string) bool {
 	name = versionSuffix.ReplaceAllString(strings.ToLower(name), "")
 	switch name {
-	case "python", "node", "nodejs", "electron", "java", "sh", "bash", "dash", "zsh",
-		"perl", "ruby", "php", "env", "lua", "tclsh", "wish", "busybox":
+	case "python", "node", "nodejs", "electron", "dotnet", "java", "sh", "bash", "dash", "zsh",
+		"perl", "ruby", "php", "env", "lua", "tclsh", "wish", "busybox", "zypak-sandbox":
 		return true
 	}
 	return false
