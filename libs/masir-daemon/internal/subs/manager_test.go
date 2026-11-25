@@ -141,6 +141,43 @@ func TestUpdateKeepsLatencyAndSurvivesFailure(t *testing.T) {
 	}
 }
 
+func TestRefreshApplyUsesCallerContext(t *testing.T) {
+	for _, background := range []bool{false, true} {
+		t.Run(fmt.Sprintf("background=%v", background), func(t *testing.T) {
+			p := newProvider(t, trojanWS)
+			m := newTestManager(t, nil)
+			s, err := m.Add(context.Background(), p.srv.URL, "mine", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			later := s.CreatedAt.Add(13 * time.Hour)
+			m.now = func() time.Time { return later }
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var applyCtx context.Context
+			m.OnChange = func(ctx context.Context) { applyCtx = ctx }
+			if background {
+				m.refreshDue(ctx)
+			} else if _, err := m.Update(ctx, s.ID); err != nil {
+				t.Fatal(err)
+			}
+			if applyCtx == nil {
+				t.Fatal("refresh did not apply the saved configs")
+			}
+			if _, ok := applyCtx.Deadline(); ok {
+				t.Fatal("apply inherited the fetch deadline")
+			}
+			if err := applyCtx.Err(); err != nil {
+				t.Fatalf("apply context already canceled: %v", err)
+			}
+			cancel()
+			if !errors.Is(applyCtx.Err(), context.Canceled) {
+				t.Fatal("apply context did not preserve caller cancellation")
+			}
+		})
+	}
+}
+
 func TestUpdateTimeoutKeepsExistingConfigs(t *testing.T) {
 	previousTimeout := refreshTimeout
 	refreshTimeout = 100 * time.Millisecond

@@ -325,14 +325,15 @@ func (m *Manager) Find(subID, configID, name string) (Config, bool) {
 
 // Update re-fetches now. On failure the old configs stay and LastError records why.
 func (m *Manager) Update(ctx context.Context, id string) (*Subscription, error) {
-	ctx, cancel := context.WithTimeout(ctx, refreshTimeout)
-	defer cancel()
-
 	cur, err := m.Get(id)
 	if err != nil {
 		return nil, err
 	}
-	f, configs, ferr := m.download(ctx, cur.URL)
+	// Keep the fetch budget separate from applying the saved configs: a fetch
+	// finishing near its deadline must not cancel the subsequent rebuild.
+	fetchCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	f, configs, ferr := m.download(fetchCtx, cur.URL)
+	cancel()
 
 	m.mu.Lock()
 	s, err := m.load(id) // re-read: it may have changed or gone while we fetched
