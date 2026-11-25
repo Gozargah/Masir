@@ -14,7 +14,9 @@ proto-lint:
 
 # masir is a single executable: `masir daemon run` is the daemon.
 build:
+	@if [ "$${MASIR_GEO_SKIP:-0}" != 1 ]; then sh scripts/fetch-geo.sh; fi
 	sh scripts/with-xray.sh go build -trimpath -ldflags "$(LDFLAGS)" -o ./dist/masir ./apps/masir
+	cp build/geo/geoip.dat build/geo/geosite.dat dist/
 
 # All release archives, as CI builds them, into build/release (needs network for geo data).
 snapshot:

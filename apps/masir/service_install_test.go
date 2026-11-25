@@ -19,7 +19,7 @@ func TestInstallStopsARunningDaemon(t *testing.T) {
 	}
 
 	liveDaemonSocket = func() (string, bool) { return "", false }
-	if err := stopBeforeInstall("501"); err != nil {
+	if err := stopBeforeInstall("501", false); err != nil {
 		t.Fatal(err)
 	}
 	if len(stopped) != 0 {
@@ -28,7 +28,7 @@ func TestInstallStopsARunningDaemon(t *testing.T) {
 
 	// Tests have no terminal, so the confirmation takes its default: yes.
 	liveDaemonSocket = func() (string, bool) { return "/tmp/daemon.sock", true }
-	if err := stopBeforeInstall("501"); err != nil {
+	if err := stopBeforeInstall("501", false); err != nil {
 		t.Fatal(err)
 	}
 	if len(stopped) != 1 || stopped[0] != "/tmp/daemon.sock" {
@@ -45,7 +45,7 @@ func TestInstallStopsWhenTheDaemonWont(t *testing.T) {
 	liveDaemonSocket = func() (string, bool) { return "/tmp/daemon.sock", true }
 	stopTheDaemon = func(string) error { return errors.New("the daemon didn't stop") }
 
-	if err := stopBeforeInstall("501"); !errors.Is(err, errReported) {
+	if err := stopBeforeInstall("501", false); !errors.Is(err, errReported) {
 		t.Fatalf("err = %v; want the failure already reported", err)
 	}
 }

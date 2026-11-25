@@ -368,7 +368,9 @@ func rootCmd() *cobra.Command {
 	restart := leaf("restart", "Restart the daemon", daemonRestart, cobra.NoArgs)
 	restart.Aliases = []string{"reload"}
 	enable := leaf("enable", "Install as a root service (needed for TUN); asks for sudo", daemonEnable, cobra.NoArgs,
-		flagSpec{names: []string{"user"}, help: "The uid to serve (default: you)"})
+		flagSpec{names: []string{"user"}, help: "The uid to serve (default: you)"},
+		flagSpec{names: []string{"confirmed"}, bool: true, help: "Stopping the daemon for installation was already confirmed"})
+	_ = enable.Flags().MarkHidden("confirmed")
 	enable.Aliases = []string{"install"}
 	disable := leaf("disable", "Remove the root service; asks for sudo", daemonDisable, cobra.NoArgs,
 		flagSpec{names: []string{"user"}, help: "The uid the service serves (default: you)"},

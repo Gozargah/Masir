@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"sync"
 	"time"
 
 	applog "github.com/xtls/xray-core/app/log"
@@ -109,120 +108,6 @@ func measureDelayLocal(ctx context.Context, cfgJSON []byte, opt LatencyOptions) 
 	}
 
 	return measureThrough(ctx, inst, "", opt)
-}
-
-// Probe is one outbound to latency-test; Tag only identifies it in results.
-type Probe struct {
-	Tag      string
-	Outbound json.RawMessage
-}
-
-const maxProbeBatch = 16
-
-// measureEachLocal tests many outbounds on temporary Xray instances in bounded batches,
-// up to workers at a time.
-// report gets exactly one call per probe (never concurrently), even when ctx is cancelled.
-func measureEachLocal(ctx context.Context, probes []Probe, opt LatencyOptions, workers int, report func(tag string, d time.Duration, err error)) {
-	opt = opt.withDefaults()
-	if workers < 1 {
-		workers = 1
-	}
-	var mu sync.Mutex
-	send := func(tag string, d time.Duration, err error) {
-		mu.Lock()
-		defer mu.Unlock()
-		report(tag, d, err)
-	}
-
-	// An outbound that doesn't build would stop the whole instance from starting.
-	var valid []Probe
-	for _, p := range probes {
-		it, err := newItem(p.Outbound, "tag", p.Tag)
-		if err == nil {
-			_, err = buildOutbound(it.JSON)
-		}
-		if err != nil {
-			send(p.Tag, 0, fmt.Errorf("invalid outbound: %w", err))
-			continue
-		}
-		valid = append(valid, p)
-	}
-	if len(valid) == 0 {
-		return
-	}
-
-	for i := 0; i < len(valid); i += maxProbeBatch {
-		if ctx.Err() != nil {
-			for _, p := range valid[i:] {
-				send(p.Tag, 0, ctx.Err())
-			}
-			break
-		}
-		end := min(i+maxProbeBatch, len(valid))
-		measureBatch(ctx, valid[i:end], opt, workers, send)
-	}
-}
-
-func measureBatch(ctx context.Context, batch []Probe, opt LatencyOptions, workers int, send func(string, time.Duration, error)) {
-	outs := make([]json.RawMessage, 0, len(batch))
-	for _, p := range batch {
-		it, _ := newItem(p.Outbound, "tag", p.Tag)
-		outs = append(outs, it.JSON)
-	}
-
-	failBatch := func(err error) {
-		for _, p := range batch {
-			send(p.Tag, 0, err)
-		}
-	}
-
-	cfg, err := confserial.LoadJSONConfig(bytes.NewReader(marshal(map[string]any{"outbounds": outs})))
-	if err != nil {
-		failBatch(fmt.Errorf("load config: %w", err))
-		return
-	}
-	quietProbeLogs(cfg)
-	cfg.Inbound = nil
-	keep := cfg.App[:0]
-	for _, app := range cfg.App {
-		if essentialApps[app.Type] {
-			keep = append(keep, app)
-		}
-	}
-	cfg.App = keep
-	inst, err := core.New(cfg)
-	if err != nil {
-		failBatch(fmt.Errorf("load instance: %w", err))
-		return
-	}
-	// The helper process owns all of this instance's resources.
-	defer inst.Close()
-	if err := inst.Start(); err != nil {
-		failBatch(fmt.Errorf("start instance: %w", err))
-		return
-	}
-
-	jobs := make(chan string)
-	var wg sync.WaitGroup
-	for range min(workers, len(batch)) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for tag := range jobs {
-				if err := ctx.Err(); err != nil {
-					send(tag, 0, err)
-					continue
-				}
-				d, err := measureThrough(ctx, inst, tag, opt)
-				send(tag, d, err)
-			}
-		}()
-	}
-	for _, p := range batch {
-		jobs <- p.Tag
-	}
-	close(jobs)
-	wg.Wait()
 }
 
 // measureThrough probes via the outbound tagged tag, or Xray's default outbound when tag is empty.

@@ -95,7 +95,7 @@ func daemonEnable(a args) error {
 	if user == "" {
 		user = currentUser()
 	}
-	return enableService(user)
+	return enableService(user, a.boolean("confirmed", false))
 }
 
 // daemonLabel relabels the system service's copy of masir for SELinux and restarts
@@ -317,14 +317,14 @@ func ensureDaemon(idle bool) error {
 // enableService installs the daemon as a privileged service serving user (a uid, or a
 // SID on Windows). Run as the user, it re-runs itself with privileges: sudo asks for
 // the password, or Windows for permission.
-func enableService(user string) error {
+func enableService(user string, confirmed bool) error {
 	if !elevated() {
 		// Ask and stop here, as the person: after sudo the daemon is found by the uid it
 		// serves, not by this process's own sockets.
-		if err := stopBeforeInstall(currentUser()); err != nil {
+		if err := stopBeforeInstall(currentUser(), confirmed); err != nil {
 			return err
 		}
-		return elevate("daemon", "enable", "--user", currentUser())
+		return elevate("daemon", "enable", "--user", currentUser(), "--confirmed")
 	}
 	if user == "" || user == "0" {
 		return advised("This needs your normal user, not root: masir asks for permission itself.", "Run it again without sudo:", "masir daemon enable")
@@ -332,7 +332,7 @@ func enableService(user string) error {
 	if !service.Supported() {
 		return errNoService
 	}
-	if err := stopBeforeInstall(user); err != nil {
+	if err := stopBeforeInstall(user, confirmed); err != nil {
 		return err
 	}
 	src, err := self()
@@ -355,19 +355,23 @@ func enableService(user string) error {
 // the app holds two — so asking over the socket stops it at once.
 //
 // There is a prompt only in a terminal: the app's Install Service is the person's answer
-// already, and its pkexec'd masir has no terminal to ask on.
-func stopBeforeInstall(user string) error {
+// already, and its pkexec'd masir has no terminal to ask on. The elevated CLI
+// inherits the original confirmation but still stops a daemon that restarted while
+// sudo was asking for permission.
+func stopBeforeInstall(user string, confirmed bool) error {
 	sock, ok := socketForInstall(user)
 	if !ok {
 		return nil
 	}
-	stop, err := ui.Confirm("A masir daemon is already running. Stop it and install the service?", true)
-	if err != nil {
-		return err
-	}
-	if !stop {
-		return advised("Nothing was installed: a running daemon owns the socket, and the service can't take it over while it does.",
-			"Install it when you're ready:", "masir daemon enable")
+	if !confirmed {
+		stop, err := confirmInstallStop("A masir daemon is already running. Stop it and install the service?", true)
+		if err != nil {
+			return err
+		}
+		if !stop {
+			return advised("Nothing was installed: a running daemon owns the socket, and the service can't take it over while it does.",
+				"Install it when you're ready:", "masir daemon enable")
+		}
 	}
 	s := ui.Spin("Stopping the masir daemon")
 	if err := stopTheDaemon(sock); err != nil {
@@ -413,8 +417,9 @@ func stopDaemonAt(sock string) error {
 // liveDaemonSocket and stopTheDaemon are the machine calls an install makes. Tests
 // replace them so they never stop a daemon on the machine they run on.
 var (
-	liveDaemonSocket = client.LiveSocket
-	stopTheDaemon    = stopDaemonAt
+	confirmInstallStop = ui.Confirm
+	liveDaemonSocket   = client.LiveSocket
+	stopTheDaemon      = stopDaemonAt
 )
 
 // enableTun turns TUN on, elevating the daemon first when it isn't root.
@@ -522,6 +527,10 @@ func installBinary(src string) (string, error) {
 		}
 		assets = stage
 	}
+	copyGeo, err := preflightServiceGeo(assets, dir, managedGeo)
+	if err != nil {
+		return "", err
+	}
 	stopServiceForInstall()
 	name := filepath.Base(service.BinaryPath())
 	bin := filepath.Join(dir, name)
@@ -541,18 +550,16 @@ func installBinary(src string) (string, error) {
 		os.RemoveAll(filepath.Join(dir, "Masir.app"))
 	}
 	for _, f := range []string{"geoip.dat", "geosite.dat"} {
-		if !managedGeo {
+		if !copyGeo {
 			break
 		}
 		from := filepath.Join(assets, f)
-		if _, err := os.Stat(from); err == nil {
-			to := filepath.Join(dir, f)
-			if err := copyFile(from, to, 0o644); err != nil {
-				return "", err
-			}
-			if same, err := sameContent(from, to); err != nil || !same {
-				return "", errors.New("the service's copy of " + f + " doesn't match the running data")
-			}
+		to := filepath.Join(dir, f)
+		if err := copyFile(from, to, 0o644); err != nil {
+			return "", err
+		}
+		if same, err := sameContent(from, to); err != nil || !same {
+			return "", errors.New("the service's copy of " + f + " doesn't match the running data")
 		}
 	}
 	if managedGeo {
