@@ -220,7 +220,7 @@ func installedDesktopApps(dirs []string) []ui.PickItem {
 	seenValues := map[string]bool{}
 	// Entries the static resolver cannot name are filled from the running app
 	// itself: its cgroup says which executable it really is.
-	var observed map[string][]string
+	var observed map[appresolve.Scope][]string
 	if runtime.GOOS == "linux" {
 		observed = appresolve.ObservedApps()
 	}
@@ -247,14 +247,8 @@ func installedDesktopApps(dirs []string) []ui.PickItem {
 			if err != nil || !d.Listed() {
 				return nil
 			}
-			value, err := d.Value()
-			if err != nil {
-				value = appresolve.BestName(observed[d.Scope().Key()])
-				if value == "" {
-					return nil
-				}
-			}
-			if seenValues[value] {
+			value := d.ResolveValue(observed)
+			if value == "" || seenValues[value] {
 				return nil
 			}
 			seenValues[value] = true

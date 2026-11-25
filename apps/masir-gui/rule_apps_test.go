@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Gozargah/Masir/libs/masir-core/appresolve"
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
@@ -485,11 +486,11 @@ func TestDesktopExecutableResolvesLaunchers(t *testing.T) {
 		return p
 	}
 	flatpak := write("spotify.desktop", "[Desktop Entry]\nName=Spotify\nExec=/usr/bin/flatpak run --command=spotify com.spotify.Client\n")
-	if got := desktopExecutable(flatpak); got != "" {
+	if got := desktopExecutable(flatpak, nil); got != "" {
 		t.Errorf("unverified Flatpak entry resolved to %q", got)
 	}
 	shell := write("shell.desktop", "[Desktop Entry]\nName=Shell\nExec=sh -c 'spotify --uri=%U'\n")
-	if got := desktopExecutable(shell); got != "" {
+	if got := desktopExecutable(shell, nil); got != "" {
 		t.Errorf("shell entry resolved to %q; want it left out of the list", got)
 	}
 	if runtime.GOOS != "windows" {
@@ -501,7 +502,7 @@ func TestDesktopExecutableResolvesLaunchers(t *testing.T) {
 			if real, err := filepath.EvalSymlinks(probe); err == nil {
 				want = real
 			}
-			if got := desktopExecutable(plain); got != want {
+			if got := desktopExecutable(plain, nil); got != want {
 				t.Errorf("plain entry resolved to %q; want %q", got, want)
 			}
 		}
@@ -533,11 +534,11 @@ func TestObservedValueFillsUnresolvableEntry(t *testing.T) {
 	if err := os.WriteFile(p, []byte("[Desktop Entry]\nName=Bitwarden\nExec=/snap/bin/bitwarden %U\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	observed := map[string][]string{"snap:bitwarden": {"bitwarden", "python3"}}
-	if got := observedValue(observed, p); got != "bitwarden" {
+	observed := map[appresolve.Scope][]string{{Kind: "snap", ID: "bitwarden"}: {"bitwarden", "python3"}}
+	if got := desktopExecutable(p, observed); got != "bitwarden" {
 		t.Errorf("observed value = %q, want bitwarden (the interpreter is skipped)", got)
 	}
-	if got := observedValue(nil, p); got != "" {
+	if got := desktopExecutable(p, nil); got != "" {
 		t.Errorf("without an observation = %q, want empty", got)
 	}
 }

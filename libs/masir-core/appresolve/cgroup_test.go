@@ -75,10 +75,10 @@ func TestObservedApps(t *testing.T) {
 	write("1", "0::/init.scope\n", "/usr/bin/systemd")
 
 	got := observedApps(root)
-	if names := got["flatpak:com.spotify.Client"]; len(names) != 1 || names[0] != "spotify" {
+	if names := got[Scope{Kind: "flatpak", ID: "com.spotify.Client"}]; len(names) != 1 || names[0] != "spotify" {
 		t.Errorf("flatpak scope = %v, want [spotify] (bwrap excluded)", names)
 	}
-	if names := got["snap:solvespace"]; len(names) != 1 || names[0] != "solvespace" {
+	if names := got[Scope{Kind: "snap", ID: "solvespace"}]; len(names) != 1 || names[0] != "solvespace" {
 		t.Errorf("snap scope = %v, want [solvespace]", names)
 	}
 	if len(got) != 2 {
@@ -86,17 +86,17 @@ func TestObservedApps(t *testing.T) {
 	}
 }
 
-func TestBestName(t *testing.T) {
-	if got := BestName([]string{"python3", "python3"}); got != "" {
+func TestObservedExecutable(t *testing.T) {
+	if got := ObservedExecutable([]string{"python3", "python3"}); got != "" {
 		t.Errorf("interpreter-only app = %q; a rule on it would catch every Python app", got)
 	}
-	if got := BestName([]string{"ruby3.3"}); got != "" {
+	if got := ObservedExecutable([]string{"ruby3.3"}); got != "" {
 		t.Errorf("versioned interpreter = %q; a rule on it would catch every Ruby app", got)
 	}
-	if got := BestName([]string{"spotify", "spotify", "spotify-helper"}); got != "spotify" {
+	if got := ObservedExecutable([]string{"spotify", "spotify", "spotify-helper"}); got != "spotify" {
 		t.Errorf("best name = %q, want spotify", got)
 	}
-	if got := BestName(nil); got != "" {
+	if got := ObservedExecutable(nil); got != "" {
 		t.Errorf("empty = %q", got)
 	}
 }
