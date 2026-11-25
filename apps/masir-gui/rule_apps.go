@@ -386,10 +386,16 @@ ConvertTo-Json -InputObject @($desktop+$packaged) -Compress`).Output()
 			err = fmt.Errorf("Couldn't list installed apps; choose an executable manually.")
 		}
 	} else {
+		// Entries the static resolver cannot name are filled from the running
+		// app itself: its cgroup says which executable it really is.
+		var observed map[appresolve.Scope][]string
+		if runtime.GOOS == "linux" {
+			observed = appresolve.ObservedApps()
+		}
 		for _, v := range installed {
 			path := v.Path
 			if runtime.GOOS == "linux" {
-				path = desktopExecutable(path)
+				path = desktopExecutable(path, observed)
 				if path == "" {
 					continue
 				}
@@ -500,18 +506,14 @@ func runningRuleApps(ctx context.Context) ([]ruleApp, error) {
 
 // desktopExecutable resolves a desktop entry to the value a process rule
 // carries. Launcher entries (flatpak, snap, env) are decoded to the program
-// they start — see appresolve; an entry that cannot be named stays out of the
-// list instead of becoming a silently wrong rule.
-func desktopExecutable(path string) string {
+// they start — see appresolve; when static resolution cannot name one,
+// observed fills it from the running app's cgroup.
+func desktopExecutable(path string, observed map[appresolve.Scope][]string) string {
 	d, err := appresolve.FromDesktop(path)
 	if err != nil {
 		return ""
 	}
-	v, err := d.Value()
-	if err != nil {
-		return ""
-	}
-	return v
+	return d.ResolveValue(observed)
 }
 
 func (a *app) applyRuleApps() {

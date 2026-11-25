@@ -218,6 +218,12 @@ func installedDesktopApps(dirs []string) []ui.PickItem {
 	var installed []ui.PickItem
 	seenIDs := map[string]bool{}
 	seenValues := map[string]bool{}
+	// Entries the static resolver cannot name are filled from the running app
+	// itself: its cgroup says which executable it really is.
+	var observed map[appresolve.Scope][]string
+	if runtime.GOOS == "linux" {
+		observed = appresolve.ObservedApps()
+	}
 	for _, dir := range dirs {
 		dir, err := filepath.EvalSymlinks(dir)
 		if err != nil {
@@ -241,8 +247,8 @@ func installedDesktopApps(dirs []string) []ui.PickItem {
 			if err != nil || !d.Listed() {
 				return nil
 			}
-			value, err := d.Value()
-			if err != nil || seenValues[value] {
+			value := d.ResolveValue(observed)
+			if value == "" || seenValues[value] {
 				return nil
 			}
 			seenValues[value] = true
