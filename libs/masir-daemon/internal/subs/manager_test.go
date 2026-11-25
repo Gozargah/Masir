@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -175,6 +176,48 @@ func TestRefreshApplyUsesCallerContext(t *testing.T) {
 				t.Fatal("apply context did not preserve caller cancellation")
 			}
 		})
+	}
+}
+
+// lateSubscriptionTransport models work that completes successfully after the
+// context expires, as parsing can: cancellation alone does not reject its result.
+type lateSubscriptionTransport struct{ body string }
+
+func (tr lateSubscriptionTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	<-r.Context().Done()
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(tr.body)), Header: make(http.Header)}, nil
+}
+
+func TestUpdateRejectsSuccessfulResultAfterDeadline(t *testing.T) {
+	p := newProvider(t, trojanWS)
+	m := newTestManager(t, nil)
+	s, err := m.Add(context.Background(), p.srv.URL, "mine", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousTimeout := refreshTimeout
+	refreshTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { refreshTimeout = previousTimeout })
+	m.direct = &http.Client{Transport: lateSubscriptionTransport{body: ssLink()}}
+	applied := false
+	m.OnChange = func(context.Context) { applied = true }
+	later := s.CheckedAt.Add(time.Minute)
+	m.now = func() time.Time { return later }
+
+	_, err = m.Update(context.Background(), s.ID)
+	if !errors.Is(err, ErrFetch) || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("update = %v, want a fetch timeout", err)
+	}
+	after, err := m.Get(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(after.LastError, context.DeadlineExceeded.Error()) || !after.CheckedAt.Equal(later) ||
+		!after.UpdatedAt.Equal(s.UpdatedAt) || len(after.Configs) != 1 || after.Configs[0].ID != s.Configs[0].ID {
+		t.Fatalf("late result did not preserve the subscription: %+v", after)
+	}
+	if applied {
+		t.Fatal("late result was applied")
 	}
 }
 

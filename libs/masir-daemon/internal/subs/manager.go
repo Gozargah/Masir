@@ -333,6 +333,10 @@ func (m *Manager) Update(ctx context.Context, id string) (*Subscription, error) 
 	// finishing near its deadline must not cancel the subsequent rebuild.
 	fetchCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
 	f, configs, ferr := m.download(fetchCtx, cur.URL)
+	if ferr == nil {
+		// Parsing cannot be interrupted; reject a result that outlived its budget.
+		ferr = wrapFetch(fetchCtx.Err())
+	}
 	cancel()
 
 	m.mu.Lock()
