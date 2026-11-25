@@ -326,13 +326,14 @@ func enableService(user string, confirmed bool) error {
 		if err := preflightGeoForInstall(src); err != nil {
 			return err
 		}
+		user := installUser()
 		// Ask and stop here, as the person: after sudo the daemon is found by the uid it
 		// serves, not by this process's own sockets.
-		approved, err := stopBeforeInstall(currentUser(), confirmed)
+		approved, err := stopBeforeInstall(user, confirmed)
 		if err != nil {
 			return err
 		}
-		argv := []string{"daemon", "enable", "--user", currentUser()}
+		argv := []string{"daemon", "enable", "--user", user}
 		if confirmed || approved {
 			argv = append(argv, "--confirmed")
 		}
@@ -464,6 +465,7 @@ var (
 	liveDaemonSocket       = client.LiveSocket
 	stopTheDaemon          = stopDaemonAt
 	preflightGeoForInstall = preflightInstallGeo
+	installUser            = currentUser
 )
 
 // enableTun turns TUN on, elevating the daemon first when it isn't root.

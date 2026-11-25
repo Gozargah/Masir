@@ -13,13 +13,14 @@ import (
 func TestInstallConfirmsOnceAcrossElevation(t *testing.T) {
 	oldElevated, oldElevate := elevated, elevate
 	oldSocket, oldStop, oldConfirm := liveDaemonSocket, stopTheDaemon, confirmInstallStop
-	oldPreflight := preflightGeoForInstall
+	oldPreflight, oldUser := preflightGeoForInstall, installUser
 	t.Cleanup(func() {
 		elevated, elevate = oldElevated, oldElevate
 		liveDaemonSocket, stopTheDaemon, confirmInstallStop = oldSocket, oldStop, oldConfirm
-		preflightGeoForInstall = oldPreflight
+		preflightGeoForInstall, installUser = oldPreflight, oldUser
 	})
 	preflightGeoForInstall = func(string) error { return nil }
+	installUser = func() string { return "501" }
 
 	isRoot := false
 	elevated = func() bool { return isRoot }
@@ -97,14 +98,15 @@ func TestInstallPreflightRunsBeforeStoppingDaemon(t *testing.T) {
 func TestInstallDoesNotForwardConfirmedWhenNoDaemonWasRunning(t *testing.T) {
 	oldElevated, oldElevate := elevated, elevate
 	oldSocket, oldStop, oldConfirm := liveDaemonSocket, stopTheDaemon, confirmInstallStop
-	oldPreflight := preflightGeoForInstall
+	oldPreflight, oldUser := preflightGeoForInstall, installUser
 	t.Cleanup(func() {
 		elevated, elevate = oldElevated, oldElevate
 		liveDaemonSocket, stopTheDaemon, confirmInstallStop = oldSocket, oldStop, oldConfirm
-		preflightGeoForInstall = oldPreflight
+		preflightGeoForInstall, installUser = oldPreflight, oldUser
 	})
 
 	preflightGeoForInstall = func(string) error { return nil }
+	installUser = func() string { return "501" }
 	isRoot := false
 	elevated = func() bool { return isRoot }
 	// Nothing running before elevation; a daemon starts while elevating.
