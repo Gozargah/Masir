@@ -83,10 +83,10 @@ func (c Config) Active(subscriptionID string) Active {
 // Interval is how often the subscription refreshes: custom, else the provider's, else the default.
 // interval is how often s refreshes: its own interval if it has one, else def (the
 // user's setting). The provider's suggested interval is kept for display only.
-// refreshTimeout bounds one subscription's background refresh: a direct fetch, a retry
+// refreshTimeout bounds one subscription's manual or background refresh: a direct fetch, a retry
 // through the proxy, and parsing. Refreshes run in parallel, so one dead provider never
 // holds up the others. A variable for tests.
-var refreshTimeout = 2 * time.Minute
+var refreshTimeout = 30 * time.Second
 
 func (s *Subscription) interval(def time.Duration) time.Duration {
 	if s.CustomIntervalMinutes > 0 {
@@ -325,6 +325,9 @@ func (m *Manager) Find(subID, configID, name string) (Config, bool) {
 
 // Update re-fetches now. On failure the old configs stay and LastError records why.
 func (m *Manager) Update(ctx context.Context, id string) (*Subscription, error) {
+	ctx, cancel := context.WithTimeout(ctx, refreshTimeout)
+	defer cancel()
+
 	cur, err := m.Get(id)
 	if err != nil {
 		return nil, err
@@ -509,8 +512,6 @@ func (m *Manager) refreshDue(ctx context.Context) {
 		wg.Add(1)
 		go func(s Subscription) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(ctx, refreshTimeout)
-			defer cancel()
 			u, err := m.Update(ctx, s.ID)
 			if err != nil {
 				m.log("warn", fmt.Sprintf("subscription %s: %v", s.Name, err))

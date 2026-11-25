@@ -141,6 +141,70 @@ func TestUpdateKeepsLatencyAndSurvivesFailure(t *testing.T) {
 	}
 }
 
+func TestUpdateTimeoutKeepsExistingConfigs(t *testing.T) {
+	previousTimeout := refreshTimeout
+	refreshTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { refreshTimeout = previousTimeout })
+
+	for _, viaProxy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("viaProxy=%v", viaProxy), func(t *testing.T) {
+			var hang atomic.Bool
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if hang.Load() {
+					if viaProxy {
+						w.WriteHeader(http.StatusBadGateway)
+						return
+					}
+					<-r.Context().Done()
+					return
+				}
+				_, _ = w.Write([]byte(trojanWS))
+			}))
+			t.Cleanup(provider.Close)
+			m := newTestManager(t, nil)
+			s, err := m.Add(context.Background(), provider.URL, "mine", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var proxied atomic.Bool
+			if viaProxy {
+				proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					proxied.Store(true)
+					<-r.Context().Done()
+				}))
+				t.Cleanup(proxy.Close)
+				m.viaProxy = &http.Client{Transport: &http.Transport{
+					DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+						return (&net.Dialer{}).DialContext(ctx, network, proxy.Listener.Addr().String())
+					},
+				}}
+			}
+			hang.Store(true)
+			// The caller allows much longer; Update must enforce its own deadline.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err = m.Update(ctx, s.ID)
+			if !errors.Is(err, ErrFetch) || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+				t.Fatalf("update = %v, want a fetch timeout", err)
+			}
+			if ctx.Err() != nil {
+				t.Fatal("update waited for the caller's deadline")
+			}
+			if viaProxy && !proxied.Load() {
+				t.Fatal("refresh did not retry through the proxy")
+			}
+			after, err := m.Get(s.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.LastError == "" || !after.CheckedAt.After(s.CheckedAt) || !after.UpdatedAt.Equal(s.UpdatedAt) ||
+				len(after.Configs) != 1 || after.Configs[0].ID != s.Configs[0].ID {
+				t.Fatalf("timeout did not preserve the subscription: %+v", after)
+			}
+		})
+	}
+}
+
 func TestFetchRetriesThroughProxy(t *testing.T) {
 	p := newProvider(t, trojanWS)
 	var proxied bool
