@@ -453,7 +453,11 @@ func rootCmd() *cobra.Command {
 		flagSpec{names: []string{"lines", "n"}, help: "how many recent entries to show (default 200)"},
 		flagSpec{names: []string{"json"}, bool: true, help: "one JSON object per entry"})
 	logs.Aliases = []string{"log"}
-	root.AddCommand(connect, disconnect, status, use, mode, sub, rules, settings,
+	root.AddCommand(connect, disconnect, status,
+		leaf("doctor", "Check the installation and the network path, and suggest fixes", cmdDoctor, cobra.NoArgs,
+			flagSpec{names: []string{"json"}, bool: true, help: "one JSON object"},
+			flagSpec{names: []string{"verbose"}, bool: true, help: "include checks that do not apply here"}),
+		use, mode, sub, rules, settings,
 		logs,
 		daemonGroup, updateCmd, getConfig,
 		leaf("menu", "Pick a command from an interactive menu", func(args) error { return menu() }, cobra.NoArgs),
