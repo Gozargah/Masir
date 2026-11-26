@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/Gozargah/Masir/libs/masir-core/doctor"
 	"github.com/Gozargah/Masir/libs/masir-core/paths"
@@ -79,8 +80,21 @@ func cmdDoctor(a args) error {
 }
 
 // configuredProxyAddress reads the saved settings, for the case where the
-// daemon is down and cannot report its address.
+// daemon is down and cannot report its address. The read is bounded: a home
+// directory on a hung mount must not stall the whole command before the checks
+// even start.
 func configuredProxyAddress() string {
+	done := make(chan string, 1)
+	go func() { done <- readConfiguredProxyAddress() }()
+	select {
+	case addr := <-done:
+		return addr
+	case <-time.After(500 * time.Millisecond):
+		return ""
+	}
+}
+
+func readConfiguredProxyAddress() string {
 	dir, err := paths.ConfigDirNoCreate()
 	if err != nil {
 		return ""

@@ -14,9 +14,9 @@ import (
 // linuxSeams restores the Linux-only seams after the test.
 func linuxSeams(t *testing.T) {
 	t.Helper()
-	oldRun, oldSEL, oldLabel, oldBin, oldV6 := runCommand, selinuxEnforcing, binaryLabelOK, serviceBinary, hasIPv6
+	oldRun, oldSEL, oldLabel, oldBin, oldV6, oldLook := runCommand, selinuxEnforcing, binaryLabelOK, serviceBinary, hasIPv6, lookPath
 	t.Cleanup(func() {
-		runCommand, selinuxEnforcing, binaryLabelOK, serviceBinary, hasIPv6 = oldRun, oldSEL, oldLabel, oldBin, oldV6
+		runCommand, selinuxEnforcing, binaryLabelOK, serviceBinary, hasIPv6, lookPath = oldRun, oldSEL, oldLabel, oldBin, oldV6, oldLook
 	})
 }
 
@@ -37,6 +37,7 @@ func TestLocalMTURejectionParsing(t *testing.T) {
 
 func TestCheckMTUCases(t *testing.T) {
 	linuxSeams(t)
+	lookPath = func(string) (string, error) { return "/usr/bin/ping", nil }
 	env := Env{TunRunning: true}
 	dfProbe := func(args []string) bool {
 		for _, a := range args {
@@ -78,6 +79,12 @@ func TestCheckMTUCases(t *testing.T) {
 	}
 	if r := checkMTU(context.Background(), env); r.State != Skip {
 		t.Fatalf("no connectivity = %+v, want Skip", r)
+	}
+
+	// No ping binary at all: skip without pretending to have probed.
+	lookPath = func(string) (string, error) { return "", errors.New("executable file not found") }
+	if r := checkMTU(context.Background(), env); r.State != Skip || !strings.Contains(r.Detail, "not installed") {
+		t.Fatalf("no ping = %+v, want Skip naming the missing tool", r)
 	}
 }
 

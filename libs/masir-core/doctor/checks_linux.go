@@ -29,6 +29,7 @@ var (
 	ipv6ProbeTarget  = "[2606:4700:4700::1111]:443"
 	mtuProbeTarget   = "1.1.1.1"
 	hasIPv6          = hasGlobalIPv6
+	lookPath         = exec.LookPath
 )
 
 func platformChecks() []Check {
@@ -226,7 +227,7 @@ func checkMTU(ctx context.Context, env Env) Result {
 	if !env.TunRunning {
 		return Result{State: Skip, Detail: "The tunnel is off."}
 	}
-	if _, err := exec.LookPath("ping"); err != nil {
+	if _, err := lookPath("ping"); err != nil {
 		return Result{State: Skip, Detail: "`ping` is not installed, so packet size cannot be probed."}
 	}
 	if out, err := runCommand(ctx, "ping", "-q", "-c", "1", "-W", "1", mtuProbeTarget); err != nil {
