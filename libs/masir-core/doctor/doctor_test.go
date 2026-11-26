@@ -16,10 +16,10 @@ func seams(t *testing.T) {
 	t.Helper()
 	oldListen, oldDial, oldLookup, oldRead := listen, dial, lookupHost, readFile
 	oldConfig, oldProbe := configDir, probeProxy
-	oldRegistry := registry
+	oldRegistry, oldTimeout := registry, checkTimeout
 	t.Cleanup(func() {
 		listen, dial, lookupHost, readFile = oldListen, oldDial, oldLookup, oldRead
-		configDir, probeProxy, registry = oldConfig, oldProbe, oldRegistry
+		configDir, probeProxy, registry, checkTimeout = oldConfig, oldProbe, oldRegistry, oldTimeout
 	})
 }
 
@@ -83,7 +83,7 @@ func TestProxyPortStates(t *testing.T) {
 	}
 	for _, c := range cases {
 		listen = c.listen
-		r := checkProxyPort(context.Background(), Env{ProxyAddress: "127.0.0.1:10808", XrayRunning: c.xray})
+		r := checkProxyPort(context.Background(), Env{DaemonRunning: true, ProxyAddress: "127.0.0.1:10808", XrayRunning: c.xray})
 		if r.State != c.want || !strings.Contains(r.Detail, c.inDetail) {
 			t.Errorf("%s: %+v, want state %v containing %q", c.name, r, c.want, c.inDetail)
 		}
@@ -93,16 +93,64 @@ func TestProxyPortStates(t *testing.T) {
 	}
 }
 
+func TestProxyPortBindErrors(t *testing.T) {
+	seams(t)
+	listen = func(string, string) (net.Listener, error) {
+		return nil, errors.New("bind: permission denied")
+	}
+	r := checkProxyPort(context.Background(), Env{DaemonRunning: true, ProxyAddress: "127.0.0.1:10808"})
+	if r.State != Skip || !strings.Contains(r.Detail, "could not be tested") {
+		t.Fatalf("permission error = %+v, want Skip naming the real failure", r)
+	}
+	if strings.Contains(r.Detail, "Another process") {
+		t.Fatalf("a permission error must not blame another process: %+v", r)
+	}
+	for _, msg := range []string{
+		"listen tcp 127.0.0.1:10808: bind: address already in use",
+		"bind: Only one usage of each socket address is normally permitted.",
+	} {
+		if !portInUse(errors.New(msg)) {
+			t.Errorf("%q not recognised as a port conflict", msg)
+		}
+	}
+	if portInUse(errors.New("bind: permission denied")) {
+		t.Error("permission denied recognised as a port conflict")
+	}
+}
+
+func TestStatusUnknown(t *testing.T) {
+	seams(t)
+	env := Env{DaemonRunning: true, StatusError: "context deadline exceeded"}
+	if r := checkDaemon(context.Background(), env); r.State != Fail || !strings.Contains(r.Detail, "does not answer its status request") {
+		t.Fatalf("daemon = %+v, want Fail", r)
+	}
+	for name, r := range map[string]Result{
+		"versions":     checkVersions(context.Background(), env),
+		"daemon-error": checkDaemonError(context.Background(), env),
+		"xray":         checkXray(context.Background(), env),
+		"proxy-reach":  checkProxyReach(context.Background(), env),
+	} {
+		if r.State != Skip {
+			t.Errorf("%s with unknown status = %+v, want Skip", name, r)
+		}
+	}
+	listen = func(string, string) (net.Listener, error) { return nil, errors.New("bind: address already in use") }
+	env.ProxyAddress = "127.0.0.1:10808"
+	if r := checkProxyPort(context.Background(), env); r.State != Warn || !strings.Contains(r.Detail, "owner cannot be told") {
+		t.Fatalf("port with unknown status = %+v, want Warn that does not guess the owner", r)
+	}
+}
+
 func TestProxyReach(t *testing.T) {
 	seams(t)
 	probeProxy = func(string) (int, time.Duration, error) {
 		return 0, 50 * time.Millisecond, errors.New("connection refused")
 	}
-	if r := checkProxyReach(context.Background(), Env{ProxyAddress: "127.0.0.1:10808", XrayRunning: true}); r.State != Warn {
+	if r := checkProxyReach(context.Background(), Env{DaemonRunning: true, ProxyAddress: "127.0.0.1:10808", XrayRunning: true}); r.State != Warn {
 		t.Fatalf("failed request = %+v, want Warn", r)
 	}
 	probeProxy = func(string) (int, time.Duration, error) { return 204, 120 * time.Millisecond, nil }
-	if r := checkProxyReach(context.Background(), Env{ProxyAddress: "127.0.0.1:10808", XrayRunning: true}); r.State != OK || !strings.Contains(r.Detail, "120 ms") {
+	if r := checkProxyReach(context.Background(), Env{DaemonRunning: true, ProxyAddress: "127.0.0.1:10808", XrayRunning: true}); r.State != OK || !strings.Contains(r.Detail, "120 ms") {
 		t.Fatalf("good request = %+v, want OK with the timing", r)
 	}
 }
@@ -153,29 +201,45 @@ func TestRouting(t *testing.T) {
 	if r := checkRouting(context.Background(), Env{}); r.State != OK {
 		t.Fatalf("valid file = %+v, want OK", r)
 	}
+	// Valid JSON that the daemon's loader would still reject.
+	for _, broken := range []string{`{"rules":42}`, `{"rules":[1]}`, `{"rules":"x"}`} {
+		if err := os.WriteFile(filepath.Join(dir, "routing.json"), []byte(broken), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if r := checkRouting(context.Background(), Env{}); r.State != Fail {
+			t.Errorf("%s = %+v, want Fail", broken, r)
+		}
+	}
 }
 
 func TestRunOrderPanicAndWorst(t *testing.T) {
 	seams(t)
+	checkTimeout = 150 * time.Millisecond
 	registry = func() []Check {
 		return []Check{
-			{ID: "first", Title: "First", Run: func(context.Context, Env) Result { return Result{State: OK, Detail: "fine"} }},
-			{ID: "boom", Title: "Boom", Run: func(context.Context, Env) Result { panic("boom") }},
-			{ID: "slow", Title: "Slow", Run: func(ctx context.Context, env Env) Result {
-				<-ctx.Done()
-				return Result{State: Skip, Detail: "out of time"}
+			{ID: "first", Title: "First", Group: "Connection", Run: func(context.Context, Env) Result { return Result{State: OK, Detail: "fine"} }},
+			{ID: "boom", Title: "Boom", Group: "Connection", Run: func(context.Context, Env) Result { panic("boom") }},
+			{ID: "stuck", Title: "Stuck", Group: "Connection", Run: func(context.Context, Env) Result {
+				// Deliberately ignores its context: a syscall that cannot be
+				// interrupted must not hang the command.
+				time.Sleep(2 * time.Second)
+				return Result{State: OK, Detail: "late"}
 			}},
 		}
 	}
+	start := time.Now()
 	reports := Run(context.Background(), Env{})
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Run took %s, want it bounded by the timeout", elapsed)
+	}
 	if len(reports) != 3 || reports[0].ID != "first" || reports[1].ID != "boom" {
 		t.Fatalf("reports = %+v, want registration order", reports)
 	}
 	if reports[1].State != Fail || !strings.Contains(reports[1].Detail, "crashed") {
 		t.Fatalf("panic guard = %+v", reports[1])
 	}
-	if reports[2].State != Skip {
-		t.Fatalf("timeout = %+v, want Skip from the check itself", reports[2])
+	if reports[2].State != Fail || !strings.Contains(reports[2].Detail, "did not finish") {
+		t.Fatalf("stuck check = %+v, want a timeout failure", reports[2])
 	}
 	if got := Worst(reports); got != Fail {
 		t.Fatalf("worst = %v, want Fail", got)

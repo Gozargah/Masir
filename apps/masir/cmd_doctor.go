@@ -19,8 +19,11 @@ func cmdDoctor(a args) error {
 		env.DaemonRunning = true
 		ctx, cancel := rpc()
 		defer cancel()
-		if res, err := c.GetStatus(ctx, &pb.GetStatusRequest{}); err == nil && res.GetStatus() != nil {
-			st := res.GetStatus()
+		if res, err := c.GetStatus(ctx, &pb.GetStatusRequest{}); err != nil {
+			// The socket answered but the status call did not: keep that as an
+			// unknown state instead of pretending the daemon is healthy.
+			env.StatusError = err.Error()
+		} else if st := res.GetStatus(); st != nil {
 			env.DaemonVersion = st.GetVersion()
 			env.XrayVersion = st.GetXrayVersion()
 			env.XrayRunning = st.GetXrayRunning()
@@ -31,6 +34,8 @@ func cmdDoctor(a args) error {
 				env.TunGateway = s.GetTunGateway()
 				env.Power = s.GetPower()
 			}
+		} else {
+			env.StatusError = "the status reply was empty"
 		}
 	}
 
@@ -76,7 +81,7 @@ func cmdDoctor(a args) error {
 // configuredProxyAddress reads the saved settings, for the case where the
 // daemon is down and cannot report its address.
 func configuredProxyAddress() string {
-	dir, err := paths.ConfigDir()
+	dir, err := paths.ConfigDirNoCreate()
 	if err != nil {
 		return ""
 	}

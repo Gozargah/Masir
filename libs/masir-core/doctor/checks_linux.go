@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -18,13 +19,16 @@ import (
 // Seams: the tests replace these instead of touching the real machine.
 var (
 	runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return exec.CommandContext(ctx, name, args...).Output()
+		// Combined output: `ping` puts "message too long" on stderr, and the MTU
+		// check needs that text to tell a local rejection from a blackhole.
+		return exec.CommandContext(ctx, name, args...).CombinedOutput()
 	}
 	selinuxEnforcing = service.SelinuxEnforcing
 	binaryLabelOK    = service.LabelOK
 	serviceBinary    = service.BinaryPath
 	ipv6ProbeTarget  = "[2606:4700:4700::1111]:443"
 	mtuProbeTarget   = "1.1.1.1"
+	hasIPv6          = hasGlobalIPv6
 )
 
 func platformChecks() []Check {
@@ -174,6 +178,9 @@ func checkIPv6(ctx context.Context, env Env) Result {
 	if !env.TunRunning {
 		return Result{State: Skip, Detail: "The tunnel is off."}
 	}
+	if !hasIPv6() {
+		return Result{State: Skip, Detail: "This host has no global IPv6 address, so there is no IPv6 path to test."}
+	}
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	conn, err := (&net.Dialer{}).DialContext(cctx, "tcp6", ipv6ProbeTarget)
@@ -188,8 +195,33 @@ func checkIPv6(ctx context.Context, env Env) Result {
 	return Result{State: OK, Detail: "IPv6 traffic gets through the tunnel."}
 }
 
-// checkMTU probes the classic MTU blackhole: small packets pass, full-size ones
-// vanish. Two pings, one of them with don't-fragment at the ethernet MTU.
+// hasGlobalIPv6 reports whether the host has a routable IPv6 address at all;
+// a link-local address alone means IPv6 is not configured and the probe would
+// fail for reasons unrelated to masir.
+func hasGlobalIPv6() bool {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return true // cannot tell: let the probe speak for itself
+	}
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ip, _, err := net.ParseCIDR(a.String())
+			if err != nil || ip.To4() != nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// checkMTU separates the two ways a full-size probe fails: the kernel refusing
+// a packet it knows is too large (the path MTU is simply below 1500, nothing is
+// lost) versus a silent blackhole, which really does stall large transfers.
 func checkMTU(ctx context.Context, env Env) Result {
 	if !env.TunRunning {
 		return Result{State: Skip, Detail: "The tunnel is off."}
@@ -197,17 +229,53 @@ func checkMTU(ctx context.Context, env Env) Result {
 	if _, err := exec.LookPath("ping"); err != nil {
 		return Result{State: Skip, Detail: "`ping` is not installed, so packet size cannot be probed."}
 	}
-	if _, err := runCommand(ctx, "ping", "-q", "-c", "1", "-W", "1", mtuProbeTarget); err != nil {
-		return Result{State: Skip, Detail: "The network did not answer a plain ping, so the size probe proves nothing."}
+	if out, err := runCommand(ctx, "ping", "-q", "-c", "1", "-W", "1", mtuProbeTarget); err != nil {
+		return Result{State: Skip, Detail: fmt.Sprintf("The network did not answer a plain ping (%s), so the size probe proves nothing.", firstLine(out))}
 	}
-	if _, err := runCommand(ctx, "ping", "-q", "-M", "do", "-s", "1472", "-c", "1", "-W", "1", mtuProbeTarget); err != nil {
+	out, err := runCommand(ctx, "ping", "-q", "-M", "do", "-s", "1472", "-c", "1", "-W", "1", mtuProbeTarget)
+	if err == nil {
+		return Result{State: OK, Detail: "Full-size packets pass the tunnel path."}
+	}
+	if pmtu := localMTURejection(string(out)); pmtu != "" {
 		return Result{
-			State:  Warn,
-			Detail: "Small packets pass, but a full-size (1500-byte) packet does not: downloads can stall halfway.",
-			Fix:    "Lower the tunnel MTU (1400 usually works). Settings for it are not exposed yet; report this so it can be added.",
+			State:  OK,
+			Detail: fmt.Sprintf("This path's MTU is below 1500 (%s): oversized packets are rejected locally, not dropped, so large transfers still work.", pmtu),
 		}
 	}
-	return Result{State: OK, Detail: "Full-size packets pass the tunnel path."}
+	return Result{
+		State:  Warn,
+		Detail: fmt.Sprintf("Small packets pass, but a full-size (1500-byte) packet gets no reply: %s.", firstLine(out)),
+		Fix:    "This is the classic MTU blackhole — downloads stall halfway. Lower the tunnel MTU (1400 usually works); the setting is not exposed yet, so please report this.",
+	}
+}
+
+// localMTURejection reports the "message too long"-style local error (with the
+// MTU the kernel names, when it does) and "" for a timeout or lost packet.
+func localMTURejection(output string) string {
+	text := strings.ToLower(output)
+	for _, marker := range []string{"message too long", "frag needed", "emsgsize", "too long"} {
+		if !strings.Contains(text, marker) {
+			continue
+		}
+		if m := regexp.MustCompile(`mtu\s*[= ]\s*(\d+)`).FindStringSubmatch(text); m != nil {
+			return "mtu " + m[1]
+		}
+		return "rejected locally"
+	}
+	return ""
+}
+
+// firstLine keeps multi-line command output from flooding a one-line result.
+func firstLine(out []byte) string {
+	line := strings.TrimSpace(string(out))
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "no output"
+	}
+	return line
 }
 
 // checkChurn counts Xray builds: a UI that polls `masir status` with checks

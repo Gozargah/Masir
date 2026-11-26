@@ -10,7 +10,6 @@ package doctor
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 )
 
@@ -62,6 +61,7 @@ type Env struct {
 	XrayRunning   bool
 	TunRunning    bool
 	Power         bool // masir is connected (not idle)
+	StatusError   string
 	LastError     string
 	ProxyAddress  string
 	TunGateway    string
@@ -82,37 +82,71 @@ func Checks() []Check {
 	return append(baseChecks(), platformChecks()...)
 }
 
-const checkTimeout = 3 * time.Second
+// checkTimeout bounds the whole run; a var so tests can shorten it.
+var checkTimeout = 3 * time.Second
 
 // registry is Checks; tests replace it to inject failing checks.
 var registry = Checks
 
 // Run executes every check concurrently and returns reports in registration
-// order. A check that panics or overruns its budget fails alone.
+// order. The whole run is bounded by checkTimeout: a check that ignores its
+// context or blocks in a syscall cannot hang the command, it is reported as
+// having run out of time instead.
 func Run(ctx context.Context, env Env) []Report {
 	checks := registry()
 	reports := make([]Report, len(checks))
-	var wg sync.WaitGroup
+	type outcome struct {
+		index  int
+		result Result
+	}
+	done := make(chan outcome, len(checks))
+	cctx, cancel := context.WithTimeout(ctx, checkTimeout)
+	defer cancel()
+
 	for i, c := range checks {
-		wg.Add(1)
 		go func(i int, c Check) {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					reports[i] = Report{ID: c.ID, Title: c.Title, Group: c.Group, Result: Result{
-						State:  Fail,
-						Detail: fmt.Sprintf("This check crashed: %v.", r),
-						Fix:    "Please report it with `masir version` output.",
-					}}
-				}
-			}()
-			cctx, cancel := context.WithTimeout(ctx, checkTimeout)
-			defer cancel()
-			reports[i] = Report{ID: c.ID, Title: c.Title, Group: c.Group, Result: c.Run(cctx, env)}
+			done <- outcome{i, safeRun(cctx, c, env)}
 		}(i, c)
 	}
-	wg.Wait()
+
+	seen := make([]bool, len(checks))
+	for range checks {
+		select {
+		case o := <-done:
+			seen[o.index] = true
+			reports[o.index] = Report{ID: checks[o.index].ID, Title: checks[o.index].Title, Group: checks[o.index].Group, Result: o.result}
+		case <-cctx.Done():
+			// Whatever has not reported by now is not coming back: fill the rest
+			// in and return instead of waiting on it.
+			for i, c := range checks {
+				if seen[i] {
+					continue
+				}
+				reports[i] = Report{ID: c.ID, Title: c.Title, Group: c.Group, Result: Result{
+					State:  Fail,
+					Detail: fmt.Sprintf("This check did not finish within %s.", checkTimeout),
+					Fix:    "Please report it with `masir version` output.",
+				}}
+			}
+			return reports
+		}
+	}
 	return reports
+}
+
+// safeRun turns a panicking check into a failed result instead of a crashed
+// command.
+func safeRun(ctx context.Context, c Check, env Env) (result Result) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = Result{
+				State:  Fail,
+				Detail: fmt.Sprintf("This check crashed: %v.", r),
+				Fix:    "Please report it with `masir version` output.",
+			}
+		}
+	}()
+	return c.Run(ctx, env)
 }
 
 // Worst is the severity a summary should report: Fail beats Warn beats OK.

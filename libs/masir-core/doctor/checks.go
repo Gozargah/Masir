@@ -21,11 +21,16 @@ var (
 	dial          = net.DialTimeout
 	lookupHost    = net.DefaultResolver.LookupHost
 	readFile      = os.ReadFile
-	configDir     = paths.ConfigDir
+	configDir     = paths.ConfigDirNoCreate
 	proxyProbeURL = "https://www.gstatic.com/generate_204"
 	dnsProbeHost  = "example.com"
 	probeProxy    = httpProbe
 )
+
+// statusKnown reports whether the daemon's own state could be read: alive, no
+// status error. Checks that reason about the daemon's internals say "unknown"
+// instead of guessing when it is false.
+func statusKnown(env Env) bool { return env.DaemonRunning && env.StatusError == "" }
 
 // httpProbe fetches proxyProbeURL through the proxy and reports what happened.
 func httpProbe(addr string) (int, time.Duration, error) {
@@ -69,12 +74,22 @@ func checkDaemon(ctx context.Context, env Env) Result {
 			Fix:    "Start it with `masir connect` (or `masir daemon start`).",
 		}
 	}
-	return Result{State: OK, Detail: "The daemon is running."}
+	if env.StatusError != "" {
+		return Result{
+			State:  Fail,
+			Detail: fmt.Sprintf("The daemon is alive but does not answer its status request: %s.", strings.TrimSuffix(env.StatusError, ".")),
+			Fix:    "Restart it (`masir daemon restart`). If it keeps failing, `masir logs --level error` shows why — a half-updated install is a common cause.",
+		}
+	}
+	return Result{State: OK, Detail: "The daemon is running and answers."}
 }
 
 func checkVersions(ctx context.Context, env Env) Result {
 	if !env.DaemonRunning {
 		return Result{State: Skip, Detail: "The daemon is not running, so its version is unknown."}
+	}
+	if env.StatusError != "" {
+		return Result{State: Skip, Detail: "The daemon's status is unknown, so its version cannot be read."}
 	}
 	if env.CLIVersion == "" || env.DaemonVersion == "" {
 		return Result{State: Skip, Detail: "One of the two versions was not reported."}
@@ -108,6 +123,9 @@ func checkDaemonError(ctx context.Context, env Env) Result {
 	if !env.DaemonRunning {
 		return Result{State: Skip, Detail: "The daemon is not running, so it has nothing to report."}
 	}
+	if env.StatusError != "" {
+		return Result{State: Skip, Detail: "The daemon's status is unknown, so its last error cannot be read."}
+	}
 	msg := strings.TrimSpace(env.LastError)
 	if msg == "" {
 		return Result{State: OK, Detail: "The daemon reports no error."}
@@ -130,6 +148,9 @@ func checkDaemonError(ctx context.Context, env Env) Result {
 func checkXray(ctx context.Context, env Env) Result {
 	if !env.DaemonRunning {
 		return Result{State: Skip, Detail: "The daemon is not running, so Xray is not either."}
+	}
+	if env.StatusError != "" {
+		return Result{State: Skip, Detail: "The daemon's status is unknown, so Xray cannot be checked."}
 	}
 	if !env.Power {
 		return Result{State: Skip, Detail: "masir is idle (started but not connected), so Xray is off by design.", Fix: ""}
@@ -158,6 +179,25 @@ func checkProxyPort(ctx context.Context, env Env) Result {
 	if ln != nil {
 		ln.Close()
 	}
+	if err != nil && !portInUse(err) {
+		// Not a conflict: permission, a bad address, a firewall. Say what happened
+		// instead of blaming another program.
+		return Result{
+			State:  Skip,
+			Detail: fmt.Sprintf("The proxy port %s could not be tested: %v.", addr, err),
+			Fix:    "Run the command as the user who runs masir, not as root.",
+		}
+	}
+	if !statusKnown(env) {
+		if free {
+			return Result{State: Skip, Detail: fmt.Sprintf("The proxy port %s is free; masir's own state is unknown.", addr)}
+		}
+		return Result{
+			State:  Warn,
+			Detail: fmt.Sprintf("%s is in use, and masir's own state is unknown, so the owner cannot be told.", addr),
+			Fix:    "Restart the daemon (`masir daemon restart`) and run this again.",
+		}
+	}
 	switch {
 	case env.XrayRunning && free:
 		return Result{
@@ -178,10 +218,26 @@ func checkProxyPort(ctx context.Context, env Env) Result {
 	}
 }
 
+// portInUse reports whether a bind error is a conflict rather than a different
+// failure (permission, bad address). The messages are the ones the kernels
+// produce on Linux, macOS and Windows.
+func portInUse(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, marker := range []string{"address already in use", "only one usage of each socket address", "eaddrinuse"} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func checkProxyReach(ctx context.Context, env Env) Result {
 	addr := env.ProxyAddress
 	if addr == "" || !env.XrayRunning {
 		return Result{State: Skip, Detail: "The proxy is not running, so there is nothing to reach."}
+	}
+	if !statusKnown(env) {
+		return Result{State: Skip, Detail: "masir's own state is unknown, so a successful request could belong to another client on the port."}
 	}
 	status, took, err := probeProxy(addr)
 	if err != nil {
@@ -224,14 +280,29 @@ func checkRouting(ctx context.Context, env Env) Result {
 	if err != nil {
 		return Result{State: Skip, Detail: "No saved routing rules were found."}
 	}
-	if !json.Valid(data) {
+	// Decode the way the daemon's loader does ({"rules":[{tag,match,target}]}),
+	// so a file that parses as JSON but would be rejected at load is caught here.
+	var routing struct {
+		Rules []json.RawMessage `json:"rules"`
+	}
+	if err := json.Unmarshal(data, &routing); err != nil {
 		return Result{
 			State:  Fail,
-			Detail: "The saved routing rules (routing.json) are not valid JSON, so the rules cannot load.",
-			Fix:    "`masir rules list` reports the parse error; restore the file from a backup or re-add the rules.",
+			Detail: fmt.Sprintf("The saved routing rules (routing.json) cannot be read the way masir reads them: %v.", err),
+			Fix:    "`masir rules list` reports the same error; restore the file from a backup or re-add the rules.",
 		}
 	}
-	return Result{State: OK, Detail: "The saved routing rules parse."}
+	for i, raw := range routing.Rules {
+		var rule map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &rule); err != nil {
+			return Result{
+				State:  Fail,
+				Detail: fmt.Sprintf("Routing rule %d is not an object, so the rule list cannot load.", i+1),
+				Fix:    "`masir rules list` reports the same error; re-add the rules or restore a backup.",
+			}
+		}
+	}
+	return Result{State: OK, Detail: fmt.Sprintf("The saved routing rules load (%d rules).", len(routing.Rules))}
 }
 
 func checkTunnel(ctx context.Context, env Env) Result {
